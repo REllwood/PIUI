@@ -8,15 +8,17 @@ export async function streamFixture(
   router: SidecarRouter,
   write: (envelope: ProtocolEnvelope) => void,
   signal: AbortSignal,
-): Promise<void> {
+): Promise<'complete' | 'cancelled'> {
   for (const [index, text] of chunks.entries()) {
     if (signal.aborted) break;
     await new Promise((resolve) => setTimeout(resolve, 300));
     if (signal.aborted) break;
     write(router.next('event', `${request.id}-chunk-${index}`, { eventType: 'stream.delta', text }, request.id));
   }
+  const terminal = signal.aborted ? 'cancelled' : 'complete';
   write(router.next('event', `${request.id}-terminal`, {
-    eventType: signal.aborted ? 'stream.cancelled' : 'stream.complete',
-    terminal: signal.aborted ? 'cancelled' : 'complete',
+    eventType: terminal === 'cancelled' ? 'stream.cancelled' : 'stream.complete',
+    terminal,
   }, request.id));
+  return terminal;
 }

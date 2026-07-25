@@ -157,7 +157,7 @@ fn validate_cancellation(cancellation: &Envelope) -> Result<(), String> {
         || cancellation
             .correlation_id
             .as_deref()
-            .is_none_or(str::is_empty)
+            .is_none_or(|correlation_id| !valid_id(correlation_id))
         || !valid_id(&cancellation.id)
     {
         return Err("cancellation request invalid".into());
@@ -200,5 +200,11 @@ mod tests {
             "payload":{"method":"arbitrary"}
         }));
         assert!(validate_stream_request(&bad_request).is_err());
+
+        let bad_correlation = envelope(serde_json::json!({
+            "version":1,"kind":"cancel","id":"cancel-1","correlationId":"bad correlation",
+            "sequence":2,"payload":{}
+        }));
+        assert!(validate_cancellation(&bad_correlation).is_err());
     }
 }
