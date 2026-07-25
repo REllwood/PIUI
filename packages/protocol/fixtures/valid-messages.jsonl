@@ -1,0 +1,7 @@
+{"version":1,"kind":"request","id":"req-1","sequence":1,"payload":{"method":"status"}}
+{"version":1,"kind":"response","id":"res-1","correlationId":"req-1","sequence":2,"payload":{"status":"ready"}}
+{"version":1,"kind":"event","id":"event-1","sequence":3,"payload":{"eventType":"future.valid-event","detail":{"preserve":"redacted-diagnostic"}}}
+{"version":1,"kind":"host-request","id":"host-1","sequence":4,"payload":{"method":"credential.get"}}
+{"version":1,"kind":"host-response","id":"host-res-1","correlationId":"host-1","sequence":5,"payload":{"found":false}}
+{"version":1,"kind":"cancel","id":"cancel-1","correlationId":"req-1","sequence":6,"payload":{}}
+{"version":1,"kind":"ack","id":"ack-1","correlationId":"cancel-1","decisionId":"decision-1","sequence":7,"payload":{"accepted":true}}

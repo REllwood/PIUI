@@ -1,0 +1,2 @@
+{"version":1,"kind":"request","id":"duplicate","sequence":0,"payload":{"method":"status"}}
+{"version":1,"kind":"request","id":"duplicate","sequence":1,"payload":{"method":"status"}}

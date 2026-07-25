@@ -1,0 +1,1 @@
+{"version":1,"kind":"event","id":"event-1","sequence":1,"payload":{"eventType":"sidecar.status","detail":"valid replacement � character"}}

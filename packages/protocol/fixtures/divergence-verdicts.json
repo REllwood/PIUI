@@ -1,0 +1,157 @@
+[
+  {
+    "name": "valid-sequence-max",
+    "valid": true,
+    "line": "{\"version\":1,\"kind\":\"event\",\"id\":\"event-1\",\"sequence\":9007199254740991,\"payload\":{\"eventType\":\"sidecar.status\"}}\n"
+  },
+  {
+    "name": "valid-id-boundaries",
+    "valid": true,
+    "line": "{\"version\":1,\"kind\":\"ack\",\"id\":\"Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"correlationId\":\"Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"decisionId\":\"Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"sequence\":2,\"payload\":{\"accepted\":true}}\n"
+  },
+  {
+    "name": "invalid-sequence-unsafe",
+    "valid": false,
+    "line": "{\"version\":1,\"kind\":\"event\",\"id\":\"event-1\",\"sequence\":9007199254740992,\"payload\":{\"eventType\":\"sidecar.status\"}}\n"
+  },
+  {
+    "name": "invalid-id-too-long",
+    "valid": false,
+    "line": "{\"version\":1,\"kind\":\"event\",\"id\":\"Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"sequence\":1,\"payload\":{\"eventType\":\"sidecar.status\"}}\n"
+  },
+  {
+    "name": "invalid-id-pattern",
+    "valid": false,
+    "line": "{\"version\":1,\"kind\":\"event\",\"id\":\"-starts-wrong\",\"sequence\":1,\"payload\":{\"eventType\":\"sidecar.status\"}}\n"
+  },
+  {
+    "name": "invalid-correlation-too-long",
+    "valid": false,
+    "line": "{\"version\":1,\"kind\":\"response\",\"id\":\"response-1\",\"correlationId\":\"Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"sequence\":2,\"payload\":{}}\n"
+  },
+  {
+    "name": "invalid-correlation-null",
+    "valid": false,
+    "line": "{\"version\":1,\"kind\":\"response\",\"id\":\"response-1\",\"correlationId\":null,\"sequence\":2,\"payload\":{}}\n"
+  },
+  {
+    "name": "invalid-decision-too-long",
+    "valid": false,
+    "line": "{\"version\":1,\"kind\":\"event\",\"id\":\"event-1\",\"sequence\":1,\"payload\":{\"eventType\":\"sidecar.status\"},\"decisionId\":\"Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}\n"
+  },
+  {
+    "name": "invalid-decision-pattern",
+    "valid": false,
+    "line": "{\"version\":1,\"kind\":\"event\",\"id\":\"event-1\",\"sequence\":1,\"payload\":{\"eventType\":\"sidecar.status\"},\"decisionId\":\"bad id\"}\n"
+  },
+  {
+    "name": "invalid-payload-properties",
+    "valid": false,
+    "line": "{\"version\":1,\"kind\":\"event\",\"id\":\"event-1\",\"sequence\":1,\"payload\":{\"p0\":0,\"p1\":1,\"p2\":2,\"p3\":3,\"p4\":4,\"p5\":5,\"p6\":6,\"p7\":7,\"p8\":8,\"p9\":9,\"p10\":10,\"p11\":11,\"p12\":12,\"p13\":13,\"p14\":14,\"p15\":15,\"p16\":16,\"p17\":17,\"p18\":18,\"p19\":19,\"p20\":20,\"p21\":21,\"p22\":22,\"p23\":23,\"p24\":24,\"p25\":25,\"p26\":26,\"p27\":27,\"p28\":28,\"p29\":29,\"p30\":30,\"p31\":31,\"p32\":32,\"p33\":33,\"p34\":34,\"p35\":35,\"p36\":36,\"p37\":37,\"p38\":38,\"p39\":39,\"p40\":40,\"p41\":41,\"p42\":42,\"p43\":43,\"p44\":44,\"p45\":45,\"p46\":46,\"p47\":47,\"p48\":48,\"p49\":49,\"p50\":50,\"p51\":51,\"p52\":52,\"p53\":53,\"p54\":54,\"p55\":55,\"p56\":56,\"p57\":57,\"p58\":58,\"p59\":59,\"p60\":60,\"p61\":61,\"p62\":62,\"p63\":63,\"p64\":64,\"p65\":65,\"p66\":66,\"p67\":67,\"p68\":68,\"p69\":69,\"p70\":70,\"p71\":71,\"p72\":72,\"p73\":73,\"p74\":74,\"p75\":75,\"p76\":76,\"p77\":77,\"p78\":78,\"p79\":79,\"p80\":80,\"p81\":81,\"p82\":82,\"p83\":83,\"p84\":84,\"p85\":85,\"p86\":86,\"p87\":87,\"p88\":88,\"p89\":89,\"p90\":90,\"p91\":91,\"p92\":92,\"p93\":93,\"p94\":94,\"p95\":95,\"p96\":96,\"p97\":97,\"p98\":98,\"p99\":99,\"p100\":100,\"p101\":101,\"p102\":102,\"p103\":103,\"p104\":104,\"p105\":105,\"p106\":106,\"p107\":107,\"p108\":108,\"p109\":109,\"p110\":110,\"p111\":111,\"p112\":112,\"p113\":113,\"p114\":114,\"p115\":115,\"p116\":116,\"p117\":117,\"p118\":118,\"p119\":119,\"p120\":120,\"p121\":121,\"p122\":122,\"p123\":123,\"p124\":124,\"p125\":125,\"p126\":126,\"p127\":127,\"p128\":128}}\n"
+  },
+  {
+    "name": "invalid-handshake-missing-field",
+    "valid": false,
+    "line": "{\"version\":1,\"kind\":\"handshake\",\"id\":\"handshake-1\",\"sequence\":0,\"payload\":{\"nonce\":\"0123456789abcdef\",\"protocolVersion\":1,\"nodeVersion\":\"22.23.1\",\"piVersion\":\"0.82.0\",\"architecture\":\"arm64\",\"capabilities\":[\"status\",\"cancel\"]}}\n"
+  },
+  {
+    "name": "invalid-handshake-extra-field",
+    "valid": false,
+    "line": "{\"version\":1,\"kind\":\"handshake\",\"id\":\"handshake-1\",\"sequence\":0,\"payload\":{\"nonce\":\"0123456789abcdef\",\"desktopVersion\":\"0.1.0\",\"protocolVersion\":1,\"nodeVersion\":\"22.23.1\",\"piVersion\":\"0.82.0\",\"architecture\":\"arm64\",\"capabilities\":[\"status\",\"cancel\"],\"unexpected\":true}}\n"
+  },
+  {
+    "name": "invalid-handshake-nonce-long",
+    "valid": false,
+    "line": "{\"version\":1,\"kind\":\"handshake\",\"id\":\"handshake-1\",\"sequence\":0,\"payload\":{\"nonce\":\"nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn\",\"desktopVersion\":\"0.1.0\",\"protocolVersion\":1,\"nodeVersion\":\"22.23.1\",\"piVersion\":\"0.82.0\",\"architecture\":\"arm64\",\"capabilities\":[\"status\",\"cancel\"]}}\n"
+  },
+  {
+    "name": "invalid-handshake-desktop-long",
+    "valid": false,
+    "line": "{\"version\":1,\"kind\":\"handshake\",\"id\":\"handshake-1\",\"sequence\":0,\"payload\":{\"nonce\":\"0123456789abcdef\",\"desktopVersion\":\"vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\",\"protocolVersion\":1,\"nodeVersion\":\"22.23.1\",\"piVersion\":\"0.82.0\",\"architecture\":\"arm64\",\"capabilities\":[\"status\",\"cancel\"]}}\n"
+  },
+  {
+    "name": "invalid-handshake-node",
+    "valid": false,
+    "line": "{\"version\":1,\"kind\":\"handshake\",\"id\":\"handshake-1\",\"sequence\":0,\"payload\":{\"nonce\":\"0123456789abcdef\",\"desktopVersion\":\"0.1.0\",\"protocolVersion\":1,\"nodeVersion\":\"23.0.0\",\"piVersion\":\"0.82.0\",\"architecture\":\"arm64\",\"capabilities\":[\"status\",\"cancel\"]}}\n"
+  },
+  {
+    "name": "invalid-handshake-duplicate-capability",
+    "valid": false,
+    "line": "{\"version\":1,\"kind\":\"handshake\",\"id\":\"handshake-1\",\"sequence\":0,\"payload\":{\"nonce\":\"0123456789abcdef\",\"desktopVersion\":\"0.1.0\",\"protocolVersion\":1,\"nodeVersion\":\"22.23.1\",\"piVersion\":\"0.82.0\",\"architecture\":\"arm64\",\"capabilities\":[\"status\",\"status\"]}}\n"
+  },
+  {
+    "name": "invalid-handshake-long-capability",
+    "valid": false,
+    "line": "{\"version\":1,\"kind\":\"handshake\",\"id\":\"handshake-1\",\"sequence\":0,\"payload\":{\"nonce\":\"0123456789abcdef\",\"desktopVersion\":\"0.1.0\",\"protocolVersion\":1,\"nodeVersion\":\"22.23.1\",\"piVersion\":\"0.82.0\",\"architecture\":\"arm64\",\"capabilities\":[\"ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"]}}\n"
+  },
+  {
+    "name": "invalid-handshake-capability-count",
+    "valid": false,
+    "line": "{\"version\":1,\"kind\":\"handshake\",\"id\":\"handshake-1\",\"sequence\":0,\"payload\":{\"nonce\":\"0123456789abcdef\",\"desktopVersion\":\"0.1.0\",\"protocolVersion\":1,\"nodeVersion\":\"22.23.1\",\"piVersion\":\"0.82.0\",\"architecture\":\"arm64\",\"capabilities\":[\"cap-0\",\"cap-1\",\"cap-2\",\"cap-3\",\"cap-4\",\"cap-5\",\"cap-6\",\"cap-7\",\"cap-8\",\"cap-9\",\"cap-10\",\"cap-11\",\"cap-12\",\"cap-13\",\"cap-14\",\"cap-15\",\"cap-16\",\"cap-17\",\"cap-18\",\"cap-19\",\"cap-20\",\"cap-21\",\"cap-22\",\"cap-23\",\"cap-24\",\"cap-25\",\"cap-26\",\"cap-27\",\"cap-28\",\"cap-29\",\"cap-30\",\"cap-31\",\"cap-32\",\"cap-33\",\"cap-34\",\"cap-35\",\"cap-36\",\"cap-37\",\"cap-38\",\"cap-39\",\"cap-40\",\"cap-41\",\"cap-42\",\"cap-43\",\"cap-44\",\"cap-45\",\"cap-46\",\"cap-47\",\"cap-48\",\"cap-49\",\"cap-50\",\"cap-51\",\"cap-52\",\"cap-53\",\"cap-54\",\"cap-55\",\"cap-56\",\"cap-57\",\"cap-58\",\"cap-59\",\"cap-60\",\"cap-61\",\"cap-62\",\"cap-63\",\"cap-64\"]}}\n"
+  },
+  {
+    "name": "invalid-method-long",
+    "valid": false,
+    "line": "{\"version\":1,\"kind\":\"request\",\"id\":\"request-1\",\"sequence\":1,\"payload\":{\"method\":\"mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm\"}}\n"
+  },
+  {
+    "name": "invalid-event-type-long",
+    "valid": false,
+    "line": "{\"version\":1,\"kind\":\"event\",\"id\":\"event-1\",\"sequence\":1,\"payload\":{\"eventType\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\"}}\n"
+  },
+  {
+    "name": "invalid-cancel-payload-properties",
+    "valid": false,
+    "line": "{\"version\":1,\"kind\":\"cancel\",\"id\":\"cancel-1\",\"correlationId\":\"request-1\",\"sequence\":2,\"payload\":{\"one\":1,\"two\":2}}\n"
+  },
+  {
+    "name": "valid-error-boundaries",
+    "valid": true,
+    "line": "{\"version\":1,\"kind\":\"request\",\"id\":\"request-1\",\"sequence\":1,\"payload\":{\"method\":\"status\"},\"error\":{\"category\":\"internal\",\"message\":\"mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm\",\"retryable\":false,\"diagnosticId\":\"Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}\n"
+  },
+  {
+    "name": "invalid-error-empty",
+    "valid": false,
+    "line": "{\"version\":1,\"kind\":\"request\",\"id\":\"request-1\",\"sequence\":1,\"payload\":{\"method\":\"status\"},\"error\":{\"category\":\"internal\",\"message\":\"\"}}\n"
+  },
+  {
+    "name": "invalid-error-long",
+    "valid": false,
+    "line": "{\"version\":1,\"kind\":\"request\",\"id\":\"request-1\",\"sequence\":1,\"payload\":{\"method\":\"status\"},\"error\":{\"category\":\"internal\",\"message\":\"mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm\"}}\n"
+  },
+  {
+    "name": "invalid-error-diagnostic-id",
+    "valid": false,
+    "line": "{\"version\":1,\"kind\":\"request\",\"id\":\"request-1\",\"sequence\":1,\"payload\":{\"method\":\"status\"},\"error\":{\"category\":\"internal\",\"message\":\"failed\",\"diagnosticId\":\"bad id\"}}\n"
+  },
+  {
+    "name": "invalid-error-null",
+    "valid": false,
+    "line": "{\"version\":1,\"kind\":\"request\",\"id\":\"request-1\",\"sequence\":1,\"payload\":{\"method\":\"status\"},\"error\":null}\n"
+  },
+  {
+    "name": "invalid-error-retryable-null",
+    "valid": false,
+    "line": "{\"version\":1,\"kind\":\"request\",\"id\":\"request-1\",\"sequence\":1,\"payload\":{\"method\":\"status\"},\"error\":{\"category\":\"internal\",\"message\":\"failed\",\"retryable\":null}}\n"
+  },
+  {
+    "name": "invalid-secret-key-double-separator",
+    "valid": false,
+    "line": "{\"version\":1,\"kind\":\"event\",\"id\":\"event-1\",\"sequence\":1,\"payload\":{\"eventType\":\"sidecar.status\",\"api__key\":\"redacted-fixture\"}}\n"
+  },
+  {
+    "name": "invalid-secret-key-split-token",
+    "valid": false,
+    "line": "{\"version\":1,\"kind\":\"event\",\"id\":\"event-1\",\"sequence\":1,\"payload\":{\"eventType\":\"sidecar.status\",\"to-ken\":\"redacted-fixture\"}}\n"
+  },
+  {
+    "name": "valid-replacement-character",
+    "valid": true,
+    "file": "valid-replacement-character.jsonl"
+  },
+  {
+    "name": "invalid-utf8",
+    "valid": false,
+    "file": "invalid-utf8.bin"
+  }
+]
