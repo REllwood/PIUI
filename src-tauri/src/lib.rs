@@ -1,6 +1,7 @@
 use serde::Serialize;
 
 pub mod commands;
+pub mod credentials;
 pub mod protocol;
 pub mod supervisor;
 
