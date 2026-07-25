@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://piui.local/schema/messages.schema.json",
+  "title": "PIUI protocol payloads",
+  "oneOf": [
+    { "$ref": "#/$defs/handshake" },
+    { "$ref": "#/$defs/request" },
+    { "$ref": "#/$defs/response" },
+    { "$ref": "#/$defs/event" },
+    { "$ref": "#/$defs/hostRequest" },
+    { "$ref": "#/$defs/hostResponse" },
+    { "$ref": "#/$defs/cancel" },
+    { "$ref": "#/$defs/ack" }
+  ],
+  "$defs": {
+    "base": {
+      "type": "object",
+      "required": ["version", "kind", "id", "sequence", "payload"],
+      "properties": {
+        "version": { "type": "integer" },
+        "kind": { "type": "string" },
+        "id": { "type": "string" },
+        "sequence": { "type": "integer" },
+        "payload": { "type": "object" },
+        "correlationId": { "type": "string" }
+      }
+    },
+    "handshake": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "const": "handshake" },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["nonce", "desktopVersion", "protocolVersion", "nodeVersion", "piVersion", "architecture", "capabilities"],
+              "properties": {
+                "nonce": { "type": "string", "minLength": 16, "maxLength": 128 },
+                "desktopVersion": { "type": "string", "maxLength": 64 },
+                "protocolVersion": { "const": 1 },
+                "nodeVersion": { "type": "string", "pattern": "^22\\." },
+                "piVersion": { "const": "0.82.0" },
+                "architecture": { "const": "arm64" },
+                "capabilities": { "type": "array", "maxItems": 64, "uniqueItems": true, "items": { "type": "string", "maxLength": 64 } }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "request": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        { "type": "object", "properties": { "kind": { "const": "request" }, "payload": { "type": "object", "required": ["method"], "properties": { "method": { "type": "string", "maxLength": 96 } } } } }
+      ]
+    },
+    "response": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        { "type": "object", "properties": { "kind": { "const": "response" }, "correlationId": { "type": "string" } }, "required": ["correlationId"] }
+      ]
+    },
+    "event": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        { "type": "object", "properties": { "kind": { "const": "event" }, "payload": { "type": "object", "required": ["eventType"], "properties": { "eventType": { "type": "string", "maxLength": 128 } } } } }
+      ]
+    },
+    "hostRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        { "type": "object", "properties": { "kind": { "const": "host-request" }, "payload": { "type": "object", "required": ["method"], "properties": { "method": { "type": "string", "maxLength": 96 } } } } }
+      ]
+    },
+    "hostResponse": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        { "type": "object", "properties": { "kind": { "const": "host-response" }, "correlationId": { "type": "string" } }, "required": ["correlationId"] }
+      ]
+    },
+    "cancel": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        { "type": "object", "properties": { "kind": { "const": "cancel" }, "correlationId": { "type": "string" } }, "required": ["correlationId"] }
+      ]
+    },
+    "ack": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        { "type": "object", "properties": { "kind": { "const": "ack" }, "correlationId": { "type": "string" } }, "required": ["correlationId"] }
+      ]
+    }
+  }
+}
