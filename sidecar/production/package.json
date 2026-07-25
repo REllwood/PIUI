@@ -1,0 +1,11 @@
+{
+  "name": "@piui/sidecar-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "0.82.0",
+    "ajv": "8.20.0"
+  }
+}
