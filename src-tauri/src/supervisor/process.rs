@@ -395,7 +395,11 @@ impl SidecarSupervisor {
                 }
             };
 
-            if running.snapshot_request.as_deref() == envelope.correlation_id.as_deref() {
+            if running
+                .snapshot_request
+                .as_deref()
+                .is_some_and(|request_id| envelope.correlation_id.as_deref() == Some(request_id))
+            {
                 let snapshot = envelope
                     .payload
                     .get("snapshot")
