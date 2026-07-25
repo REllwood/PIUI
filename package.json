@@ -1,0 +1,49 @@
+{
+  "name": "piui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@9.15.0",
+  "engines": {
+    "node": ">=22.19.0 <23",
+    "pnpm": "9.15.0"
+  },
+  "scripts": {
+    "verify:toolchain": "node scripts/verify-toolchain.mjs",
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "tauri": "tauri",
+    "test:protocol": "pnpm --filter @piui/protocol test",
+    "test:contract": "vitest run tests/contract",
+    "stage:sidecar": "node scripts/fetch-node-runtime.mjs && node scripts/stage-sidecar.mjs",
+    "test:sidecar-closure": "node scripts/test-sidecar-closure.mjs",
+    "test:sidecar-repeat": "node scripts/test-sidecar-repeat.mjs"
+  },
+  "dependencies": {
+    "@piui/protocol": "workspace:*",
+    "@earendil-works/pi-coding-agent": "0.82.0",
+    "@tanstack/react-virtual": "3.14.8",
+    "@tauri-apps/api": "2.11.1",
+    "react": "19.2.8",
+    "react-aria-components": "1.19.0",
+    "react-dom": "19.2.8",
+    "react-markdown": "10.1.0",
+    "remark-gfm": "4.0.1",
+    "shiki": "4.3.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.0",
+    "@tailwindcss/vite": "4.3.3",
+    "@tauri-apps/cli": "2.11.4",
+    "@testing-library/react": "16.3.2",
+    "@types/node": "22.19.11",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.4",
+    "ajv": "8.20.0",
+    "tailwindcss": "4.3.3",
+    "typescript": "7.0.2",
+    "vite": "8.1.5",
+    "vitest": "4.1.10"
+  }
+}

@@ -1,0 +1,48 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+packages/protocol/dist/
+sidecar/dist/
+
+# Rust / Tauri build
+src-tauri/target/
+
+# Staged sidecar binaries & resources (built locally)
+src-tauri/binaries/*
+!src-tauri/binaries/.gitkeep
+src-tauri/resources/sidecar/
+
+# Tauri generated schemas (regenerated on build)
+src-tauri/gen/schemas/
+
+# Cached downloads
+.cache/
+
+# Forge build planning
+.forge/
+
+# Pi subagent artefacts
+.pi-subagents/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor / IDE
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
