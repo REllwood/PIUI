@@ -1,5 +1,6 @@
 use super::handshake::{HandshakeExpectation, protocol_architecture, validate_handshake};
 use super::redact::StderrRedactor;
+use super::router::{SequenceOutcome, SequenceRouter};
 use super::stdio::{FailureSignal, stderr_reader, stdout_reader};
 use crate::protocol::{Envelope, ProtocolKind};
 use serde::Serialize;
@@ -128,6 +129,46 @@ struct RunningSidecar {
     diagnostics: Arc<Mutex<VecDeque<String>>>,
     failure: FailureSignal,
     handshake: Envelope,
+    router: SequenceRouter,
+    outbound_sequence: u64,
+    internal_request_counter: u64,
+    snapshot_request: Option<String>,
+}
+
+impl RunningSidecar {
+    fn write_envelope(&mut self, envelope: &Envelope) -> Result<(), String> {
+        self.outbound_sequence = self.outbound_sequence.max(envelope.sequence);
+        let bytes = serde_json::to_vec(envelope)
+            .map_err(|_| "sidecar request encoding failed".to_string())?;
+        let stdin = self
+            .stdin
+            .as_mut()
+            .ok_or_else(|| "sidecar stdin closed".to_string())?;
+        stdin
+            .write_all(&bytes)
+            .and_then(|_| stdin.write_all(b"\n"))
+            .and_then(|_| stdin.flush())
+            .map_err(|_| "sidecar write failed".to_string())
+    }
+
+    fn internal_request(
+        &mut self,
+        method: &str,
+        payload: serde_json::Map<String, Value>,
+    ) -> Result<Envelope, String> {
+        self.internal_request_counter += 1;
+        self.outbound_sequence += 1;
+        let mut payload = payload;
+        payload.insert("method".into(), Value::String(method.into()));
+        serde_json::from_value(serde_json::json!({
+            "version": 1,
+            "kind": "request",
+            "id": format!("rust-{method}-{}", self.internal_request_counter),
+            "sequence": self.outbound_sequence,
+            "payload": payload,
+        }))
+        .map_err(|_| "internal sidecar request invalid".to_string())
+    }
 }
 
 #[derive(Default)]
@@ -214,6 +255,8 @@ impl SidecarSupervisor {
             let _ = terminate_group(&mut child);
             error
         })?;
+        let mut router = SequenceRouter::default();
+        router.apply_snapshot(handshake.sequence);
         self.running = Some(RunningSidecar {
             child,
             stdin: Some(stdin),
@@ -223,6 +266,10 @@ impl SidecarSupervisor {
             diagnostics,
             failure,
             handshake,
+            router,
+            outbound_sequence: 0,
+            internal_request_counter: 0,
+            snapshot_request: None,
         });
         let status = self.status();
         if status.failed {
@@ -252,9 +299,12 @@ impl SidecarSupervisor {
         let Some(running) = self.running.as_mut() else {
             return stopped_status(self.last_failure.clone());
         };
-        if running.child.try_wait().ok().flatten().is_some() {
+        if let Some(exit) = running.child.try_wait().ok().flatten() {
             self.running = None;
-            self.last_failure = Some("sidecar exited unexpectedly".into());
+            self.last_failure = Some(match exit.code() {
+                Some(code) => format!("sidecar exited unexpectedly (code {code})"),
+                None => "sidecar exited unexpectedly (signal)".into(),
+            });
             return stopped_status(self.last_failure.clone());
         }
         SidecarStatus {
@@ -289,23 +339,21 @@ impl SidecarSupervisor {
                 .failure
                 .unwrap_or_else(|| "sidecar is not running".into()));
         }
-        let running = self.running.as_mut().expect("running status has sidecar");
-        let request = serde_json::json!({"version":1,"kind":"request","id":"rust-status","sequence":1,"payload":{"method":"status"}});
-        let bytes = format!("{}\n", request);
-        running
-            .stdin
-            .as_mut()
-            .ok_or_else(|| "sidecar stdin closed".to_string())?
-            .write_all(bytes.as_bytes())
-            .map_err(|_| "sidecar write failed".to_string())?;
-        match running.messages.recv_timeout(Duration::from_secs(5)) {
-            Ok(Ok(envelope)) if envelope.kind == ProtocolKind::Response => Ok(envelope),
-            Ok(Err(error)) => {
-                self.last_failure = Some(error.clone());
-                self.stop()?;
-                Err(error)
+        let request = {
+            let running = self.running.as_mut().expect("running status has sidecar");
+            running.internal_request("status", serde_json::Map::new())?
+        };
+        let request_id = request.id.clone();
+        self.send_envelope(&request)?;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let envelope =
+                self.receive_envelope(deadline.saturating_duration_since(Instant::now()))?;
+            if envelope.kind == ProtocolKind::Response
+                && envelope.correlation_id.as_deref() == Some(request_id.as_str())
+            {
+                return Ok(envelope);
             }
-            _ => Err("sidecar response timed out".into()),
         }
     }
 
@@ -316,18 +364,10 @@ impl SidecarSupervisor {
                 .failure
                 .unwrap_or_else(|| "sidecar is not running".into()));
         }
-        let running = self.running.as_mut().expect("running status has sidecar");
-        let bytes = serde_json::to_vec(envelope)
-            .map_err(|_| "sidecar request encoding failed".to_string())?;
-        let stdin = running
-            .stdin
+        self.running
             .as_mut()
-            .ok_or_else(|| "sidecar stdin closed".to_string())?;
-        stdin
-            .write_all(&bytes)
-            .and_then(|_| stdin.write_all(b"\n"))
-            .and_then(|_| stdin.flush())
-            .map_err(|_| "sidecar write failed".to_string())
+            .expect("running status has sidecar")
+            .write_envelope(envelope)
     }
 
     pub fn receive_envelope(&mut self, timeout: Duration) -> Result<Envelope, String> {
@@ -337,15 +377,47 @@ impl SidecarSupervisor {
                 .failure
                 .unwrap_or_else(|| "sidecar is not running".into()));
         }
+        let deadline = Instant::now() + timeout;
         let running = self.running.as_mut().expect("running status has sidecar");
-        match running.messages.recv_timeout(timeout) {
-            Ok(Ok(envelope)) => Ok(envelope),
-            Ok(Err(error)) => Err(error),
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                Err("sidecar receive timed out".into())
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err("sidecar receive timed out".into());
             }
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                Err("sidecar response channel closed".into())
+            let envelope = match running.messages.recv_timeout(remaining) {
+                Ok(Ok(envelope)) => envelope,
+                Ok(Err(error)) => return Err(error),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    return Err("sidecar receive timed out".into());
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err("sidecar response channel closed".into());
+                }
+            };
+
+            if running.snapshot_request.as_deref() == envelope.correlation_id.as_deref()
+                && envelope.kind == ProtocolKind::Response
+            {
+                running.router.apply_snapshot(envelope.sequence);
+                running.snapshot_request = None;
+                continue;
+            }
+
+            match running.router.observe(&envelope) {
+                SequenceOutcome::Accepted => return Ok(envelope),
+                SequenceOutcome::Duplicate | SequenceOutcome::Stale => continue,
+                SequenceOutcome::Gap => {
+                    if running.router.take_resynchronisation() {
+                        let mut payload = serde_json::Map::new();
+                        payload.insert(
+                            "afterSequence".into(),
+                            Value::from(envelope.sequence.saturating_sub(1)),
+                        );
+                        let request = running.internal_request("snapshot", payload)?;
+                        running.snapshot_request = Some(request.id.clone());
+                        running.write_envelope(&request)?;
+                    }
+                }
             }
         }
     }

@@ -71,7 +71,8 @@ mod tests {
           "payload":{"nonce":"0123456789abcdef","desktopVersion":"0.1.0","protocolVersion":1,
           "nodeVersion":"22.23.1","piVersion":"0.82.0","architecture":"arm64",
           "capabilities":["cancel","status","stream","host-credentials"]}
-        })).unwrap()
+        }))
+        .unwrap()
     }
 
     #[test]
@@ -98,10 +99,9 @@ mod tests {
         }
 
         let mut missing_capability = fixture();
-        missing_capability.payload.insert(
-            "capabilities".into(),
-            json!(["cancel", "status", "stream"]),
-        );
+        missing_capability
+            .payload
+            .insert("capabilities".into(), json!(["cancel", "status", "stream"]));
         assert_eq!(
             validate_handshake(&missing_capability, &expected),
             Err("incompatible-sidecar".into())

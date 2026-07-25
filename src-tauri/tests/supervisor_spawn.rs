@@ -9,17 +9,21 @@ fn supervisor_spawn_has_one_child_valid_pipes_no_listener_and_clean_stop() {
     assert!(status.running);
     assert_eq!(status.node_version.as_deref(), Some("22.23.1"));
     assert_eq!(status.pi_version.as_deref(), Some("0.82.0"));
-    assert!(
-        supervisor.start(&paths).is_err(),
-        "second child must be rejected"
-    );
-    let response = supervisor.request_status().expect("valid status response");
+    let response = supervisor.request_status().unwrap_or_else(|error| {
+        let status = supervisor.status();
+        let diagnostics = supervisor.diagnostics();
+        panic!("valid status response: {error}; status={status:?}; diagnostics={diagnostics:?}")
+    });
     assert_eq!(
         response
             .payload
             .get("status")
             .and_then(|value| value.as_str()),
         Some("ready")
+    );
+    assert!(
+        supervisor.start(&paths).is_err(),
+        "second child must be rejected"
     );
     let pid = status.pid.expect("child PID");
     let listeners = Command::new("lsof")

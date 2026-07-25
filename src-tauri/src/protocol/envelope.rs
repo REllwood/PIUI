@@ -113,7 +113,11 @@ impl ProtocolDecoder {
             }
             if !matches!(
                 event_type,
-                "sidecar.status" | "stream.delta" | "stream.complete" | "tool.activity"
+                "sidecar.status"
+                    | "stream.delta"
+                    | "stream.complete"
+                    | "stream.cancelled"
+                    | "tool.activity"
             ) {
                 let keys = envelope
                     .payload
