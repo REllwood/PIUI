@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ProtocolEnvelope } from '@piui/protocol';
+import { BridgeClient } from '../bridge/client';
 
 export type StreamProbeEvent = {
   text?: string;
@@ -7,8 +8,9 @@ export type StreamProbeEvent = {
 };
 
 type StreamHarness = {
-  start: (requestId: string) => void | Promise<void>;
-  cancel: (requestId: string) => void | Promise<void>;
+  start: (request: ProtocolEnvelope) => void | Promise<void>;
+  cancel: (cancellation: ProtocolEnvelope) => void | Promise<void>;
+  send: (envelope: ProtocolEnvelope) => void | Promise<void>;
 };
 
 declare global {
@@ -26,20 +28,29 @@ export function StreamProbe({
 }) {
   const [text, setText] = useState('');
   const [terminal, setTerminal] = useState<'running' | 'complete' | 'cancelled'>('running');
-  const queued = useRef('');
+  const queuedText = useRef('');
+  const queuedTerminal = useRef<'complete' | 'cancelled' | null>(null);
   const frame = useRef<number | null>(null);
 
   useEffect(() => {
+    const flushInFrame = () => {
+      if (frame.current !== null) return;
+      frame.current = requestAnimationFrame(() => {
+        if (queuedText.current) {
+          setText((current) => current + queuedText.current);
+          queuedText.current = '';
+        }
+        if (queuedTerminal.current) {
+          setTerminal(queuedTerminal.current);
+          queuedTerminal.current = null;
+        }
+        frame.current = null;
+      });
+    };
     const unsubscribe = subscribe((event) => {
-      if (event.text) queued.current += event.text;
-      if (queued.current && frame.current === null) {
-        frame.current = requestAnimationFrame(() => {
-          setText((current) => current + queued.current);
-          queued.current = '';
-          frame.current = null;
-        });
-      }
-      if (event.terminal) setTerminal(event.terminal);
+      if (event.text) queuedText.current += event.text;
+      if (event.terminal) queuedTerminal.current = event.terminal;
+      flushInFrame();
     });
     return () => {
       unsubscribe();
@@ -63,7 +74,12 @@ export function StreamProbe({
 }
 
 export function StreamProbeRoute() {
-  const requestId = useRef('stream-probe-1');
+  const bridge = useRef<BridgeClient | null>(null);
+  bridge.current ??= new BridgeClient({ idPrefix: 'stream-window', requestTimeoutMs: 5_000 });
+  const request = useRef<ProtocolEnvelope | null>(null);
+  request.current ??= bridge.current.createRequest('stream.fixture');
+  const cancellation = useRef<ProtocolEnvelope | null>(null);
+  const startIssued = useRef(false);
   const listeners = useRef(new Set<(event: StreamProbeEvent) => void>());
 
   const subscribe = useCallback((accept: (event: StreamProbeEvent) => void) => {
@@ -77,15 +93,47 @@ export function StreamProbeRoute() {
     const deliver = (event: StreamProbeEvent) => {
       for (const listener of listeners.current) listener(event);
     };
+    const acceptEnvelope = (envelope: ProtocolEnvelope) => {
+      const outcome = bridge.current?.receive(envelope);
+      if (outcome === 'gap') {
+        const snapshot = bridge.current?.takeResynchronisationRequest();
+        if (snapshot) {
+          if (window.__PIUI_STREAM_HARNESS__) void window.__PIUI_STREAM_HARNESS__.send(snapshot);
+          else {
+            void import('@tauri-apps/api/core').then(({ invoke }) =>
+              invoke('bridge_send', { envelope: snapshot }),
+            );
+          }
+        }
+        return;
+      }
+      if (outcome !== 'accepted') return;
+      if (
+        envelope.kind !== 'event' ||
+        envelope.correlationId !== request.current?.id
+      ) {
+        return;
+      }
+      deliver({
+        text: typeof envelope.payload.text === 'string' ? envelope.payload.text : undefined,
+        terminal:
+          envelope.payload.terminal === 'complete' || envelope.payload.terminal === 'cancelled'
+            ? envelope.payload.terminal
+            : undefined,
+      });
+    };
 
     void (async () => {
       if (window.__PIUI_STREAM_HARNESS__) {
         const receive = (event: Event) => {
-          deliver((event as CustomEvent<StreamProbeEvent>).detail);
+          acceptEnvelope((event as CustomEvent<ProtocolEnvelope>).detail);
         };
-        window.addEventListener('piui-stream-event', receive);
-        unlisten = () => window.removeEventListener('piui-stream-event', receive);
-        await window.__PIUI_STREAM_HARNESS__.start(requestId.current);
+        window.addEventListener('piui-bridge-envelope', receive);
+        unlisten = () => window.removeEventListener('piui-bridge-envelope', receive);
+        if (!startIssued.current) {
+          startIssued.current = true;
+          await window.__PIUI_STREAM_HARNESS__.start(request.current!);
+        }
         return;
       }
 
@@ -94,20 +142,17 @@ export function StreamProbeRoute() {
         import('@tauri-apps/api/core'),
       ]);
       const stopListening = await listen<ProtocolEnvelope>('piui://stream-probe', ({ payload }) => {
-        deliver({
-          text: typeof payload.payload.text === 'string' ? payload.payload.text : undefined,
-          terminal:
-            payload.payload.terminal === 'complete' || payload.payload.terminal === 'cancelled'
-              ? payload.payload.terminal
-              : undefined,
-        });
+        acceptEnvelope(payload);
       });
       if (disposed) {
         stopListening();
         return;
       }
       unlisten = stopListening;
-      await invoke('stream_probe', { requestId: requestId.current });
+      if (!startIssued.current) {
+        startIssued.current = true;
+        await invoke('stream_probe', { request: request.current });
+      }
     })().catch(() => deliver({ terminal: 'cancelled' }));
 
     return () => {
@@ -117,12 +162,13 @@ export function StreamProbeRoute() {
   }, []);
 
   const cancel = useCallback(() => {
+    cancellation.current ??= bridge.current!.createCancellation(request.current!.id);
     if (window.__PIUI_STREAM_HARNESS__) {
-      void window.__PIUI_STREAM_HARNESS__.cancel(requestId.current);
+      void window.__PIUI_STREAM_HARNESS__.cancel(cancellation.current);
       return;
     }
     void import('@tauri-apps/api/core').then(({ invoke }) =>
-      invoke('cancel_stream', { requestId: requestId.current }),
+      invoke('cancel_stream', { cancellation: cancellation.current }),
     );
   }, []);
 

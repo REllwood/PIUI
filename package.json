@@ -15,6 +15,7 @@
     "tauri": "tauri",
     "test:protocol": "pnpm --filter @piui/protocol test",
     "test:contract": "vitest run tests/contract",
+    "test:streaming": "playwright test tests/e2e/spike-stream.spec.ts",
     "stage:sidecar": "node scripts/fetch-node-runtime.mjs && node scripts/stage-sidecar.mjs",
     "test:sidecar-closure": "node scripts/test-sidecar-closure.mjs",
     "test:sidecar-repeat": "node scripts/test-sidecar-repeat.mjs"

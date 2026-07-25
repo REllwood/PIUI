@@ -56,6 +56,16 @@ describe('private protocol codec', () => {
     });
   });
 
+  it('preserves the authoritative cancelled stream terminal', () => {
+    const decoder = new ProtocolDecoder();
+    const lines = fixtureLines('valid-messages.jsonl');
+    const messages = lines.map((line) => decoder.decode(line));
+    expect(messages.at(-1)?.payload).toEqual({
+      eventType: 'stream.cancelled',
+      terminal: 'cancelled',
+    });
+  });
+
   it('round trips a bounded known envelope', () => {
     const envelope: ProtocolEnvelope = { version: 1, kind: 'event', id: 'round-trip', sequence: 9, payload: { eventType: 'sidecar.status', status: 'ready' } };
     expect(new ProtocolDecoder().decode(encodeEnvelope(envelope))).toEqual(envelope);

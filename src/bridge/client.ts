@@ -56,22 +56,43 @@ export class BridgeClient {
     return request;
   }
 
-  receive(envelope: ProtocolEnvelope): 'accepted' | 'duplicate' | 'stale' | 'gap' {
-    if (
-      (envelope.kind === 'ack' || envelope.kind === 'response') &&
-      envelope.correlationId
-    ) {
-      if (this.#acknowledged.has(envelope.correlationId)) return 'duplicate';
-      this.#rememberAcknowledgement(envelope.correlationId);
-      this.#inFlight.delete(envelope.correlationId);
-    }
+  createCancellation(correlationId: string): ProtocolEnvelope {
+    if (this.#inFlight.size >= this.#maxInFlight) throw new Error('bridge-capacity-exceeded');
+    const id = `${this.#idPrefix}-${++this.#requestCounter}`;
+    const cancellation: ProtocolEnvelope = {
+      version: 1,
+      kind: 'cancel',
+      id,
+      correlationId,
+      sequence: ++this.#outgoingSequence,
+      payload: {},
+    };
+    this.#inFlight.set(id, {
+      deadline: this.#now() + this.#requestTimeoutMs,
+      method: 'cancel',
+    });
+    return cancellation;
+  }
 
+  receive(envelope: ProtocolEnvelope): 'accepted' | 'duplicate' | 'stale' | 'gap' {
     if (envelope.sequence <= this.#incomingSequence) {
       return envelope.sequence === this.#incomingSequence ? 'duplicate' : 'stale';
     }
     if (this.#incomingSequence !== 0 && envelope.sequence !== this.#incomingSequence + 1) {
       this.#resynchronisationNeeded = true;
       return 'gap';
+    }
+
+    if (
+      (envelope.kind === 'ack' || envelope.kind === 'response') &&
+      envelope.correlationId
+    ) {
+      if (this.#acknowledged.has(envelope.correlationId)) {
+        this.#incomingSequence = envelope.sequence;
+        return 'duplicate';
+      }
+      this.#rememberAcknowledgement(envelope.correlationId);
+      this.#inFlight.delete(envelope.correlationId);
     }
 
     this.#incomingSequence = envelope.sequence;

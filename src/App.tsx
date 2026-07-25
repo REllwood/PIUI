@@ -9,6 +9,14 @@ type HostStatus = {
   listener: false;
 };
 
+type SidecarStatus = {
+  running: boolean;
+  failed: boolean;
+  protocolVersion?: number;
+  nodeVersion?: string;
+  piVersion?: string;
+};
+
 export function App() {
   return new URLSearchParams(window.location.search).get('spike') === 'stream' ? (
     <StreamProbeRoute />
@@ -19,16 +27,24 @@ export function App() {
 
 function ArchitectureGate() {
   const [host, setHost] = useState<HostStatus | null>(null);
+  const [sidecar, setSidecar] = useState<SidecarStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
-    invoke<HostStatus>('host_status')
-      .then((status) => {
-        if (active) setHost(status);
+    void Promise.all([
+      invoke<HostStatus>('host_status'),
+      invoke<SidecarStatus>('sidecar_start'),
+    ])
+      .then(([hostStatus, sidecarStatus]) => {
+        if (!active) return;
+        setHost(hostStatus);
+        setSidecar(sidecarStatus);
       })
       .catch(() => {
-        if (active) setError('The native host did not respond.');
+        if (active) {
+          setError('PIUI’s local helper is incompatible. Reinstall PIUI or open Diagnostics.');
+        }
       });
     return () => {
       active = false;
@@ -47,6 +63,10 @@ function ArchitectureGate() {
           <div>
             <dt>Native host</dt>
             <dd>{host ? 'Ready' : (error ?? 'Checking…')}</dd>
+          </div>
+          <div>
+            <dt>Local helper</dt>
+            <dd>{sidecar?.running ? 'Compatible' : (error ?? 'Checking…')}</dd>
           </div>
           <div>
             <dt>Transport</dt>

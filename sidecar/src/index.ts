@@ -42,10 +42,31 @@ process.stdin.on('data', (chunk: Buffer) => {
   while (true) {
     const lf = input.indexOf(0x0a); if (lf < 0) break;
     const line = input.subarray(0, lf + 1); input = input.subarray(lf + 1);
-    try { void route(decoder.decode(line)).catch(() => { diagnostic('request failed'); process.exitCode = 70; }); }
-    catch { diagnostic('invalid protocol input rejected'); process.exitCode = 65; process.stdin.destroy(); return; }
+    try {
+      const incoming = decoder.decode(line);
+      void route(incoming)
+        .catch(() => {
+          diagnostic('request failed');
+          process.exitCode = 70;
+        })
+        .finally(() => decoder.acknowledge(incoming.id));
+    } catch {
+      diagnostic('invalid protocol input rejected');
+      process.exitCode = 65;
+      process.stdin.destroy();
+      return;
+    }
   }
 });
-process.stdin.on('end', () => { for (const controller of streams.values()) controller.abort(); process.exit(0); });
+// Keep the inherited parent pipe authoritative for the complete sidecar
+// lifetime. Explicit resume avoids runtime-dependent early event-loop exit
+// between the handshake and the first desktop request.
+process.stdin.resume();
+const parentPipeLiveness = setInterval(() => undefined, 60_000);
+process.stdin.on('end', () => {
+  clearInterval(parentPipeLiveness);
+  for (const controller of streams.values()) controller.abort();
+  process.exit(0);
+});
 process.on('uncaughtException', () => { diagnostic('uncaught sidecar error'); process.exit(70); });
 process.on('unhandledRejection', () => { diagnostic('unhandled sidecar rejection'); process.exit(70); });

@@ -8,7 +8,13 @@ const ajv = new Ajv2020({ allErrors: true, strict: true, strictRequired: false }
 const validateEnvelope = ajv.compile(envelopeSchema) as ValidateFunction<ProtocolEnvelope>;
 const validateMessage = ajv.compile(messagesSchema) as ValidateFunction<ProtocolEnvelope>;
 const secretNeedles = ['secret', 'token', 'password', 'apikey', 'authorization', 'credential'] as const;
-const knownEvents = new Set(['sidecar.status', 'stream.delta', 'stream.complete', 'tool.activity']);
+const knownEvents = new Set([
+  'sidecar.status',
+  'stream.delta',
+  'stream.complete',
+  'stream.cancelled',
+  'tool.activity',
+]);
 
 export class ProtocolValidationError extends Error {
   readonly category = 'invalid-request' as const;
