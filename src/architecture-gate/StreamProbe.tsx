@@ -4,6 +4,7 @@ import { BridgeClient } from '../bridge/client';
 
 export type StreamProbeEvent = {
   text?: string;
+  replaceText?: string;
   terminal?: 'complete' | 'cancelled';
 };
 
@@ -29,6 +30,7 @@ export function StreamProbe({
   const [text, setText] = useState('');
   const [terminal, setTerminal] = useState<'running' | 'complete' | 'cancelled'>('running');
   const queuedText = useRef('');
+  const queuedReplacementText = useRef<string | null>(null);
   const queuedTerminal = useRef<'complete' | 'cancelled' | null>(null);
   const frame = useRef<number | null>(null);
 
@@ -37,15 +39,19 @@ export function StreamProbe({
       if (frame.current !== null) return;
       frame.current = requestAnimationFrame(() => {
         const textToAppend = queuedText.current;
+        const replacementText = queuedReplacementText.current;
         const terminalToApply = queuedTerminal.current;
         queuedText.current = '';
+        queuedReplacementText.current = null;
         queuedTerminal.current = null;
-        if (textToAppend) setText((current) => current + textToAppend);
+        if (replacementText !== null) setText(replacementText + textToAppend);
+        else if (textToAppend) setText((current) => current + textToAppend);
         if (terminalToApply) setTerminal(terminalToApply);
         frame.current = null;
       });
     };
     const unsubscribe = subscribe((event) => {
+      if (event.replaceText !== undefined) queuedReplacementText.current = event.replaceText;
       if (event.text) queuedText.current += event.text;
       if (event.terminal) queuedTerminal.current = event.terminal;
       flushInFrame();
@@ -105,13 +111,26 @@ export function StreamProbeRoute() {
           (snapshot as { state?: unknown }).state !== null &&
           !Array.isArray((snapshot as { state?: unknown }).state)
         ) {
-          bridge.current?.applySnapshot(
-            {
-              sequence: envelope.sequence,
-              state: (snapshot as { state: Record<string, unknown> }).state,
-            },
+          const state = (snapshot as { state: Record<string, unknown> }).state;
+          const applied = bridge.current?.applySnapshot(
+            { sequence: envelope.sequence, state },
             envelope.correlationId,
           );
+          const streams = state.streams;
+          const stream =
+            typeof streams === 'object' && streams !== null && !Array.isArray(streams)
+              ? (streams as Record<string, unknown>)[request.current!.id]
+              : undefined;
+          if (applied && typeof stream === 'object' && stream !== null && !Array.isArray(stream)) {
+            const streamState = stream as { text?: unknown; terminal?: unknown };
+            deliver({
+              replaceText: typeof streamState.text === 'string' ? streamState.text : '',
+              terminal:
+                streamState.terminal === 'complete' || streamState.terminal === 'cancelled'
+                  ? streamState.terminal
+                  : undefined,
+            });
+          }
         }
         return;
       }

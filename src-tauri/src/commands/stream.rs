@@ -1,6 +1,6 @@
-use crate::commands::bridge::BridgeState;
-use crate::protocol::{Envelope, ProtocolKind};
-use crate::supervisor::{SidecarSupervisor, SupervisorPaths};
+use crate::commands::bridge::{BridgeState, bridge_start_transport};
+use crate::protocol::{Envelope, ProtocolKind, validate_envelope};
+use crate::supervisor::SidecarSupervisor;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, mpsc::SyncSender};
 use std::time::{Duration, Instant};
@@ -14,14 +14,9 @@ pub async fn stream_probe(
     state: State<'_, BridgeState>,
     request: Envelope,
 ) -> Result<(), String> {
-    validate_stream_request(&request)?;
-    let supervisor = state.supervisor();
-    let paths = state.paths();
-    let waiters = state.acknowledgement_waiters();
-
+    let transport = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        run_stream(supervisor, paths, request, |envelope| {
-            resolve_acknowledgement(&waiters, envelope);
+        run_stream_transport(&transport, request, |envelope| {
             app.emit(STREAM_EVENT, envelope)
                 .map_err(|_| "stream event delivery failed".to_string())
         })
@@ -32,6 +27,10 @@ pub async fn stream_probe(
 
 #[tauri::command]
 pub fn cancel_stream(state: State<'_, BridgeState>, cancellation: Envelope) -> Result<(), String> {
+    cancel_stream_transport(state.inner(), cancellation)
+}
+
+pub fn cancel_stream_transport(state: &BridgeState, cancellation: Envelope) -> Result<(), String> {
     validate_cancellation(&cancellation)?;
     let cancellation_id = cancellation.id.clone();
     let receiver = state.register_acknowledgement(cancellation_id.clone())?;
@@ -54,9 +53,24 @@ pub fn cancel_stream(state: State<'_, BridgeState>, cancellation: Envelope) -> R
     }
 }
 
-pub fn run_stream<F>(
+pub fn run_stream_transport<F>(
+    state: &BridgeState,
+    request: Envelope,
+    mut deliver: F,
+) -> Result<(), String>
+where
+    F: FnMut(&Envelope) -> Result<(), String>,
+{
+    bridge_start_transport(state)?;
+    let waiters = state.acknowledgement_waiters();
+    run_stream(state.supervisor(), request, |envelope| {
+        resolve_acknowledgement(&waiters, envelope);
+        deliver(envelope)
+    })
+}
+
+fn run_stream<F>(
     supervisor: Arc<Mutex<SidecarSupervisor>>,
-    paths: SupervisorPaths,
     request: Envelope,
     mut deliver: F,
 ) -> Result<(), String>
@@ -64,25 +78,31 @@ where
     F: FnMut(&Envelope) -> Result<(), String>,
 {
     validate_stream_request(&request)?;
-    {
+    let generation = {
         let mut supervisor = supervisor
             .lock()
             .map_err(|_| "sidecar state unavailable".to_string())?;
-        if !supervisor.status().running {
-            supervisor.start(&paths)?;
+        let status = supervisor.status();
+        if !status.running {
+            return Err("sidecar unavailable".into());
         }
-        supervisor.send_envelope(&request)?;
-    }
+        let generation = status
+            .generation
+            .ok_or_else(|| "sidecar generation unavailable".to_string())?;
+        supervisor.send_for_generation(generation, &request)?;
+        generation
+    };
 
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let result = supervisor
             .lock()
             .map_err(|_| "sidecar state unavailable".to_string())?
-            .receive_envelope(Duration::from_millis(100));
+            .receive_for_generation(generation, Duration::from_millis(100));
         let envelope = match result {
             Ok(envelope) => envelope,
             Err(error) if error == "sidecar receive timed out" && Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(1));
                 continue;
             }
             Err(error) => return Err(error),
@@ -111,6 +131,10 @@ where
         {
             return Ok(());
         }
+        // The receiver and command writers share one narrow supervisor. Yield
+        // between envelopes so cancellation and snapshot commands cannot be
+        // starved by a hot receive loop.
+        std::thread::sleep(Duration::from_millis(1));
     }
 }
 
@@ -139,7 +163,8 @@ fn resolve_acknowledgement(
 }
 
 fn validate_stream_request(request: &Envelope) -> Result<(), String> {
-    if request.kind != ProtocolKind::Request
+    if validate_envelope(request).is_err()
+        || request.kind != ProtocolKind::Request
         || request
             .payload
             .get("method")
@@ -153,7 +178,8 @@ fn validate_stream_request(request: &Envelope) -> Result<(), String> {
 }
 
 fn validate_cancellation(cancellation: &Envelope) -> Result<(), String> {
-    if cancellation.kind != ProtocolKind::Cancel
+    if validate_envelope(cancellation).is_err()
+        || cancellation.kind != ProtocolKind::Cancel
         || cancellation
             .correlation_id
             .as_deref()

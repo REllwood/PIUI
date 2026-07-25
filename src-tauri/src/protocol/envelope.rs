@@ -176,7 +176,7 @@ fn validate_raw_envelope(value: &Value) -> Result<(), ProtocolError> {
     Ok(())
 }
 
-fn validate_envelope(envelope: &Envelope) -> Result<(), ProtocolError> {
+pub fn validate_envelope(envelope: &Envelope) -> Result<(), ProtocolError> {
     if envelope.version != 1 {
         return Err(ProtocolError("unsupported version"));
     }

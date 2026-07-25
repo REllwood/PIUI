@@ -11,7 +11,7 @@ export async function streamFixture(
 ): Promise<'complete' | 'cancelled'> {
   for (const [index, text] of chunks.entries()) {
     if (signal.aborted) break;
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    await new Promise((resolve) => setTimeout(resolve, 700));
     if (signal.aborted) break;
     write(router.next('event', `${request.id}-chunk-${index}`, { eventType: 'stream.delta', text }, request.id));
   }

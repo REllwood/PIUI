@@ -114,6 +114,7 @@ pub struct SidecarStatus {
     pub running: bool,
     pub failed: bool,
     pub failure: Option<String>,
+    pub generation: Option<u64>,
     pub pid: Option<u32>,
     pub protocol_version: Option<u64>,
     pub node_version: Option<String>,
@@ -121,6 +122,7 @@ pub struct SidecarStatus {
 }
 
 struct RunningSidecar {
+    generation: u64,
     child: Child,
     stdin: Option<ChildStdin>,
     messages: Receiver<Result<Envelope, String>>,
@@ -175,6 +177,7 @@ impl RunningSidecar {
 pub struct SidecarSupervisor {
     running: Option<RunningSidecar>,
     last_failure: Option<String>,
+    generation: u64,
 }
 
 impl SidecarSupervisor {
@@ -193,6 +196,7 @@ impl SidecarSupervisor {
             .env("NODE_ENV", "production")
             .env("PIUI_DESKTOP_VERSION", env!("CARGO_PKG_VERSION"))
             .env("PIUI_HANDSHAKE_NONCE", &nonce)
+            .env("PIUI_OWN_PROCESS_GROUP", "1")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -226,19 +230,19 @@ impl SidecarSupervisor {
             Ok(Ok(envelope)) if envelope.kind == ProtocolKind::Handshake => envelope,
             Ok(Err(error)) => {
                 self.last_failure = Some(error.clone());
-                let _ = terminate_group(&mut child);
+                let _ = terminate_group(&mut child, process_group);
                 return Err(error);
             }
             Ok(Ok(_)) => {
                 let error = "sidecar handshake was not the first protocol envelope".to_string();
                 self.last_failure = Some(error.clone());
-                let _ = terminate_group(&mut child);
+                let _ = terminate_group(&mut child, process_group);
                 return Err(error);
             }
             Err(_) => {
                 let error = "sidecar handshake timed out".to_string();
                 self.last_failure = Some(error.clone());
-                let _ = terminate_group(&mut child);
+                let _ = terminate_group(&mut child, process_group);
                 return Err(error);
             }
         };
@@ -252,12 +256,17 @@ impl SidecarSupervisor {
         )
         .map_err(|error| {
             self.last_failure = Some(error.clone());
-            let _ = terminate_group(&mut child);
+            let _ = terminate_group(&mut child, process_group);
             error
         })?;
         let mut router = SequenceRouter::default();
         router.apply_snapshot(handshake.sequence);
+        self.generation = self
+            .generation
+            .checked_add(1)
+            .ok_or_else(|| "sidecar generation exhausted".to_string())?;
         self.running = Some(RunningSidecar {
+            generation: self.generation,
             child,
             stdin: Some(stdin),
             messages: receiver,
@@ -311,6 +320,7 @@ impl SidecarSupervisor {
             running: true,
             failed: false,
             failure: None,
+            generation: Some(running.generation),
             pid: Some(running.child.id()),
             protocol_version: running
                 .handshake
@@ -330,6 +340,36 @@ impl SidecarSupervisor {
                 .and_then(Value::as_str)
                 .map(str::to_owned),
         }
+    }
+
+    pub fn current_generation(&self) -> Option<u64> {
+        self.running.as_ref().map(|running| running.generation)
+    }
+
+    pub fn send_for_generation(
+        &mut self,
+        generation: u64,
+        envelope: &Envelope,
+    ) -> Result<(), String> {
+        if self.current_generation() != Some(generation) {
+            return Err("stale sidecar generation".into());
+        }
+        self.send_envelope(envelope)
+    }
+
+    pub fn receive_for_generation(
+        &mut self,
+        generation: u64,
+        timeout: Duration,
+    ) -> Result<Envelope, String> {
+        if self.current_generation() != Some(generation) {
+            return Err("stale sidecar generation".into());
+        }
+        let envelope = self.receive_envelope(timeout)?;
+        if self.current_generation() != Some(generation) {
+            return Err("stale sidecar generation".into());
+        }
+        Ok(envelope)
     }
 
     pub fn request_status(&mut self) -> Result<Envelope, String> {
@@ -465,20 +505,21 @@ impl SidecarSupervisor {
                 self.last_failure = failure.clone();
             }
         }
+        let process_group = running.child.id() as i32;
         running.stdin.take();
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while Instant::now() < deadline {
+        let graceful_deadline = Instant::now() + Duration::from_millis(500);
+        while Instant::now() < graceful_deadline {
             if running
                 .child
                 .try_wait()
                 .map_err(|_| "sidecar wait failed".to_string())?
                 .is_some()
             {
-                return Ok(());
+                break;
             }
             std::thread::sleep(Duration::from_millis(20));
         }
-        terminate_group(&mut running.child)
+        terminate_group(&mut running.child, process_group)
     }
 
     pub fn diagnostics(&self) -> Vec<String> {
@@ -514,29 +555,40 @@ fn stopped_status(failure: Option<String>) -> SidecarStatus {
         running: false,
         failed: failure.is_some(),
         failure,
+        generation: None,
         pid: None,
         protocol_version: None,
         node_version: None,
         pi_version: None,
     }
 }
-fn terminate_group(child: &mut Child) -> Result<(), String> {
-    let pid = child.id() as i32;
-    unsafe {
-        libc::kill(-pid, libc::SIGTERM);
-    }
-    let deadline = Instant::now() + Duration::from_secs(1);
+fn terminate_group(child: &mut Child, process_group: i32) -> Result<(), String> {
+    signal_group(process_group, libc::SIGTERM);
+    let deadline = Instant::now() + Duration::from_millis(500);
     while Instant::now() < deadline {
-        if child.try_wait().ok().flatten().is_some() {
+        let _ = child.try_wait();
+        if !group_is_alive(process_group) {
             return Ok(());
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    unsafe {
-        libc::kill(-pid, libc::SIGKILL);
-    }
+    signal_group(process_group, libc::SIGKILL);
     child
         .wait()
         .map(|_| ())
         .map_err(|_| "sidecar termination failed".into())
+}
+
+fn signal_group(process_group: i32, signal: i32) {
+    unsafe {
+        libc::kill(-process_group, signal);
+    }
+}
+
+fn group_is_alive(process_group: i32) -> bool {
+    let result = unsafe { libc::kill(-process_group, 0) };
+    if result == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
 }
