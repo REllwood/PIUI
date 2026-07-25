@@ -1,13 +1,14 @@
 #[cfg(debug_assertions)]
 fn main() {
-    use piui_lib::commands::stream::run_stream;
+    use piui_lib::commands::bridge::{BridgeState, bridge_send_transport, bridge_stop_transport};
+    use piui_lib::commands::stream::{cancel_stream_transport, run_stream_transport};
     use piui_lib::protocol::{Envelope, ProtocolKind};
-    use piui_lib::supervisor::{SidecarSupervisor, SupervisorPaths};
+    use piui_lib::supervisor::SupervisorPaths;
     use std::io::{BufRead, Write};
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
 
     let paths = SupervisorPaths::development().expect("development sidecar paths");
-    let supervisor = Arc::new(Mutex::new(SidecarSupervisor::default()));
+    let state = Arc::new(BridgeState::new(paths));
     let mut stream_thread = None;
 
     for line in std::io::stdin().lock().lines() {
@@ -18,10 +19,9 @@ fn main() {
         };
         match envelope.kind {
             ProtocolKind::Request if stream_thread.is_none() => {
-                let stream_supervisor = Arc::clone(&supervisor);
-                let stream_paths = paths.clone();
+                let stream_state = Arc::clone(&state);
                 stream_thread = Some(std::thread::spawn(move || {
-                    run_stream(stream_supervisor, stream_paths, envelope, |event| {
+                    run_stream_transport(&stream_state, envelope, |event| {
                         let encoded = serde_json::to_string(event)
                             .map_err(|_| "harness event encoding failed".to_string())?;
                         let mut stdout = std::io::stdout().lock();
@@ -32,16 +32,12 @@ fn main() {
                 }));
             }
             ProtocolKind::Request => {
-                if let Ok(mut supervisor) = supervisor.lock()
-                    && let Err(error) = supervisor.send_envelope(&envelope)
-                {
+                if let Err(error) = bridge_send_transport(&state, &envelope) {
                     eprintln!("{error}");
                 }
             }
             ProtocolKind::Cancel => {
-                if let Ok(mut supervisor) = supervisor.lock()
-                    && let Err(error) = supervisor.send_envelope(&envelope)
-                {
+                if let Err(error) = cancel_stream_transport(&state, envelope) {
                     eprintln!("{error}");
                 }
             }
@@ -56,9 +52,7 @@ fn main() {
             Err(_) => eprintln!("stream harness worker failed"),
         }
     }
-    if let Ok(mut supervisor) = supervisor.lock() {
-        let _ = supervisor.stop();
-    }
+    let _ = bridge_stop_transport(&state);
 }
 
 #[cfg(not(debug_assertions))]

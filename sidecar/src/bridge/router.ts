@@ -2,7 +2,13 @@ import type { ProtocolEnvelope } from '@piui/protocol';
 
 export type RouteReply = (envelope: ProtocolEnvelope) => void;
 
-type StreamSnapshot = { text: string; terminal?: 'complete' | 'cancelled' };
+const MAX_STREAM_SNAPSHOTS = 32;
+const MAX_STREAM_SNAPSHOT_TEXT = 8_192;
+type StreamSnapshot = {
+  text: string;
+  terminal?: 'complete' | 'cancelled';
+  truncated?: true;
+};
 
 export class SidecarRouter {
   #sequence = 1;
@@ -55,8 +61,13 @@ export class SidecarRouter {
     const eventType = payload.eventType;
     if (eventType === 'stream.delta' && typeof payload.text === 'string') {
       const current = this.#streams.get(correlationId) ?? { text: '' };
+      const appended = current.text + payload.text;
       this.#streams.delete(correlationId);
-      this.#streams.set(correlationId, { ...current, text: current.text + payload.text });
+      this.#streams.set(correlationId, {
+        ...current,
+        text: appended.slice(0, MAX_STREAM_SNAPSHOT_TEXT),
+        ...(appended.length > MAX_STREAM_SNAPSHOT_TEXT ? { truncated: true as const } : {}),
+      });
     } else if (eventType === 'stream.complete' || eventType === 'stream.cancelled') {
       const current = this.#streams.get(correlationId) ?? { text: '' };
       this.#streams.delete(correlationId);
@@ -65,6 +76,8 @@ export class SidecarRouter {
         terminal: eventType === 'stream.complete' ? 'complete' : 'cancelled',
       });
     }
-    if (this.#streams.size > 128) this.#streams.delete(this.#streams.keys().next().value!);
+    if (this.#streams.size > MAX_STREAM_SNAPSHOTS) {
+      this.#streams.delete(this.#streams.keys().next().value!);
+    }
   }
 }

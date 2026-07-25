@@ -83,10 +83,12 @@ export class BridgeClient {
       return 'gap';
     }
 
-    if (
-      (envelope.kind === 'ack' || envelope.kind === 'response') &&
-      envelope.correlationId
-    ) {
+    const completesRequest =
+      envelope.kind === 'ack' ||
+      envelope.kind === 'response' ||
+      (envelope.kind === 'event' &&
+        (envelope.payload.terminal === 'complete' || envelope.payload.terminal === 'cancelled'));
+    if (completesRequest && envelope.correlationId) {
       if (this.#acknowledged.has(envelope.correlationId)) {
         this.#incomingSequence = envelope.sequence;
         return 'duplicate';

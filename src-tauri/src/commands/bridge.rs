@@ -1,5 +1,5 @@
-use crate::protocol::{Envelope, ProtocolKind};
-use crate::supervisor::{SidecarStatus, SidecarSupervisor, SupervisorPaths};
+use crate::protocol::{Envelope, ProtocolKind, validate_envelope};
+use crate::supervisor::{RestartController, SidecarStatus, SidecarSupervisor, SupervisorPaths};
 use std::collections::HashMap;
 use std::sync::{
     Arc, Mutex,
@@ -7,8 +7,10 @@ use std::sync::{
 };
 use tauri::State;
 
+#[derive(Clone)]
 pub struct BridgeState {
     supervisor: Arc<Mutex<SidecarSupervisor>>,
+    restart: Arc<Mutex<RestartController>>,
     paths: SupervisorPaths,
     acknowledgement_waiters: Arc<Mutex<HashMap<String, SyncSender<bool>>>>,
 }
@@ -17,6 +19,7 @@ impl BridgeState {
     pub fn new(paths: SupervisorPaths) -> Self {
         Self {
             supervisor: Arc::new(Mutex::new(SidecarSupervisor::default())),
+            restart: Arc::new(Mutex::new(RestartController::default())),
             paths,
             acknowledgement_waiters: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -24,10 +27,6 @@ impl BridgeState {
 
     pub(crate) fn supervisor(&self) -> Arc<Mutex<SidecarSupervisor>> {
         Arc::clone(&self.supervisor)
-    }
-
-    pub(crate) fn paths(&self) -> SupervisorPaths {
-        self.paths.clone()
     }
 
     pub(crate) fn register_acknowledgement(
@@ -61,8 +60,7 @@ impl BridgeState {
     }
 }
 
-#[tauri::command]
-pub fn sidecar_start(state: State<'_, BridgeState>) -> Result<SidecarStatus, String> {
+pub fn bridge_start_transport(state: &BridgeState) -> Result<SidecarStatus, String> {
     let mut supervisor = state
         .supervisor
         .lock()
@@ -70,23 +68,64 @@ pub fn sidecar_start(state: State<'_, BridgeState>) -> Result<SidecarStatus, Str
     let status = supervisor.status();
     if status.running {
         Ok(status)
+    } else if status.failed {
+        state
+            .restart
+            .lock()
+            .map_err(|_| "restart state unavailable".to_string())?
+            .automatic_restart(&mut supervisor, &state.paths)
     } else {
         supervisor.start(&state.paths)
     }
 }
 
 #[tauri::command]
-pub fn sidecar_status(state: State<'_, BridgeState>) -> Result<SidecarStatus, String> {
-    Ok(state
+pub fn sidecar_start(state: State<'_, BridgeState>) -> Result<SidecarStatus, String> {
+    bridge_start_transport(state.inner())
+}
+
+pub fn bridge_status_transport(state: &BridgeState) -> Result<SidecarStatus, String> {
+    let mut supervisor = state
         .supervisor
         .lock()
-        .map_err(|_| "sidecar state unavailable".to_string())?
-        .status())
+        .map_err(|_| "sidecar state unavailable".to_string())?;
+    let status = supervisor.status();
+    if status.failed {
+        state
+            .restart
+            .lock()
+            .map_err(|_| "restart state unavailable".to_string())?
+            .automatic_restart(&mut supervisor, &state.paths)
+    } else {
+        Ok(status)
+    }
 }
 
 #[tauri::command]
-pub fn bridge_send(state: State<'_, BridgeState>, envelope: Envelope) -> Result<(), String> {
-    if envelope.kind != ProtocolKind::Request
+pub fn sidecar_status(state: State<'_, BridgeState>) -> Result<SidecarStatus, String> {
+    bridge_status_transport(state.inner())
+}
+
+pub fn bridge_restart_transport(state: &BridgeState) -> Result<SidecarStatus, String> {
+    let mut supervisor = state
+        .supervisor
+        .lock()
+        .map_err(|_| "sidecar state unavailable".to_string())?;
+    state
+        .restart
+        .lock()
+        .map_err(|_| "restart state unavailable".to_string())?
+        .user_restart(&mut supervisor, &state.paths)
+}
+
+#[tauri::command]
+pub fn sidecar_restart(state: State<'_, BridgeState>) -> Result<SidecarStatus, String> {
+    bridge_restart_transport(state.inner())
+}
+
+pub fn bridge_send_transport(state: &BridgeState, envelope: &Envelope) -> Result<(), String> {
+    if validate_envelope(envelope).is_err()
+        || envelope.kind != ProtocolKind::Request
         || envelope
             .payload
             .get("method")
@@ -99,16 +138,25 @@ pub fn bridge_send(state: State<'_, BridgeState>, envelope: Envelope) -> Result<
         .supervisor
         .lock()
         .map_err(|_| "sidecar state unavailable".to_string())?
-        .send_envelope(&envelope)
+        .send_envelope(envelope)
 }
 
 #[tauri::command]
-pub fn sidecar_stop(state: State<'_, BridgeState>) -> Result<(), String> {
+pub fn bridge_send(state: State<'_, BridgeState>, envelope: Envelope) -> Result<(), String> {
+    bridge_send_transport(state.inner(), &envelope)
+}
+
+pub fn bridge_stop_transport(state: &BridgeState) -> Result<(), String> {
     state
         .supervisor
         .lock()
         .map_err(|_| "sidecar state unavailable".to_string())?
         .stop()
+}
+
+#[tauri::command]
+pub fn sidecar_stop(state: State<'_, BridgeState>) -> Result<(), String> {
+    bridge_stop_transport(state.inner())
 }
 
 #[cfg(test)]
@@ -120,14 +168,8 @@ mod tests {
     fn duplicate_acknowledgement_registration_preserves_the_original_waiter() {
         let paths = SupervisorPaths::development().unwrap();
         let state = BridgeState::new(paths);
-        let original = state
-            .register_acknowledgement("cancel-1".into())
-            .unwrap();
-        assert!(
-            state
-                .register_acknowledgement("cancel-1".into())
-                .is_err()
-        );
+        let original = state.register_acknowledgement("cancel-1".into()).unwrap();
+        assert!(state.register_acknowledgement("cancel-1".into()).is_err());
         let sender = state
             .acknowledgement_waiters
             .lock()

@@ -90,18 +90,18 @@ try {
       bytes: data.length,
       sha256: createHash('sha256').update(data).digest('hex'),
     });
-    await chmod(path, 0o444);
+    // Integrity is anchored by the manifest and later bundle signature, not by
+    // read-only source modes. Normal writable owner modes keep repeated Tauri
+    // resource copies atomic and prevent a prior build from poisoning the next.
+    await chmod(path, 0o644);
   }
   const manifestPath = resolve(prepared, 'manifest.json');
   await writeFile(
     manifestPath,
     `${JSON.stringify({ node: '22.23.1', piSdk: '0.82.0', closure: 'isolated-v1', files: manifest }, null, 2)}\n`,
-    { mode: 0o444 },
+    { mode: 0o644 },
   );
-  await lockDirectories(prepared);
-  // macOS denies moving a read-only directory between parents. Keep only the
-  // prepared root writable until the atomic publish rename has completed.
-  await chmod(prepared, 0o755);
+  await normaliseDirectories(prepared);
 
   await mkdir(dirname(output), { recursive: true });
   const retired = resolve(workspace, 'retired');
@@ -110,7 +110,7 @@ try {
     await rename(output, retired);
   } catch (error) {
     if (error?.code !== 'ENOENT') {
-      if (await pathExists(output)) await chmod(output, 0o555);
+      if (await pathExists(output)) await chmod(output, 0o755);
       throw error;
     }
   }
@@ -119,11 +119,11 @@ try {
   } catch (error) {
     if (await pathExists(retired)) {
       await rename(retired, output);
-      await chmod(output, 0o555);
+      await chmod(output, 0o755);
     }
     throw error;
   }
-  await chmod(output, 0o555);
+  await chmod(output, 0o755);
 
   console.log(
     `Staged ${manifest.length} production resources; manifest=${relative(root, resolve(output, 'manifest.json'))}`,
@@ -328,10 +328,10 @@ function isPackageDocumentation(relativePath, name) {
   return segments[1]?.startsWith('@') ? segments.length === 4 : segments.length === 3;
 }
 
-async function lockDirectories(path) {
+async function normaliseDirectories(path) {
   for (const name of await readdir(path)) {
     const child = resolve(path, name);
-    if ((await lstat(child)).isDirectory()) await lockDirectories(child);
+    if ((await lstat(child)).isDirectory()) await normaliseDirectories(child);
   }
-  await chmod(path, 0o555);
+  await chmod(path, 0o755);
 }
