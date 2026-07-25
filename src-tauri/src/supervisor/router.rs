@@ -54,6 +54,10 @@ impl SequenceRouter {
         SequenceOutcome::Accepted
     }
 
+    pub fn last_sequence(&self) -> Option<u64> {
+        self.last_sequence
+    }
+
     pub fn take_resynchronisation(&mut self) -> bool {
         if !self.resynchronisation_needed || self.resynchronisation_issued {
             return false;
@@ -104,6 +108,7 @@ mod tests {
             router.observe(&envelope("event", "e-3", 3, None)),
             SequenceOutcome::Gap
         );
+        assert_eq!(router.last_sequence(), Some(1));
         assert!(router.take_resynchronisation());
         assert!(!router.take_resynchronisation());
         assert_eq!(

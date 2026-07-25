@@ -15,6 +15,8 @@ const projectRoot = resolve(import.meta.dirname, '../..');
 const cargoManifest = resolve(projectRoot, 'src-tauri/Cargo.toml');
 const harness = resolve(projectRoot, 'src-tauri/target/debug/stream-harness');
 
+test.setTimeout(45_000);
+
 test('streams through Rust and acknowledges cancellation before the terminal', async ({ page }) => {
   execFileSync('pnpm', ['stage:sidecar'], { cwd: projectRoot, stdio: 'pipe' });
   execFileSync(

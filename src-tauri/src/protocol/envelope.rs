@@ -29,13 +29,13 @@ pub struct Envelope {
     pub version: u8,
     pub kind: ProtocolKind,
     pub id: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub correlation_id: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decision_id: Option<String>,
     pub sequence: u64,
     pub payload: Map<String, Value>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<EnvelopeError>,
 }
 
@@ -44,9 +44,9 @@ pub struct Envelope {
 pub struct EnvelopeError {
     pub category: ErrorCategory,
     pub message: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retryable: Option<bool>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diagnostic_id: Option<String>,
 }
 
@@ -362,5 +362,38 @@ fn json_depth(value: &Value, level: usize) -> usize {
             .max()
             .unwrap_or(level),
         _ => level,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Envelope, ProtocolKind};
+    use serde_json::{Map, Value};
+
+    #[test]
+    fn absent_optional_fields_are_omitted_from_the_wire_shape() {
+        let mut payload = Map::new();
+        payload.insert("method".into(), Value::String("status".into()));
+        let envelope = Envelope {
+            version: 1,
+            kind: ProtocolKind::Request,
+            id: "rust-status-1".into(),
+            correlation_id: None,
+            decision_id: None,
+            sequence: 1,
+            payload,
+            error: None,
+        };
+        let value = serde_json::to_value(envelope).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "version": 1,
+                "kind": "request",
+                "id": "rust-status-1",
+                "sequence": 1,
+                "payload": {"method": "status"}
+            })
+        );
     }
 }

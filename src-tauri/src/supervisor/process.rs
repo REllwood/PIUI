@@ -395,12 +395,25 @@ impl SidecarSupervisor {
                 }
             };
 
-            if running.snapshot_request.as_deref() == envelope.correlation_id.as_deref()
-                && envelope.kind == ProtocolKind::Response
-            {
-                running.router.apply_snapshot(envelope.sequence);
+            if running.snapshot_request.as_deref() == envelope.correlation_id.as_deref() {
+                let snapshot = envelope
+                    .payload
+                    .get("snapshot")
+                    .and_then(Value::as_object)
+                    .ok_or_else(|| "sidecar snapshot invalid".to_string())?;
+                let snapshot_sequence = snapshot
+                    .get("sequence")
+                    .and_then(Value::as_u64)
+                    .ok_or_else(|| "sidecar snapshot invalid".to_string())?;
+                if envelope.kind != ProtocolKind::Response
+                    || snapshot_sequence > envelope.sequence
+                    || !snapshot.get("state").is_some_and(Value::is_object)
+                    || !running.router.apply_snapshot(envelope.sequence)
+                {
+                    return Err("sidecar snapshot invalid".into());
+                }
                 running.snapshot_request = None;
-                continue;
+                return Ok(envelope);
             }
 
             match running.router.observe(&envelope) {
@@ -411,7 +424,7 @@ impl SidecarSupervisor {
                         let mut payload = serde_json::Map::new();
                         payload.insert(
                             "afterSequence".into(),
-                            Value::from(envelope.sequence.saturating_sub(1)),
+                            Value::from(running.router.last_sequence().unwrap_or(0)),
                         );
                         let request = running.internal_request("snapshot", payload)?;
                         running.snapshot_request = Some(request.id.clone());
