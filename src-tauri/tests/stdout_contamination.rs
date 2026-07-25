@@ -31,7 +31,7 @@ fn is_alive(pid: u32) -> bool {
 #[test]
 fn contamination_after_handshake_kills_group_without_another_request() {
     let script = r#"
-const handshake={version:1,kind:'handshake',id:'handshake',sequence:0,payload:{nonce:'0123456789abcdef',desktopVersion:'0.1.0',protocolVersion:1,nodeVersion:process.versions.node,piVersion:'0.82.0',architecture:'arm64',capabilities:[]}};
+const handshake={version:1,kind:'handshake',id:'handshake',sequence:0,payload:{nonce:process.env.PIUI_HANDSHAKE_NONCE,desktopVersion:process.env.PIUI_DESKTOP_VERSION,protocolVersion:1,nodeVersion:process.versions.node,piVersion:'0.82.0',architecture:process.arch,capabilities:['cancel','status','stream','host-credentials']}};
 process.stdout.write(JSON.stringify(handshake)+'\n');
 setTimeout(()=>process.stdout.write('not-json contamination\n'),50);
 setInterval(()=>{},1000);
@@ -68,7 +68,7 @@ setInterval(()=>{},1000);
 fn runtime_stderr_is_redacted_before_diagnostics_storage() {
     let script = r#"
 process.stderr.write('Authorization: Bearer raw-header token=raw-token https://example.test/?api_key=raw-query /Users/private-person/secret.txt\n');
-const handshake={version:1,kind:'handshake',id:'handshake',sequence:0,payload:{nonce:'0123456789abcdef',desktopVersion:'0.1.0',protocolVersion:1,nodeVersion:process.versions.node,piVersion:'0.82.0',architecture:'arm64',capabilities:[]}};
+const handshake={version:1,kind:'handshake',id:'handshake',sequence:0,payload:{nonce:process.env.PIUI_HANDSHAKE_NONCE,desktopVersion:process.env.PIUI_DESKTOP_VERSION,protocolVersion:1,nodeVersion:process.versions.node,piVersion:'0.82.0',architecture:process.arch,capabilities:['cancel','status','stream','host-credentials']}};
 process.stdout.write(JSON.stringify(handshake)+'\n');
 process.stdin.resume();
 "#;

@@ -1,4 +1,4 @@
-use super::handshake::{HandshakeExpectation, validate_handshake};
+use super::handshake::{HandshakeExpectation, protocol_architecture, validate_handshake};
 use super::redact::StderrRedactor;
 use super::stdio::{FailureSignal, stderr_reader, stdout_reader};
 use crate::protocol::{Envelope, ProtocolKind};
@@ -206,7 +206,7 @@ impl SidecarSupervisor {
             &HandshakeExpectation {
                 nonce: &nonce,
                 desktop_version: env!("CARGO_PKG_VERSION"),
-                architecture: std::env::consts::ARCH,
+                architecture: protocol_architecture(),
             },
         )
         .map_err(|error| {
@@ -306,6 +306,47 @@ impl SidecarSupervisor {
                 Err(error)
             }
             _ => Err("sidecar response timed out".into()),
+        }
+    }
+
+    pub fn send_envelope(&mut self, envelope: &Envelope) -> Result<(), String> {
+        let status = self.status();
+        if !status.running {
+            return Err(status
+                .failure
+                .unwrap_or_else(|| "sidecar is not running".into()));
+        }
+        let running = self.running.as_mut().expect("running status has sidecar");
+        let bytes = serde_json::to_vec(envelope)
+            .map_err(|_| "sidecar request encoding failed".to_string())?;
+        let stdin = running
+            .stdin
+            .as_mut()
+            .ok_or_else(|| "sidecar stdin closed".to_string())?;
+        stdin
+            .write_all(&bytes)
+            .and_then(|_| stdin.write_all(b"\n"))
+            .and_then(|_| stdin.flush())
+            .map_err(|_| "sidecar write failed".to_string())
+    }
+
+    pub fn receive_envelope(&mut self, timeout: Duration) -> Result<Envelope, String> {
+        let status = self.status();
+        if !status.running {
+            return Err(status
+                .failure
+                .unwrap_or_else(|| "sidecar is not running".into()));
+        }
+        let running = self.running.as_mut().expect("running status has sidecar");
+        match running.messages.recv_timeout(timeout) {
+            Ok(Ok(envelope)) => Ok(envelope),
+            Ok(Err(error)) => Err(error),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                Err("sidecar receive timed out".into())
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                Err("sidecar response channel closed".into())
+            }
         }
     }
 

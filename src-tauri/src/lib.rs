@@ -38,6 +38,8 @@ pub fn run() {
             commands::bridge::sidecar_start,
             commands::bridge::sidecar_status,
             commands::bridge::sidecar_stop,
+            commands::stream::stream_probe,
+            commands::stream::cancel_stream,
         ])
         .run(tauri::generate_context!())
         .expect("PIUI failed to start its native host");
