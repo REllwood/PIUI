@@ -27,3 +27,29 @@ keyring = "=4.1.5"
 uuid = { version = "=1.24.0", features = ["v4"] }
 zeroize = "=1.9.0"
 tauri = { version = "=2.11.5", features = ["macos-private-api"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "=0.6.2"
+objc2 = { version = "=0.6.4", default-features = false, features = ["std"] }
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = [
+  "std",
+  "block2",
+  "NSAccessibilityProtocols",
+  "NSAlert",
+  "NSApplication",
+  "NSButton",
+  "NSCell",
+  "NSControl",
+  "NSPasteboard",
+  "NSResponder",
+  "NSSecureTextField",
+  "NSText",
+  "NSTextField",
+  "NSView",
+  "NSWindow",
+] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = [
+  "std",
+  "NSNotification",
+  "NSString",
+] }
