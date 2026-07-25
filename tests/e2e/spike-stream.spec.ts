@@ -15,7 +15,7 @@ const projectRoot = resolve(import.meta.dirname, '../..');
 const cargoManifest = resolve(projectRoot, 'src-tauri/Cargo.toml');
 const harness = resolve(projectRoot, 'src-tauri/target/debug/stream-harness');
 
-test.setTimeout(45_000);
+test.setTimeout(60_000);
 
 test('streams through Rust and acknowledges cancellation before the terminal', async ({ page }) => {
   // Staging first also unlocks any prior read-only Tauri resource copies before
@@ -37,6 +37,7 @@ test('streams through Rust and acknowledges cancellation before the terminal', a
 
   const lines = createInterface({ input: child.stdout });
   const received: Envelope[] = [];
+  let droppedDelta = false;
   let acknowledgementAt = 0;
   let acknowledgementResolve: ((accepted: boolean) => void) | undefined;
   const acknowledgement = new Promise<boolean>((resolveAcknowledgement) => {
@@ -57,11 +58,19 @@ test('streams through Rust and acknowledges cancellation before the terminal', a
     if (envelope.kind === 'event' && envelope.payload.terminal) {
       terminalResolve?.();
     }
-    browserDelivery = browserDelivery.then(() =>
-      page.evaluate((payload) => {
-        window.dispatchEvent(new CustomEvent('piui-bridge-envelope', { detail: payload }));
-      }, envelope),
-    );
+    if (
+      envelope.kind === 'event' &&
+      envelope.payload.text === 'a safe ' &&
+      !droppedDelta
+    ) {
+      droppedDelta = true;
+    } else {
+      browserDelivery = browserDelivery.then(() =>
+        page.evaluate((payload) => {
+          window.dispatchEvent(new CustomEvent('piui-bridge-envelope', { detail: payload }));
+        }, envelope),
+      );
+    }
   });
 
   const write = (envelope: Envelope) => {
@@ -91,7 +100,13 @@ test('streams through Rust and acknowledges cancellation before the terminal', a
   try {
     await page.goto('/?spike=stream');
     const output = page.getByTestId('stream-output');
-    await expect(output).toContainText('Planning', { timeout: 3_000 });
+    await expect(output).toContainText('Planning a safe local change', { timeout: 5_000 });
+    expect(droppedDelta).toBe(true);
+    expect(
+      received.some(
+        (envelope) => envelope.kind === 'response' && typeof envelope.payload.snapshot === 'object',
+      ),
+    ).toBe(true);
 
     const started = Date.now();
     await page.getByRole('button', { name: 'Stop' }).click();
