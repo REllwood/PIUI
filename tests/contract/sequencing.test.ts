@@ -27,8 +27,20 @@ describe('correlation and sequencing', () => {
     const resynchronise = client.takeResynchronisationRequest();
     expect(resynchronise?.payload).toEqual({ method: 'snapshot', afterSequence: 1 });
     expect(client.takeResynchronisationRequest()).toBeNull();
-    expect(client.applySnapshot({ sequence: 3, state: { value: 'snapshot' } })).toBe(true);
+    expect(
+      client.applySnapshot(
+        { sequence: 3, state: { value: 'snapshot' } },
+        resynchronise?.id,
+      ),
+    ).toBe(true);
+    expect(client.inFlightCount).toBe(0);
     expect(client.snapshot).toEqual({ sequence: 3, state: { value: 'snapshot' } });
+    expect(
+      client.applySnapshot(
+        { sequence: 4, state: { value: 'replayed' } },
+        resynchronise?.id,
+      ),
+    ).toBe(false);
     expect(client.applySnapshot({ sequence: 2, state: { value: 'stale' } })).toBe(false);
   });
 
@@ -44,7 +56,7 @@ describe('correlation and sequencing', () => {
     const second = client.createRequest('snapshot');
     expect([first.id, second.id]).toEqual(['window-1-1', 'window-1-2']);
     expect([first.sequence, second.sequence]).toEqual([1, 2]);
-    expect(() => client.createRequest('overflow')).toThrow('bridge-capacity-exceeded');
+    expect(() => client.createCancellation(first.id)).toThrow('bridge-capacity-exceeded');
     now = 1_050;
     expect(client.expireRequests()).toEqual(['window-1-1', 'window-1-2']);
     expect(client.inFlightCount).toBe(0);

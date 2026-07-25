@@ -91,7 +91,9 @@ where
         let is_stream_event = envelope.kind == ProtocolKind::Event
             && envelope.correlation_id.as_deref() == Some(request.id.as_str());
         let is_acknowledgement = envelope.kind == ProtocolKind::Ack;
-        if !is_stream_event && !is_acknowledgement {
+        let is_snapshot = envelope.kind == ProtocolKind::Response
+            && envelope.payload.get("snapshot").is_some_and(serde_json::Value::is_object);
+        if !is_stream_event && !is_acknowledgement && !is_snapshot {
             continue;
         }
         deliver(&envelope)?;

@@ -106,9 +106,17 @@ export class BridgeClient {
     return this.createRequest('snapshot', { afterSequence: this.#incomingSequence });
   }
 
-  applySnapshot(snapshot: BridgeSnapshot): boolean {
-    if (!Number.isSafeInteger(snapshot.sequence) || snapshot.sequence < this.#incomingSequence) {
+  applySnapshot(snapshot: BridgeSnapshot, correlationId?: string): boolean {
+    if (
+      !Number.isSafeInteger(snapshot.sequence) ||
+      snapshot.sequence < this.#incomingSequence ||
+      (correlationId !== undefined && this.#acknowledged.has(correlationId))
+    ) {
       return false;
+    }
+    if (correlationId !== undefined) {
+      this.#rememberAcknowledgement(correlationId);
+      this.#inFlight.delete(correlationId);
     }
     this.#incomingSequence = snapshot.sequence;
     this.#state = Object.freeze({ ...snapshot.state });

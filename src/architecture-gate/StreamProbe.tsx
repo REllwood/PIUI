@@ -94,6 +94,28 @@ export function StreamProbeRoute() {
       for (const listener of listeners.current) listener(event);
     };
     const acceptEnvelope = (envelope: ProtocolEnvelope) => {
+      if (envelope.kind === 'response' && 'snapshot' in envelope.payload) {
+        const snapshot = envelope.payload.snapshot;
+        if (
+          typeof snapshot === 'object' &&
+          snapshot !== null &&
+          !Array.isArray(snapshot) &&
+          Number.isSafeInteger((snapshot as { sequence?: unknown }).sequence) &&
+          Number((snapshot as { sequence: number }).sequence) <= envelope.sequence &&
+          typeof (snapshot as { state?: unknown }).state === 'object' &&
+          (snapshot as { state?: unknown }).state !== null &&
+          !Array.isArray((snapshot as { state?: unknown }).state)
+        ) {
+          bridge.current?.applySnapshot(
+            {
+              sequence: envelope.sequence,
+              state: (snapshot as { state: Record<string, unknown> }).state,
+            },
+            envelope.correlationId,
+          );
+        }
+        return;
+      }
       const outcome = bridge.current?.receive(envelope);
       if (outcome === 'gap') {
         const snapshot = bridge.current?.takeResynchronisationRequest();
