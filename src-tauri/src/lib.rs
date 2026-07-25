@@ -38,6 +38,7 @@ pub fn run() {
             commands::bridge::sidecar_start,
             commands::bridge::sidecar_status,
             commands::bridge::sidecar_stop,
+            commands::bridge::bridge_send,
             commands::stream::stream_probe,
             commands::stream::cancel_stream,
         ])

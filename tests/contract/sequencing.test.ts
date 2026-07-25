@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ProtocolEnvelope } from '@piui/protocol';
+import { ProtocolDecoder } from '@piui/protocol/codec';
 import { BridgeClient } from '../../src/bridge/client';
 import { SidecarRouter } from '../../sidecar/src/bridge/router';
 
@@ -82,7 +83,33 @@ describe('correlation and sequencing', () => {
     const second = router.idempotent(request, () =>
       router.next('response', 'wrong', {}, request.id),
     );
-    expect(second).toEqual(first);
-    expect(router.currentSequence).toBe(1);
+    expect(second.payload).toEqual(first.payload);
+    expect(second.correlationId).toBe(first.correlationId);
+    expect(second.id).not.toBe(first.id);
+    expect(second.sequence).toBeGreaterThan(first.sequence);
+    expect(router.currentSequence).toBe(2);
+  });
+
+  it('replays a completed request through the real decoder without reusing an envelope id', () => {
+    const decoder = new ProtocolDecoder();
+    const router = new SidecarRouter();
+    const line = `${JSON.stringify({
+      version: 1,
+      kind: 'request',
+      id: 'repeat-status',
+      sequence: 1,
+      payload: { method: 'status' },
+    })}\n`;
+    const firstRequest = decoder.decode(line);
+    const firstReply = router.idempotent(firstRequest, () =>
+      router.next('response', 'status-reply', { status: 'ready' }, firstRequest.id),
+    );
+    decoder.acknowledge(firstRequest.id);
+    const replayRequest = decoder.decode(line);
+    const replayReply = router.idempotent(replayRequest, () => {
+      throw new Error('completed request effect ran twice');
+    });
+    expect(replayReply.payload).toEqual(firstReply.payload);
+    expect(replayReply.id).not.toBe(firstReply.id);
   });
 });

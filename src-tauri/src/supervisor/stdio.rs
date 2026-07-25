@@ -23,7 +23,15 @@ pub(super) fn stdout_reader(
                 .take((MAX_LINE_BYTES + 1) as u64)
                 .read_until(b'\n', &mut line);
             match read {
-                Ok(0) => return,
+                Ok(0) => {
+                    fail_contaminated_stdout(
+                        "sidecar stdout closed unexpectedly",
+                        process_group,
+                        &failure,
+                        &sender,
+                    );
+                    return;
+                }
                 Ok(_) if line.len() > MAX_LINE_BYTES || line.last() != Some(&b'\n') => {
                     fail_contaminated_stdout(
                         "sidecar stdout contamination or limit violation",

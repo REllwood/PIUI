@@ -16,15 +16,30 @@ pub struct SequenceRouter {
     last_sequence: Option<u64>,
     acknowledgements: HashSet<String>,
     acknowledgement_order: VecDeque<String>,
-    resynchronisation_pending: bool,
+    resynchronisation_needed: bool,
+    resynchronisation_issued: bool,
 }
 
 impl SequenceRouter {
     pub fn observe(&mut self, envelope: &Envelope) -> SequenceOutcome {
+        let outcome = match self.last_sequence {
+            Some(last) if envelope.sequence < last => SequenceOutcome::Stale,
+            Some(last) if envelope.sequence == last => SequenceOutcome::Duplicate,
+            Some(last) if envelope.sequence != last + 1 => {
+                self.resynchronisation_needed = true;
+                SequenceOutcome::Gap
+            }
+            _ => SequenceOutcome::Accepted,
+        };
+        if outcome != SequenceOutcome::Accepted {
+            return outcome;
+        }
+
         if matches!(envelope.kind, ProtocolKind::Ack | ProtocolKind::Response)
             && let Some(correlation) = envelope.correlation_id.as_ref()
         {
             if !self.acknowledgements.insert(correlation.clone()) {
+                self.last_sequence = Some(envelope.sequence);
                 return SequenceOutcome::Duplicate;
             }
             self.acknowledgement_order.push_back(correlation.clone());
@@ -35,22 +50,16 @@ impl SequenceRouter {
             }
         }
 
-        match self.last_sequence {
-            Some(last) if envelope.sequence < last => SequenceOutcome::Stale,
-            Some(last) if envelope.sequence == last => SequenceOutcome::Duplicate,
-            Some(last) if envelope.sequence != last + 1 => {
-                self.resynchronisation_pending = true;
-                SequenceOutcome::Gap
-            }
-            _ => {
-                self.last_sequence = Some(envelope.sequence);
-                SequenceOutcome::Accepted
-            }
-        }
+        self.last_sequence = Some(envelope.sequence);
+        SequenceOutcome::Accepted
     }
 
     pub fn take_resynchronisation(&mut self) -> bool {
-        std::mem::take(&mut self.resynchronisation_pending)
+        if !self.resynchronisation_needed || self.resynchronisation_issued {
+            return false;
+        }
+        self.resynchronisation_issued = true;
+        true
     }
 
     pub fn apply_snapshot(&mut self, sequence: u64) -> bool {
@@ -58,7 +67,8 @@ impl SequenceRouter {
             return false;
         }
         self.last_sequence = Some(sequence);
-        self.resynchronisation_pending = false;
+        self.resynchronisation_needed = false;
+        self.resynchronisation_issued = false;
         true
     }
 }
@@ -95,6 +105,11 @@ mod tests {
             SequenceOutcome::Gap
         );
         assert!(router.take_resynchronisation());
+        assert!(!router.take_resynchronisation());
+        assert_eq!(
+            router.observe(&envelope("event", "e-3-repeat", 3, None)),
+            SequenceOutcome::Gap
+        );
         assert!(!router.take_resynchronisation());
         assert!(router.apply_snapshot(3));
         assert_eq!(
