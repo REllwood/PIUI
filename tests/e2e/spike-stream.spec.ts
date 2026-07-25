@@ -18,6 +18,8 @@ const harness = resolve(projectRoot, 'src-tauri/target/debug/stream-harness');
 test.setTimeout(45_000);
 
 test('streams through Rust and acknowledges cancellation before the terminal', async ({ page }) => {
+  // Staging first also unlocks any prior read-only Tauri resource copies before
+  // the build script refreshes them.
   execFileSync('pnpm', ['stage:sidecar'], { cwd: projectRoot, stdio: 'pipe' });
   execFileSync(
     'cargo',
@@ -44,6 +46,7 @@ test('streams through Rust and acknowledges cancellation before the terminal', a
   const terminal = new Promise<void>((resolveTerminal) => {
     terminalResolve = resolveTerminal;
   });
+  let browserDelivery = Promise.resolve();
   lines.on('line', (line) => {
     const envelope = JSON.parse(line) as Envelope;
     received.push(envelope);
@@ -54,9 +57,11 @@ test('streams through Rust and acknowledges cancellation before the terminal', a
     if (envelope.kind === 'event' && envelope.payload.terminal) {
       terminalResolve?.();
     }
-    void page.evaluate((payload) => {
-      window.dispatchEvent(new CustomEvent('piui-bridge-envelope', { detail: payload }));
-    }, envelope);
+    browserDelivery = browserDelivery.then(() =>
+      page.evaluate((payload) => {
+        window.dispatchEvent(new CustomEvent('piui-bridge-envelope', { detail: payload }));
+      }, envelope),
+    );
   });
 
   const write = (envelope: Envelope) => {
@@ -110,6 +115,7 @@ test('streams through Rust and acknowledges cancellation before the terminal', a
     expect(retained).not.toBe('Planning a safe local change…');
     expect(stderr.join('')).toBe('');
   } finally {
+    await browserDelivery.catch(() => undefined);
     lines.close();
     child.stdin.end();
     await waitForExit(child);

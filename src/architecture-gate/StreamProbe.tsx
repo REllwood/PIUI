@@ -36,14 +36,12 @@ export function StreamProbe({
     const flushInFrame = () => {
       if (frame.current !== null) return;
       frame.current = requestAnimationFrame(() => {
-        if (queuedText.current) {
-          setText((current) => current + queuedText.current);
-          queuedText.current = '';
-        }
-        if (queuedTerminal.current) {
-          setTerminal(queuedTerminal.current);
-          queuedTerminal.current = null;
-        }
+        const textToAppend = queuedText.current;
+        const terminalToApply = queuedTerminal.current;
+        queuedText.current = '';
+        queuedTerminal.current = null;
+        if (textToAppend) setText((current) => current + textToAppend);
+        if (terminalToApply) setTerminal(terminalToApply);
         frame.current = null;
       });
     };
@@ -75,10 +73,11 @@ export function StreamProbe({
 
 export function StreamProbeRoute() {
   const bridge = useRef<BridgeClient | null>(null);
-  bridge.current ??= new BridgeClient({ idPrefix: 'stream-window', requestTimeoutMs: 5_000 });
+  bridge.current ??= new BridgeClient({ requestTimeoutMs: 5_000 });
   const request = useRef<ProtocolEnvelope | null>(null);
   request.current ??= bridge.current.createRequest('stream.fixture');
   const cancellation = useRef<ProtocolEnvelope | null>(null);
+  const cancelIssued = useRef(false);
   const startIssued = useRef(false);
   const listeners = useRef(new Set<(event: StreamProbeEvent) => void>());
 
@@ -184,6 +183,8 @@ export function StreamProbeRoute() {
   }, []);
 
   const cancel = useCallback(() => {
+    if (cancelIssued.current) return;
+    cancelIssued.current = true;
     cancellation.current ??= bridge.current!.createCancellation(request.current!.id);
     if (window.__PIUI_STREAM_HARNESS__) {
       void window.__PIUI_STREAM_HARNESS__.cancel(cancellation.current);

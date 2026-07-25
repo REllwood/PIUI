@@ -421,7 +421,24 @@ impl SidecarSupervisor {
             }
 
             match running.router.observe(&envelope) {
-                SequenceOutcome::Accepted => return Ok(envelope),
+                SequenceOutcome::Accepted => {
+                    if envelope.kind == ProtocolKind::Event
+                        && envelope.payload.get("eventType")
+                            == Some(&Value::String("unknown-event".into()))
+                    {
+                        if let Ok(mut diagnostics) = running.diagnostics.lock() {
+                            if diagnostics.len() == 64 {
+                                diagnostics.pop_front();
+                            }
+                            diagnostics.push_back(
+                                "Unknown sidecar event was redacted and withheld from the interface."
+                                    .into(),
+                            );
+                        }
+                        continue;
+                    }
+                    return Ok(envelope);
+                }
                 SequenceOutcome::Duplicate | SequenceOutcome::Stale => continue,
                 SequenceOutcome::Gap => {
                     if running.router.take_resynchronisation() {

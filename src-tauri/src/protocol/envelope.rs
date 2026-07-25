@@ -1,12 +1,12 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::fmt::{Display, Formatter};
 
 pub const MAX_LINE_BYTES: usize = 1_048_576;
 const MAX_PAYLOAD_BYTES: usize = 524_288;
 const MAX_DEPTH: usize = 32;
-const MAX_PENDING_IDS: usize = 4_096;
+const MAX_RECENT_IDS: usize = 4_096;
 const MAX_SEQUENCE: u64 = 9_007_199_254_740_991;
 const MAX_PAYLOAD_PROPERTIES: usize = 128;
 
@@ -76,6 +76,7 @@ impl std::error::Error for ProtocolError {}
 #[derive(Default)]
 pub struct ProtocolDecoder {
     seen_ids: HashSet<String>,
+    seen_order: VecDeque<String>,
 }
 
 impl ProtocolDecoder {
@@ -96,11 +97,14 @@ impl ProtocolDecoder {
         let mut envelope: Envelope =
             serde_json::from_value(value).map_err(|_| ProtocolError("schema mismatch"))?;
         validate_envelope(&envelope)?;
-        if self.seen_ids.len() >= MAX_PENDING_IDS {
-            return Err(ProtocolError("pending ID limit exceeded"));
-        }
         if !self.seen_ids.insert(envelope.id.clone()) {
             return Err(ProtocolError("duplicate envelope ID"));
+        }
+        self.seen_order.push_back(envelope.id.clone());
+        if self.seen_order.len() > MAX_RECENT_IDS
+            && let Some(oldest) = self.seen_order.pop_front()
+        {
+            self.seen_ids.remove(&oldest);
         }
         if envelope.kind == ProtocolKind::Event {
             let event_type = envelope
@@ -394,6 +398,22 @@ mod tests {
                 "sequence": 1,
                 "payload": {"method": "status"}
             })
+        );
+    }
+
+    #[test]
+    fn duplicate_window_is_bounded_without_exhausting_long_lived_streams() {
+        let mut decoder = super::ProtocolDecoder::default();
+        for sequence in 1..=4_100_u64 {
+            let line = format!(
+                "{{\"version\":1,\"kind\":\"event\",\"id\":\"event-{sequence}\",\"sequence\":{sequence},\"payload\":{{\"eventType\":\"sidecar.status\"}}}}\n"
+            );
+            decoder.decode(line.as_bytes()).unwrap();
+        }
+        let recent = b"{\"version\":1,\"kind\":\"event\",\"id\":\"event-4100\",\"sequence\":4101,\"payload\":{\"eventType\":\"sidecar.status\"}}\n";
+        assert_eq!(
+            decoder.decode(recent).unwrap_err().to_string(),
+            "duplicate envelope ID"
         );
     }
 }

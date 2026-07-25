@@ -35,15 +35,19 @@ impl BridgeState {
         envelope_id: String,
     ) -> Result<Receiver<bool>, String> {
         let (sender, receiver) = sync_channel(1);
-        let replaced = self
+        let mut waiters = self
             .acknowledgement_waiters
             .lock()
-            .map_err(|_| "acknowledgement state unavailable".to_string())?
-            .insert(envelope_id, sender);
-        if replaced.is_some() {
-            return Err("acknowledgement already pending".into());
+            .map_err(|_| "acknowledgement state unavailable".to_string())?;
+        match waiters.entry(envelope_id) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(sender);
+                Ok(receiver)
+            }
+            std::collections::hash_map::Entry::Occupied(_) => {
+                Err("acknowledgement already pending".into())
+            }
         }
-        Ok(receiver)
     }
 
     pub(crate) fn acknowledgement_waiters(&self) -> Arc<Mutex<HashMap<String, SyncSender<bool>>>> {
@@ -105,4 +109,32 @@ pub fn sidecar_stop(state: State<'_, BridgeState>) -> Result<(), String> {
         .lock()
         .map_err(|_| "sidecar state unavailable".to_string())?
         .stop()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BridgeState;
+    use crate::supervisor::SupervisorPaths;
+
+    #[test]
+    fn duplicate_acknowledgement_registration_preserves_the_original_waiter() {
+        let paths = SupervisorPaths::development().unwrap();
+        let state = BridgeState::new(paths);
+        let original = state
+            .register_acknowledgement("cancel-1".into())
+            .unwrap();
+        assert!(
+            state
+                .register_acknowledgement("cancel-1".into())
+                .is_err()
+        );
+        let sender = state
+            .acknowledgement_waiters
+            .lock()
+            .unwrap()
+            .remove("cancel-1")
+            .unwrap();
+        sender.try_send(true).unwrap();
+        assert_eq!(original.recv().unwrap(), true);
+    }
 }

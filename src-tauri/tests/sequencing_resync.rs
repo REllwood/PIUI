@@ -59,6 +59,10 @@ process.stdin.on('data', (chunk) => {
           state:{afterSequence:envelope.payload.afterSequence, value:'authoritative'}}}});
       write({version:1, kind:'event', id:'state-5', sequence:5,
         payload:{eventType:'sidecar.status', value:'after-snapshot'}});
+      write({version:1, kind:'event', id:'future-6', sequence:6,
+        payload:{eventType:'future.private.event', ordinaryField:'private-payload-value'}});
+      write({version:1, kind:'event', id:'state-7', sequence:7,
+        payload:{eventType:'sidecar.status', value:'after-redaction'}});
     }
   }
 });
@@ -100,6 +104,15 @@ process.stdin.on('end', () => { clearInterval(keepAlive); process.exit(0); });
         .expect("post-snapshot event");
     assert_eq!(after_snapshot.sequence, 5);
     assert_eq!(after_snapshot.payload["value"], "after-snapshot");
+    let after_redaction = supervisor
+        .receive_envelope(Duration::from_secs(2))
+        .expect("unknown event is withheld");
+    assert_eq!(after_redaction.sequence, 7);
+    assert_eq!(after_redaction.payload["value"], "after-redaction");
+    let diagnostics = supervisor.diagnostics().join("\n");
+    assert!(diagnostics.contains("redacted and withheld"));
+    assert!(!diagnostics.contains("future.private.event"));
+    assert!(!diagnostics.contains("private-payload-value"));
 
     supervisor.stop().unwrap();
     fs::remove_dir_all(root).unwrap();
