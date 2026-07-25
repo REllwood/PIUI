@@ -98,6 +98,9 @@ describe('correlation and sequencing', () => {
     expect(second.payload).toEqual(first.payload);
     expect(second.correlationId).toBe(first.correlationId);
     expect(second.id).not.toBe(first.id);
+    expect(first.id).toMatch(/^sidecar-\d+$/);
+    expect(second.id).toMatch(/^sidecar-\d+$/);
+    expect(second.id.length).toBeLessThanOrEqual(128);
     expect(second.sequence).toBeGreaterThan(first.sequence);
     expect(router.currentSequence).toBe(2);
   });

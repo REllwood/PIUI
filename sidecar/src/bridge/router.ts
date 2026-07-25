@@ -4,11 +4,18 @@ export type RouteReply = (envelope: ProtocolEnvelope) => void;
 
 export class SidecarRouter {
   #sequence = 1;
-  #replay = 0;
   #seen = new Map<string, ProtocolEnvelope>();
 
-  next(kind: ProtocolEnvelope['kind'], id: string, payload: Record<string, unknown>, correlationId?: string): ProtocolEnvelope {
-    return { version: 1, kind, id, sequence: this.#sequence++, payload, ...(correlationId ? { correlationId } : {}) };
+  next(kind: ProtocolEnvelope['kind'], _suggestedId: string, payload: Record<string, unknown>, correlationId?: string): ProtocolEnvelope {
+    const sequence = this.#sequence++;
+    return {
+      version: 1,
+      kind,
+      id: `sidecar-${sequence}`,
+      sequence,
+      payload,
+      ...(correlationId ? { correlationId } : {}),
+    };
   }
 
   get currentSequence(): number {
@@ -18,10 +25,11 @@ export class SidecarRouter {
   idempotent(request: ProtocolEnvelope, create: () => ProtocolEnvelope): ProtocolEnvelope {
     const prior = this.#seen.get(request.id);
     if (prior) {
+      const sequence = this.#sequence++;
       return {
         ...prior,
-        id: `replay-${++this.#replay}`,
-        sequence: this.#sequence++,
+        id: `sidecar-${sequence}`,
+        sequence,
       };
     }
     const reply = create();

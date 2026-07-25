@@ -31,11 +31,18 @@ fn main() {
                     })
                 }));
             }
+            ProtocolKind::Request => {
+                if let Ok(mut supervisor) = supervisor.lock()
+                    && let Err(error) = supervisor.send_envelope(&envelope)
+                {
+                    eprintln!("{error}");
+                }
+            }
             ProtocolKind::Cancel => {
-                if let Ok(mut supervisor) = supervisor.lock() {
-                    if let Err(error) = supervisor.send_envelope(&envelope) {
-                        eprintln!("{error}");
-                    }
+                if let Ok(mut supervisor) = supervisor.lock()
+                    && let Err(error) = supervisor.send_envelope(&envelope)
+                {
+                    eprintln!("{error}");
                 }
             }
             _ => eprintln!("unsupported harness input"),

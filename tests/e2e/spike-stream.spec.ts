@@ -34,6 +34,8 @@ test('streams through Rust and acknowledges cancellation before the terminal', a
   child.stderr.on('data', (chunk: string) => stderr.push(chunk));
 
   const lines = createInterface({ input: child.stdout });
+  const received: Envelope[] = [];
+  let acknowledgementAt = 0;
   let acknowledgementResolve: ((accepted: boolean) => void) | undefined;
   const acknowledgement = new Promise<boolean>((resolveAcknowledgement) => {
     acknowledgementResolve = resolveAcknowledgement;
@@ -44,7 +46,9 @@ test('streams through Rust and acknowledges cancellation before the terminal', a
   });
   lines.on('line', (line) => {
     const envelope = JSON.parse(line) as Envelope;
+    received.push(envelope);
     if (envelope.kind === 'ack') {
+      acknowledgementAt = Date.now();
       acknowledgementResolve?.(envelope.payload.accepted === true);
     }
     if (envelope.kind === 'event' && envelope.payload.terminal) {
@@ -91,7 +95,14 @@ test('streams through Rust and acknowledges cancellation before the terminal', a
       timeout: 1_000,
     });
     await terminal;
+    expect(acknowledgementAt - started).toBeLessThan(1_000);
     expect(Date.now() - started).toBeLessThan(1_000);
+    const ackIndex = received.findIndex((envelope) => envelope.kind === 'ack');
+    const terminalIndex = received.findIndex(
+      (envelope) => envelope.kind === 'event' && envelope.payload.terminal === 'cancelled',
+    );
+    expect(ackIndex).toBeGreaterThanOrEqual(0);
+    expect(terminalIndex).toBeGreaterThan(ackIndex);
 
     const retained = await output.textContent();
     expect(retained).toBeTruthy();
