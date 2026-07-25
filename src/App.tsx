@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { CredentialProbe } from './architecture-gate/CredentialProbe';
 import { StreamProbeRoute } from './architecture-gate/StreamProbe';
 
 type HostStatus = {
@@ -18,11 +19,10 @@ type SidecarStatus = {
 };
 
 export function App() {
-  return new URLSearchParams(window.location.search).get('spike') === 'stream' ? (
-    <StreamProbeRoute />
-  ) : (
-    <ArchitectureGate />
-  );
+  const spike = new URLSearchParams(window.location.search).get('spike');
+  if (spike === 'credential') return <CredentialProbe />;
+  if (spike === 'stream') return <StreamProbeRoute />;
+  return <ArchitectureGate />;
 }
 
 function ArchitectureGate() {

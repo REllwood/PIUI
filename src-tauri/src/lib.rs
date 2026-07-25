@@ -2,6 +2,7 @@ use serde::Serialize;
 
 pub mod commands;
 pub mod credentials;
+pub mod platform;
 pub mod protocol;
 pub mod supervisor;
 
@@ -32,6 +33,7 @@ pub fn run() {
             let paths = supervisor::SupervisorPaths::from_app(app.handle())
                 .map_err(std::io::Error::other)?;
             app.manage(commands::bridge::BridgeState::new(paths));
+            app.manage(commands::credentials::CredentialSheetState::default());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -41,6 +43,7 @@ pub fn run() {
             commands::bridge::sidecar_restart,
             commands::bridge::sidecar_stop,
             commands::bridge::bridge_send,
+            commands::credentials::present_credential_sheet,
             commands::stream::stream_probe,
             commands::stream::cancel_stream,
         ])

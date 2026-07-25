@@ -2559,8 +2559,12 @@ dependencies = [
 name = "piui"
 version = "0.1.0"
 dependencies = [
+ "block2",
  "keyring",
  "libc",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
  "regex",
  "serde",
  "serde_json",
