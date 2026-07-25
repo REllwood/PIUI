@@ -80,6 +80,32 @@ describe('correlation and sequencing', () => {
     expect(client.snapshot.sequence).toBe(2);
   });
 
+  it('treats an authoritative stream terminal as request completion', () => {
+    const client = new BridgeClient({ idPrefix: 'stream' });
+    const request = client.createRequest('stream.fixture');
+    expect(
+      client.receive({
+        ...event('delta-1', 1, 'partial'),
+        correlationId: request.id,
+        payload: { eventType: 'stream.delta', text: 'partial' },
+      }),
+    ).toBe('accepted');
+    const terminal: ProtocolEnvelope = {
+      version: 1,
+      kind: 'event',
+      id: 'terminal-2',
+      correlationId: request.id,
+      sequence: 2,
+      payload: { eventType: 'stream.complete', terminal: 'complete' },
+    };
+    expect(client.receive(terminal)).toBe('accepted');
+    expect(client.inFlightCount).toBe(0);
+    expect(client.receive({ ...terminal, id: 'terminal-replay-3', sequence: 3 })).toBe(
+      'duplicate',
+    );
+    expect(client.snapshot.sequence).toBe(3);
+  });
+
   it('returns one idempotent sidecar response for a repeated request', () => {
     const router = new SidecarRouter();
     const request = {
@@ -103,6 +129,50 @@ describe('correlation and sequencing', () => {
     expect(second.id.length).toBeLessThanOrEqual(128);
     expect(second.sequence).toBeGreaterThan(first.sequence);
     expect(router.currentSequence).toBe(2);
+  });
+
+  it('retains bounded authoritative stream state for snapshot recovery', () => {
+    const router = new SidecarRouter();
+    router.next('event', 'ignored', { eventType: 'stream.delta', text: 'Planning ' }, 'stream-1');
+    router.next('event', 'ignored', { eventType: 'stream.delta', text: 'safely' }, 'stream-1');
+    router.next(
+      'event',
+      'ignored',
+      { eventType: 'stream.cancelled', terminal: 'cancelled' },
+      'stream-1',
+    );
+    expect(router.currentState).toEqual({
+      status: 'ready',
+      streams: { 'stream-1': { text: 'Planning safely', terminal: 'cancelled' } },
+    });
+
+    const bounded = new SidecarRouter();
+    bounded.next(
+      'event',
+      'ignored',
+      { eventType: 'stream.delta', text: 'x'.repeat(9_000) },
+      'long-stream',
+    );
+    const longStream = (bounded.currentState.streams as Record<
+      string,
+      { text: string; truncated?: true }
+    >)['long-stream'];
+    expect(longStream.text).toHaveLength(8_192);
+    expect(longStream.truncated).toBe(true);
+    for (let index = 0; index < 32; index += 1) {
+      bounded.next(
+        'event',
+        'ignored',
+        { eventType: 'stream.delta', text: String(index) },
+        `stream-${index}`,
+      );
+    }
+    const boundedStreams = bounded.currentState.streams as Record<
+      string,
+      { text: string; truncated?: true }
+    >;
+    expect(Object.keys(boundedStreams)).toHaveLength(32);
+    expect(boundedStreams['long-stream']).toBeUndefined();
   });
 
   it('replays a completed request through the real decoder without reusing an envelope id', () => {
