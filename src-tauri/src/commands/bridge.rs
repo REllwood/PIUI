@@ -1,18 +1,26 @@
 use crate::supervisor::{SidecarStatus, SidecarSupervisor, SupervisorPaths};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::State;
 
 pub struct BridgeState {
-    supervisor: Mutex<SidecarSupervisor>,
+    supervisor: Arc<Mutex<SidecarSupervisor>>,
     paths: SupervisorPaths,
 }
 
 impl BridgeState {
     pub fn new(paths: SupervisorPaths) -> Self {
         Self {
-            supervisor: Mutex::new(SidecarSupervisor::default()),
+            supervisor: Arc::new(Mutex::new(SidecarSupervisor::default())),
             paths,
         }
+    }
+
+    pub(crate) fn supervisor(&self) -> Arc<Mutex<SidecarSupervisor>> {
+        Arc::clone(&self.supervisor)
+    }
+
+    pub(crate) fn paths(&self) -> SupervisorPaths {
+        self.paths.clone()
     }
 }
 

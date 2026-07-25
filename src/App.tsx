@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { StreamProbeRoute } from './architecture-gate/StreamProbe';
 
 type HostStatus = {
   status: 'ready';
@@ -9,6 +10,14 @@ type HostStatus = {
 };
 
 export function App() {
+  return new URLSearchParams(window.location.search).get('spike') === 'stream' ? (
+    <StreamProbeRoute />
+  ) : (
+    <ArchitectureGate />
+  );
+}
+
+function ArchitectureGate() {
   const [host, setHost] = useState<HostStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -37,7 +46,7 @@ export function App() {
         <dl className="gate__status" aria-live="polite">
           <div>
             <dt>Native host</dt>
-            <dd>{host ? 'Ready' : error ?? 'Checking…'}</dd>
+            <dd>{host ? 'Ready' : (error ?? 'Checking…')}</dd>
           </div>
           <div>
             <dt>Transport</dt>

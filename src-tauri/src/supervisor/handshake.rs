@@ -7,6 +7,14 @@ pub const NODE_VERSION: &str = "22.23.1";
 pub const PI_VERSION: &str = "0.82.0";
 pub const REQUIRED_CAPABILITIES: [&str; 4] = ["cancel", "status", "stream", "host-credentials"];
 
+pub fn protocol_architecture() -> &'static str {
+    match std::env::consts::ARCH {
+        "aarch64" => "arm64",
+        "x86_64" => "x64",
+        architecture => architecture,
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct HandshakeExpectation<'a> {
     pub nonce: &'a str,
@@ -67,13 +75,41 @@ mod tests {
     }
 
     #[test]
-    fn rejects_mismatches() {
-        let expected = HandshakeExpectation { nonce: "0123456789abcdef", desktop_version: "0.1.0", architecture: "arm64" };
+    fn accepts_the_canonical_architecture_and_rejects_mismatches() {
+        let expected = HandshakeExpectation {
+            nonce: "0123456789abcdef",
+            desktop_version: "0.1.0",
+            architecture: "arm64",
+        };
         assert!(validate_handshake(&fixture(), &expected).is_ok());
-        for field in ["nonce", "protocolVersion", "piVersion"] {
+
+        for (field, value) in [
+            ("nonce", json!("wrong")),
+            ("protocolVersion", json!(2)),
+            ("piVersion", json!("0.83.0")),
+            ("architecture", json!("x64")),
+        ] {
             let mut changed = fixture();
-            changed.payload.insert(field.into(), json!("wrong"));
-            assert_eq!(validate_handshake(&changed, &expected), Err("incompatible-sidecar".into()));
+            changed.payload.insert(field.into(), value);
+            assert_eq!(
+                validate_handshake(&changed, &expected),
+                Err("incompatible-sidecar".into())
+            );
         }
+
+        let mut missing_capability = fixture();
+        missing_capability.payload.insert(
+            "capabilities".into(),
+            json!(["cancel", "status", "stream"]),
+        );
+        assert_eq!(
+            validate_handshake(&missing_capability, &expected),
+            Err("incompatible-sidecar".into())
+        );
+    }
+
+    #[test]
+    fn maps_rust_target_names_to_protocol_names() {
+        assert!(matches!(protocol_architecture(), "arm64" | "x64"));
     }
 }

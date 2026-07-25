@@ -10,6 +10,10 @@ export class SidecarRouter {
     return { version: 1, kind, id, sequence: this.#sequence++, payload, ...(correlationId ? { correlationId } : {}) };
   }
 
+  get currentSequence(): number {
+    return this.#sequence - 1;
+  }
+
   idempotent(request: ProtocolEnvelope, create: () => ProtocolEnvelope): ProtocolEnvelope {
     const prior = this.#seen.get(request.id);
     if (prior) return prior;

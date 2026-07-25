@@ -1,35 +1,126 @@
 import type { ProtocolEnvelope } from '@piui/protocol';
 
-export type BridgeSnapshot = { sequence: number; state: Readonly<Record<string, unknown>> };
+export type BridgeSnapshot = {
+  sequence: number;
+  state: Readonly<Record<string, unknown>>;
+};
+
+export type BridgeClientOptions = {
+  idPrefix?: string;
+  maxInFlight?: number;
+  requestTimeoutMs?: number;
+  now?: () => number;
+};
+
+type PendingRequest = { deadline: number; method: string };
 
 export class BridgeClient {
-  #sequence = 0;
+  #incomingSequence = 0;
+  #outgoingSequence = 0;
+  #requestCounter = 0;
   #state: Readonly<Record<string, unknown>> = {};
-  #resyncRequested = false;
-  #acked = new Set<string>();
+  #resynchronisationNeeded = false;
+  #resynchronisationIssued = false;
+  #acknowledged = new Set<string>();
+  #acknowledgementOrder: string[] = [];
+  #inFlight = new Map<string, PendingRequest>();
+  readonly #idPrefix: string;
+  readonly #maxInFlight: number;
+  readonly #requestTimeoutMs: number;
+  readonly #now: () => number;
+
+  constructor(options: BridgeClientOptions = {}) {
+    this.#idPrefix = options.idPrefix ?? `web-${globalThis.crypto.randomUUID()}`;
+    this.#maxInFlight = options.maxInFlight ?? 128;
+    this.#requestTimeoutMs = options.requestTimeoutMs ?? 5_000;
+    this.#now = options.now ?? Date.now;
+  }
+
+  createRequest(
+    method: string,
+    payload: Readonly<Record<string, unknown>> = {},
+  ): ProtocolEnvelope {
+    if (this.#inFlight.size >= this.#maxInFlight) throw new Error('bridge-capacity-exceeded');
+    const id = `${this.#idPrefix}-${++this.#requestCounter}`;
+    const request: ProtocolEnvelope = {
+      version: 1,
+      kind: 'request',
+      id,
+      sequence: ++this.#outgoingSequence,
+      payload: { ...payload, method },
+    };
+    this.#inFlight.set(id, {
+      deadline: this.#now() + this.#requestTimeoutMs,
+      method,
+    });
+    return request;
+  }
 
   receive(envelope: ProtocolEnvelope): 'accepted' | 'duplicate' | 'stale' | 'gap' {
-    if (envelope.kind === 'ack' && envelope.correlationId) {
-      if (this.#acked.has(envelope.correlationId)) return 'duplicate';
-      this.#acked.add(envelope.correlationId);
+    if (
+      (envelope.kind === 'ack' || envelope.kind === 'response') &&
+      envelope.correlationId
+    ) {
+      if (this.#acknowledged.has(envelope.correlationId)) return 'duplicate';
+      this.#rememberAcknowledgement(envelope.correlationId);
+      this.#inFlight.delete(envelope.correlationId);
     }
-    if (envelope.sequence <= this.#sequence) return envelope.sequence === this.#sequence ? 'duplicate' : 'stale';
-    if (this.#sequence !== 0 && envelope.sequence !== this.#sequence + 1) {
-      this.#resyncRequested = true;
+
+    if (envelope.sequence <= this.#incomingSequence) {
+      return envelope.sequence === this.#incomingSequence ? 'duplicate' : 'stale';
+    }
+    if (this.#incomingSequence !== 0 && envelope.sequence !== this.#incomingSequence + 1) {
+      this.#resynchronisationNeeded = true;
       return 'gap';
     }
-    this.#sequence = envelope.sequence;
+
+    this.#incomingSequence = envelope.sequence;
     this.#state = Object.freeze({ ...this.#state, ...envelope.payload });
     return 'accepted';
   }
 
-  applySnapshot(snapshot: BridgeSnapshot): void {
-    if (!Number.isSafeInteger(snapshot.sequence) || snapshot.sequence < this.#sequence) return;
-    this.#sequence = snapshot.sequence;
-    this.#state = Object.freeze({ ...snapshot.state });
-    this.#resyncRequested = false;
+  takeResynchronisationRequest(): ProtocolEnvelope | null {
+    if (!this.#resynchronisationNeeded || this.#resynchronisationIssued) return null;
+    this.#resynchronisationIssued = true;
+    return this.createRequest('snapshot', { afterSequence: this.#incomingSequence });
   }
 
-  get snapshot(): BridgeSnapshot { return { sequence: this.#sequence, state: this.#state }; }
-  takeResynchronisationRequest(): boolean { const value = this.#resyncRequested; this.#resyncRequested = false; return value; }
+  applySnapshot(snapshot: BridgeSnapshot): boolean {
+    if (!Number.isSafeInteger(snapshot.sequence) || snapshot.sequence < this.#incomingSequence) {
+      return false;
+    }
+    this.#incomingSequence = snapshot.sequence;
+    this.#state = Object.freeze({ ...snapshot.state });
+    this.#resynchronisationNeeded = false;
+    this.#resynchronisationIssued = false;
+    return true;
+  }
+
+  expireRequests(now = this.#now()): readonly string[] {
+    const expired: string[] = [];
+    for (const [id, pending] of this.#inFlight) {
+      if (pending.deadline <= now) {
+        expired.push(id);
+        this.#inFlight.delete(id);
+      }
+    }
+    return expired;
+  }
+
+  get snapshot(): BridgeSnapshot {
+    return { sequence: this.#incomingSequence, state: this.#state };
+  }
+
+  get inFlightCount(): number {
+    return this.#inFlight.size;
+  }
+
+  #rememberAcknowledgement(id: string): void {
+    this.#acknowledged.add(id);
+    this.#acknowledgementOrder.push(id);
+    if (this.#acknowledgementOrder.length > 512) {
+      const oldest = this.#acknowledgementOrder.shift();
+      if (oldest) this.#acknowledged.delete(oldest);
+    }
+  }
 }

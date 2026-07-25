@@ -22,7 +22,9 @@ async function route(incoming: ProtocolEnvelope): Promise<void> {
   if (incoming.kind === 'request' && method === 'status') {
     write(router.idempotent(incoming, () => router.next('response', `response-${incoming.id}`, { status: 'ready', ...sdk }, incoming.id)));
   } else if (incoming.kind === 'request' && method === 'snapshot') {
-    write(router.idempotent(incoming, () => router.next('response', `response-${incoming.id}`, { status: 'ready', snapshot: true }, incoming.id)));
+    write(router.idempotent(incoming, () => router.next('response', `response-${incoming.id}`, {
+      snapshot: { sequence: router.currentSequence, state: { status: 'ready' } },
+    }, incoming.id)));
   } else if (incoming.kind === 'request' && method === 'stream.fixture') {
     if (streams.has(incoming.id)) return;
     const controller = new AbortController(); streams.set(incoming.id, controller);
