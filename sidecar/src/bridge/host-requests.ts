@@ -61,6 +61,31 @@ const HOST_ERROR_DETAILS = Object.freeze({
     message: 'Credential response rejected',
     retryable: false,
   },
+  'approval-request-rejected': {
+    category: 'invalid-request',
+    message: 'Approval request rejected',
+    retryable: false,
+  },
+  'approval-unavailable': {
+    category: 'unavailable',
+    message: 'Approval unavailable',
+    retryable: false,
+  },
+  'approval-cancelled': {
+    category: 'cancelled',
+    message: 'Approval cancelled',
+    retryable: false,
+  },
+  'approval-timeout': {
+    category: 'timeout',
+    message: 'Approval timed out',
+    retryable: false,
+  },
+  'approval-response-rejected': {
+    category: 'invalid-request',
+    message: 'Approval response rejected',
+    retryable: false,
+  },
 } as const satisfies Record<
   string,
   { category: ProtocolErrorCategory; message: string; retryable: boolean }
@@ -100,9 +125,31 @@ type CredentialMethod =
   | 'credential.list'
   | 'credential.set'
   | 'credential.remove';
+type HostMethod = CredentialMethod | 'approval.request';
+
+export type ApprovalRequestPayload = Readonly<{
+  method: 'approval.request';
+  schemaVersion: 1;
+  generation: number;
+  sessionId: string;
+  workspaceId: string;
+  workspaceRevision: number;
+  invocationId: string;
+  toolName: string;
+  input: unknown;
+  groupId?: string;
+}>;
+export type ApprovalGrant = Readonly<{
+  approvalId: string;
+  decisionId: string;
+  invocationId: string;
+  inputDigest: string;
+  decision: 'approved' | 'denied' | 'expired' | 'cancelled';
+  scopeIds: readonly string[];
+}>;
 
 type PendingRequest = {
-  method: CredentialMethod;
+  method: HostMethod;
   timer: ReturnType<typeof setTimeout>;
   resolve(value: unknown): void;
   reject(error: HostRequestError): void;
@@ -115,8 +162,8 @@ export type HostRequestClientOptions = {
   timeoutMs?: number;
 };
 
-function failProtocol(): never {
-  throw new HostRequestError('credential-response-rejected');
+function failProtocol(code: HostRequestErrorCode = 'credential-response-rejected'): never {
+  throw new HostRequestError(code);
 }
 
 function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
@@ -155,6 +202,38 @@ function validateJsonValue(value: unknown, depth: number, ancestors: Set<object>
   }
   ancestors.delete(value);
   return valid;
+}
+
+function validOpaque(value: unknown, prefix: string): value is string {
+  return typeof value === 'string' && new RegExp(`^${prefix}[0-9a-f]{32}$`).test(value);
+}
+
+export function assertApprovalRequestPayload(value: unknown): asserts value is ApprovalRequestPayload {
+  if (!isRecord(value)) throw new HostRequestError('approval-request-rejected');
+  const hasGroup = 'groupId' in value;
+  const keys = ['method', 'schemaVersion', 'generation', 'sessionId', 'workspaceId', 'workspaceRevision', 'invocationId', 'toolName', 'input', ...(hasGroup ? ['groupId'] : [])];
+  if (!hasExactKeys(value, keys) || value.method !== 'approval.request' || value.schemaVersion !== 1
+    || !Number.isSafeInteger(value.generation) || (value.generation as number) < 1
+    || !Number.isSafeInteger(value.workspaceRevision) || (value.workspaceRevision as number) < 0
+    || !validOpaque(value.sessionId, 'session-') || !validOpaque(value.workspaceId, 'workspace-')
+    || !validOpaque(value.invocationId, 'invocation-') || (hasGroup && !validOpaque(value.groupId, 'group-'))
+    || typeof value.toolName !== 'string' || value.toolName.length < 1 || value.toolName.length > 96 || CONTROL_CHARACTER.test(value.toolName)
+    || !validateJsonValue(value.input, 0, new Set())) throw new HostRequestError('approval-request-rejected');
+  let encoded: string;
+  try { encoded = JSON.stringify(value.input); } catch { throw new HostRequestError('approval-request-rejected'); }
+  if (Buffer.byteLength(encoded, 'utf8') > 65_536) throw new HostRequestError('approval-request-rejected');
+}
+
+export function assertApprovalHostRequestEnvelope(value: unknown): asserts value is ProtocolEnvelope {
+  if (!isRecord(value) || !hasExactKeys(value, ['version', 'kind', 'id', 'sequence', 'payload'])
+    || value.version !== 1 || value.kind !== 'host-request' || typeof value.id !== 'string' || !ENVELOPE_ID.test(value.id)
+    || !Number.isSafeInteger(value.sequence) || (value.sequence as number) < 0) throw new HostRequestError('approval-request-rejected');
+  assertApprovalRequestPayload(value.payload);
+}
+
+export function assertApprovalResponsePayload(value: unknown): asserts value is Readonly<{ decisionId: string; payload: Record<string, unknown> }> {
+  if (!isRecord(value) || !hasExactKeys(value, ['decisionId', 'payload']) || !validOpaque(value.decisionId, 'decision-') || !isRecord(value.payload)) throw new HostRequestError('approval-response-rejected');
+  parseSuccess('approval.request', value.payload, value.decisionId);
 }
 
 export function assertCredentialProviderId(providerId: string): void {
@@ -288,14 +367,30 @@ function validateHostResponseEnvelope(envelope: ProtocolEnvelope): void {
   ) {
     failProtocol();
   }
+  if (envelope.decisionId !== undefined && !/^decision-[0-9a-f]{32}$/.test(envelope.decisionId)) failProtocol();
   const allowed = envelope.error
     ? ['version', 'kind', 'id', 'correlationId', 'sequence', 'payload', 'error']
-    : ['version', 'kind', 'id', 'correlationId', 'sequence', 'payload'];
+    : ['version', 'kind', 'id', 'correlationId', 'sequence', 'payload', ...(envelope.decisionId ? ['decisionId'] : [])];
   if (!hasExactKeys(envelope as unknown as Record<string, unknown>, allowed)) failProtocol();
   if (!isRecord(envelope.payload)) failProtocol();
 }
 
-function parseSuccess(method: CredentialMethod, payload: Record<string, unknown>): unknown {
+function parseSuccess(method: HostMethod, payload: Record<string, unknown>, decisionId?: string): unknown {
+  if (method === 'approval.request') {
+    if (!decisionId || !/^decision-[0-9a-f]{32}$/.test(decisionId)) failProtocol('approval-response-rejected');
+    if (!hasExactKeys(payload, ['schemaVersion', 'approvalId', 'invocationId', 'inputDigest', 'decision', 'scopeIds'])
+      || payload.schemaVersion !== 1
+      || typeof payload.approvalId !== 'string' || !/^approval-[0-9a-f]{32}$/.test(payload.approvalId)
+      || typeof payload.invocationId !== 'string' || !/^invocation-[0-9a-f]{32}$/.test(payload.invocationId)
+      || typeof payload.inputDigest !== 'string' || !/^[0-9a-f]{64}$/.test(payload.inputDigest)
+      || !['approved', 'denied', 'expired', 'cancelled'].includes(payload.decision as string)
+      || !Array.isArray(payload.scopeIds) || payload.scopeIds.length > 1
+      || !payload.scopeIds.every((scope) => typeof scope === 'string' && /^scope-[0-9a-f]{32}$/.test(scope))
+      || new Set(payload.scopeIds).size !== payload.scopeIds.length
+      || (payload.decision === 'approved') !== (payload.scopeIds.length === 1)) failProtocol('approval-response-rejected');
+    return Object.freeze({ approvalId: payload.approvalId, decisionId, invocationId: payload.invocationId, inputDigest: payload.inputDigest, decision: payload.decision, scopeIds: Object.freeze([...payload.scopeIds]) }) as ApprovalGrant;
+  }
+  if (decisionId) failProtocol('credential-response-rejected');
   if (method === 'credential.get') {
     if (hasExactKeys(payload, ['found']) && payload.found === false) return undefined;
     if (!hasExactKeys(payload, ['found', 'credential']) || payload.found !== true) failProtocol();
@@ -323,17 +418,15 @@ function parseSuccess(method: CredentialMethod, payload: Record<string, unknown>
   return undefined;
 }
 
-function parseHostError(envelope: ProtocolEnvelope): HostRequestError {
-  if (!envelope.error || !hasExactKeys(envelope.payload, [])) failProtocol();
+function parseHostError(envelope: ProtocolEnvelope, method: HostMethod): HostRequestError {
+  if (!envelope.error || !hasExactKeys(envelope.payload, []) || envelope.decisionId) failProtocol(method === 'approval.request' ? 'approval-response-rejected' : 'credential-response-rejected');
   const error = envelope.error as unknown as Record<string, unknown>;
   if (!hasExactKeys(error, ['category', 'message', 'retryable'])) failProtocol();
 
-  for (const code of [
-    'credential-request-rejected',
-    'credential-store-unavailable',
-    'credential-request-cancelled',
-    'credential-operation-failed',
-  ] as const) {
+  const codes: readonly HostRequestErrorCode[] = method === 'approval.request'
+    ? ['approval-request-rejected', 'approval-unavailable', 'approval-cancelled', 'approval-timeout']
+    : ['credential-request-rejected', 'credential-store-unavailable', 'credential-request-cancelled', 'credential-operation-failed'];
+  for (const code of codes) {
     const expected = HOST_ERROR_DETAILS[code];
     if (
       error.category === expected.category
@@ -343,7 +436,7 @@ function parseHostError(envelope: ProtocolEnvelope): HostRequestError {
       return new HostRequestError(code);
     }
   }
-  failProtocol();
+  failProtocol(method === 'approval.request' ? 'approval-response-rejected' : 'credential-response-rejected');
 }
 
 export class HostRequestClient implements CredentialHostTransport {
@@ -449,9 +542,9 @@ export class HostRequestClient implements CredentialHostTransport {
 
     try {
       if (envelope.error) {
-        pending.reject(parseHostError(envelope));
+        pending.reject(parseHostError(envelope, pending.method));
       } else {
-        pending.resolve(parseSuccess(pending.method, envelope.payload));
+        pending.resolve(parseSuccess(pending.method, envelope.payload, envelope.decisionId));
       }
     } catch {
       pending.reject(new HostRequestError('credential-response-rejected'));
@@ -481,7 +574,12 @@ export class HostRequestClient implements CredentialHostTransport {
     this.#settleAll('credential-host-disconnected');
   }
 
-  #request(method: CredentialMethod, payload: Record<string, unknown>): Promise<unknown> {
+  requestApproval(payload: ApprovalRequestPayload): Promise<ApprovalGrant> {
+    assertApprovalRequestPayload(payload);
+    return this.#request('approval.request', payload as unknown as Record<string, unknown>) as Promise<ApprovalGrant>;
+  }
+
+  #request(method: HostMethod, payload: Record<string, unknown>): Promise<unknown> {
     if (this.#disconnected) {
       return Promise.reject(new HostRequestError('credential-host-disconnected'));
     }
@@ -505,7 +603,8 @@ export class HostRequestClient implements CredentialHostTransport {
 
       const outbound = envelope;
       try {
-        assertCredentialHostRequestEnvelope(outbound);
+        if (method === 'approval.request') assertApprovalHostRequestEnvelope(outbound);
+        else assertCredentialHostRequestEnvelope(outbound);
         this.#write(outbound);
       } catch {
         const pending = this.#take(requestId);
