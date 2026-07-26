@@ -9,9 +9,15 @@ use std::sync::{
     mpsc::{SyncSender, TrySendError},
 };
 use std::thread::{self, JoinHandle};
+use std::time::Instant;
 use zeroize::Zeroizing;
 
 pub(super) type FailureSignal = Arc<Mutex<Option<String>>>;
+
+pub(super) enum AttemptAuthorisationError {
+    Inactive,
+    DeadlineElapsed,
+}
 
 /// One linearisation point for generation write attempts and invalidation.
 /// A write attempt may hold the shared gate only around one nonblocking sink
@@ -64,6 +70,41 @@ impl GenerationControl {
     }
 
     pub(super) fn authorised_attempt<T>(&self, attempt: impl FnOnce() -> T) -> Result<T, ()> {
+        self.run_authorisation_hook();
+        let _gate = self
+            .transition
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !self.active.load(Ordering::Acquire) {
+            return Err(());
+        }
+        Ok(attempt())
+    }
+
+    /// Authorises one sink attempt for this generation only while both the
+    /// generation and its absolute deadline remain live. The checks and sink
+    /// call share the transition read gate, so neither expiry nor generation
+    /// invalidation has a stale check-to-attempt window.
+    pub(super) fn authorised_attempt_before<T>(
+        &self,
+        absolute_deadline: Instant,
+        attempt: impl FnOnce() -> T,
+    ) -> Result<T, AttemptAuthorisationError> {
+        self.run_authorisation_hook();
+        let _gate = self
+            .transition
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !self.active.load(Ordering::Acquire) {
+            return Err(AttemptAuthorisationError::Inactive);
+        }
+        if Instant::now() >= absolute_deadline {
+            return Err(AttemptAuthorisationError::DeadlineElapsed);
+        }
+        Ok(attempt())
+    }
+
+    fn run_authorisation_hook(&self) {
         #[cfg(test)]
         if let Some(hook) = self
             .authorisation_hook
@@ -73,14 +114,6 @@ impl GenerationControl {
         {
             hook();
         }
-        let _gate = self
-            .transition
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !self.active.load(Ordering::Acquire) {
-            return Err(());
-        }
-        Ok(attempt())
     }
 
     #[cfg(test)]

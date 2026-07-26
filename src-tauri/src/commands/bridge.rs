@@ -35,9 +35,11 @@ pub struct BridgeState {
 impl BridgeState {
     pub fn new(paths: SupervisorPaths) -> Self {
         let approval_registry = Arc::new(ApprovalRegistry::default());
+        let workspace_registry = Arc::new(WorkspaceRegistry::default());
         Self {
-            supervisor: Arc::new(Mutex::new(SidecarSupervisor::with_approval_registry(
+            supervisor: Arc::new(Mutex::new(SidecarSupervisor::with_registries(
                 Arc::clone(&approval_registry),
+                Arc::clone(&workspace_registry),
             ))),
             restart: Arc::new(Mutex::new(RestartController::default())),
             paths,
@@ -45,7 +47,7 @@ impl BridgeState {
             projector: Arc::new(WebViewProjector::default()),
             event_output: Arc::new(EventOutputQueue::default()),
             approval_registry,
-            workspace_registry: Arc::new(WorkspaceRegistry::default()),
+            workspace_registry,
         }
     }
 
@@ -96,8 +98,8 @@ impl BridgeState {
 
     pub(crate) fn deactivate_generation(&self, generation: u64) -> Result<(), String> {
         self.projector.deactivate_generation(generation)?;
-        self.approval_registry.invalidate_generation(generation);
         self.workspace_registry.invalidate_generation(generation);
+        self.approval_registry.invalidate_generation(generation);
         Ok(())
     }
 

@@ -230,6 +230,17 @@ pub(crate) struct WorkspaceApprovalBinding {
     lease_id: String,
 }
 
+impl WorkspaceApprovalBinding {
+    #[cfg(test)]
+    pub(crate) fn for_test(workspace_id: String, revision: u64) -> Self {
+        Self {
+            workspace_id,
+            revision,
+            lease_id: format!("trust-{}", Uuid::new_v4().simple()),
+        }
+    }
+}
+
 pub(crate) struct WorkspaceSync {
     pub(crate) workspace_id: String,
     pub(crate) revision: u64,
@@ -284,8 +295,14 @@ impl WorkspaceRegistry {
         revision: u64,
         operation: impl FnOnce(WorkspaceApprovalBinding) -> Result<T, String>,
     ) -> Result<T, String> {
-        let inner = self.inner.lock().map_err(|_| WORKSPACE_UNAVAILABLE.to_string())?;
-        let record = inner.records.get(workspace_id).ok_or_else(|| WORKSPACE_UNAVAILABLE.to_string())?;
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| WORKSPACE_UNAVAILABLE.to_string())?;
+        let record = inner
+            .records
+            .get(workspace_id)
+            .ok_or_else(|| WORKSPACE_UNAVAILABLE.to_string())?;
         if record.lifecycle != WorkspaceLifecycle::OpenUntrusted
             || record.trust_state != TrustState::Trusted
             || record.revision != revision
@@ -293,8 +310,15 @@ impl WorkspaceRegistry {
         {
             return Err(WORKSPACE_UNTRUSTED.into());
         }
-        let lease_id = record.lease_id.clone().ok_or_else(|| WORKSPACE_UNTRUSTED.to_string())?;
-        operation(WorkspaceApprovalBinding { workspace_id: record.id.clone(), revision, lease_id })
+        let lease_id = record
+            .lease_id
+            .clone()
+            .ok_or_else(|| WORKSPACE_UNTRUSTED.to_string())?;
+        operation(WorkspaceApprovalBinding {
+            workspace_id: record.id.clone(),
+            revision,
+            lease_id,
+        })
     }
 
     pub(crate) fn with_valid_approval_binding<T>(
@@ -302,8 +326,14 @@ impl WorkspaceRegistry {
         binding: &WorkspaceApprovalBinding,
         operation: impl FnOnce() -> Result<T, String>,
     ) -> Result<T, String> {
-        let inner = self.inner.lock().map_err(|_| WORKSPACE_UNAVAILABLE.to_string())?;
-        let record = inner.records.get(&binding.workspace_id).ok_or_else(|| WORKSPACE_UNAVAILABLE.to_string())?;
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| WORKSPACE_UNAVAILABLE.to_string())?;
+        let record = inner
+            .records
+            .get(&binding.workspace_id)
+            .ok_or_else(|| WORKSPACE_UNAVAILABLE.to_string())?;
         if record.lifecycle != WorkspaceLifecycle::OpenUntrusted
             || record.trust_state != TrustState::Trusted
             || record.revision != binding.revision

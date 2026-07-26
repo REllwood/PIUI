@@ -851,23 +851,11 @@ describe('private credential host requests', () => {
     }
     expect(duplicateRejected).toBe(true);
 
-    const second = client.get('wrong-kind-provider').catch((error: unknown) => error);
-    let wrongKindRejected = false;
-    try {
-      dispatch({
-        version: 1,
-        kind: 'response',
-        id: 'wrong-kind-response',
-        correlationId: requests[1]!.id,
-        sequence: 4,
-        payload: {},
-      });
-    } catch (error) {
-      wrongKindRejected = error instanceof HostRequestError
-        && error.code === 'credential-response-rejected';
-    }
-    expect(wrongKindRejected).toBe(true);
-    expect(await second).toMatchObject({ code: 'credential-response-rejected' });
+    expect(client.credentialGeneration.signal.aborted).toBe(true);
+    await expect(client.get('wrong-kind-provider')).rejects.toMatchObject({
+      code: 'credential-host-disconnected',
+    });
+    expect(requests).toHaveLength(1);
     expect(ordinaryRoutes).toBe(0);
   });
 

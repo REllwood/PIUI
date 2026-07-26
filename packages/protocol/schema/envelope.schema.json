@@ -41,6 +41,14 @@
     {
       "if": { "properties": { "kind": { "const": "cancel" } } },
       "then": { "required": ["correlationId"], "properties": { "correlationId": { "$ref": "#/$defs/id" }, "payload": { "type": "object", "maxProperties": 1 } } }
+    },
+    {
+      "if": { "type": "object", "required": ["decisionId"] },
+      "then": { "type": "object", "properties": { "kind": { "enum": ["ack", "host-response"] } } }
+    },
+    {
+      "if": { "type": "object", "properties": { "kind": { "const": "host-response" } }, "required": ["decisionId"] },
+      "then": { "type": "object", "properties": { "decisionId": { "type": "string", "pattern": "^decision-[0-9a-f]{32}$" } } }
     }
   ]
 }

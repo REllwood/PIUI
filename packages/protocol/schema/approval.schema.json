@@ -1,0 +1,181 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://piui.local/schema/approval.schema.json",
+  "title": "PIUI private approval payloads",
+  "oneOf": [
+    { "$ref": "#/$defs/requestV1" },
+    { "$ref": "#/$defs/requestV2" },
+    { "$ref": "#/$defs/ready" },
+    { "$ref": "#/$defs/abandon" },
+    { "$ref": "#/$defs/responseV1" },
+    { "$ref": "#/$defs/responseV2" },
+    { "$ref": "#/$defs/readyAck" },
+    { "$ref": "#/$defs/abandonAck" },
+    { "$ref": "#/$defs/groupCommit" }
+  ],
+  "$defs": {
+    "safeInteger": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+    "generation": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+    "wireId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$", "maxLength": 128 },
+    "toolName": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,95}$", "maxLength": 96 },
+    "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "invocationId": { "type": "string", "pattern": "^invocation-[0-9a-f]{32}$" },
+    "approvalId": { "type": "string", "pattern": "^approval-[0-9a-f]{32}$" },
+    "decisionId": { "type": "string", "pattern": "^decision-[0-9a-f]{32}$" },
+    "scopeId": { "type": "string", "pattern": "^scope-[0-9a-f]{32}$" },
+    "groupId": { "type": "string", "pattern": "^group-[0-9a-f]{32}$" },
+    "transactionId": { "type": "string", "pattern": "^transaction-[0-9a-f]{32}$" },
+    "baseRequest": {
+      "type": "object",
+      "properties": {
+        "method": { "const": "approval.request" },
+        "generation": { "$ref": "#/$defs/generation" },
+        "sessionId": { "type": "string", "pattern": "^session-[0-9a-f]{32}$" },
+        "workspaceId": { "type": "string", "pattern": "^workspace-[0-9a-f]{32}$" },
+        "workspaceRevision": { "$ref": "#/$defs/safeInteger" },
+        "invocationId": { "$ref": "#/$defs/invocationId" },
+        "toolName": { "$ref": "#/$defs/toolName" },
+        "inputDigest": { "$ref": "#/$defs/digest" },
+        "input": { "type": "object" }
+      }
+    },
+    "requestV1": {
+      "type": "object",
+      "unevaluatedProperties": false,
+      "allOf": [
+        { "$ref": "#/$defs/baseRequest" },
+        {
+          "type": "object",
+          "required": ["method", "schemaVersion", "generation", "sessionId", "workspaceId", "workspaceRevision", "invocationId", "toolName", "inputDigest", "input"],
+          "properties": { "schemaVersion": { "const": 1 }, "groupId": { "$ref": "#/$defs/groupId" } }
+        }
+      ]
+    },
+    "cohortMember": {
+      "type": "object", "additionalProperties": false,
+      "required": ["ordinal", "toolCallId", "toolName"],
+      "properties": {
+        "ordinal": { "type": "integer", "minimum": 0, "maximum": 31 },
+        "toolCallId": { "$ref": "#/$defs/wireId" },
+        "toolName": { "$ref": "#/$defs/toolName" }
+      }
+    },
+    "cohort": {
+      "type": "object", "additionalProperties": false,
+      "required": ["assistantEntryId", "cohortDigest", "orderedMembers"],
+      "properties": {
+        "assistantEntryId": { "$ref": "#/$defs/wireId" },
+        "cohortDigest": { "$ref": "#/$defs/digest" },
+        "orderedMembers": { "type": "array", "minItems": 1, "maxItems": 32, "items": { "$ref": "#/$defs/cohortMember" } }
+      }
+    },
+    "requestV2": {
+      "type": "object",
+      "unevaluatedProperties": false,
+      "allOf": [
+        { "$ref": "#/$defs/baseRequest" },
+        {
+          "type": "object",
+          "required": ["method", "schemaVersion", "generation", "sessionId", "workspaceId", "workspaceRevision", "invocationId", "toolCallId", "toolName", "inputDigest", "input", "cohort"],
+          "properties": {
+            "schemaVersion": { "const": 2 },
+            "toolCallId": { "$ref": "#/$defs/wireId" },
+            "cohort": { "$ref": "#/$defs/cohort" }
+          }
+        }
+      ]
+    },
+    "ready": {
+      "type": "object", "additionalProperties": false,
+      "required": ["method", "schemaVersion", "generation", "invocationId", "toolCallId", "inputDigest", "cohortDigest"],
+      "properties": {
+        "method": { "const": "approval.ready" }, "schemaVersion": { "const": 2 },
+        "generation": { "$ref": "#/$defs/generation" }, "invocationId": { "$ref": "#/$defs/invocationId" },
+        "toolCallId": { "$ref": "#/$defs/wireId" }, "inputDigest": { "$ref": "#/$defs/digest" },
+        "cohortDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "abandon": {
+      "type": "object", "additionalProperties": false,
+      "required": ["method", "schemaVersion", "generation", "sessionId", "workspaceId", "workspaceRevision", "assistantEntryId", "cohortDigest", "reason"],
+      "properties": {
+        "method": { "const": "approval.abandon" }, "schemaVersion": { "const": 2 },
+        "generation": { "$ref": "#/$defs/generation" },
+        "sessionId": { "type": "string", "pattern": "^session-[0-9a-f]{32}$" },
+        "workspaceId": { "type": "string", "pattern": "^workspace-[0-9a-f]{32}$" },
+        "workspaceRevision": { "$ref": "#/$defs/safeInteger" },
+        "assistantEntryId": { "$ref": "#/$defs/wireId" },
+        "cohortDigest": { "$ref": "#/$defs/digest" },
+        "reason": { "enum": ["pi-abort", "definition-change", "digest-change", "extension-error", "session-shutdown"] }
+      }
+    },
+    "resolutionBase": {
+      "type": "object",
+      "properties": {
+        "approvalId": { "$ref": "#/$defs/approvalId" }, "invocationId": { "$ref": "#/$defs/invocationId" },
+        "inputDigest": { "$ref": "#/$defs/digest" },
+        "decision": { "enum": ["approved", "denied", "expired", "cancelled"] },
+        "scopeIds": { "type": "array", "maxItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/scopeId" } }
+      }
+    },
+    "responseV1": {
+      "type": "object",
+      "unevaluatedProperties": false,
+      "allOf": [
+        { "$ref": "#/$defs/resolutionBase" },
+        { "type": "object", "required": ["schemaVersion", "approvalId", "invocationId", "inputDigest", "decision", "scopeIds"], "properties": { "schemaVersion": { "const": 1 } } }
+      ]
+    },
+    "responseV2": {
+      "type": "object",
+      "unevaluatedProperties": false,
+      "allOf": [
+        { "$ref": "#/$defs/resolutionBase" },
+        {
+          "type": "object",
+          "required": ["schemaVersion", "method", "approvalId", "transactionId", "invocationId", "toolCallId", "inputDigest", "cohortDigest", "decision", "scopeIds"],
+          "properties": {
+            "schemaVersion": { "const": 2 }, "method": { "const": "approval.resolve" },
+            "transactionId": { "$ref": "#/$defs/transactionId" }, "toolCallId": { "$ref": "#/$defs/wireId" },
+            "cohortDigest": { "$ref": "#/$defs/digest" }
+          }
+        }
+      ]
+    },
+    "readyAck": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schemaVersion", "method", "invocationId", "accepted"],
+      "properties": { "schemaVersion": { "const": 2 }, "method": { "const": "approval.ready-ack" }, "invocationId": { "$ref": "#/$defs/invocationId" }, "accepted": { "const": true } }
+    },
+    "abandonAck": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schemaVersion", "method", "cohortDigest", "cancelled"],
+      "properties": { "schemaVersion": { "const": 2 }, "method": { "const": "approval.abandon-ack" }, "cohortDigest": { "$ref": "#/$defs/digest" }, "cancelled": { "const": true } }
+    },
+    "groupMember": {
+      "type": "object", "additionalProperties": false,
+      "required": ["correlationId", "approvalId", "decisionId", "invocationId", "toolCallId", "inputDigest", "scopeId"],
+      "properties": {
+        "correlationId": { "$ref": "#/$defs/wireId" }, "approvalId": { "$ref": "#/$defs/approvalId" },
+        "decisionId": { "$ref": "#/$defs/decisionId" }, "invocationId": { "$ref": "#/$defs/invocationId" },
+        "toolCallId": { "$ref": "#/$defs/wireId" }, "inputDigest": { "$ref": "#/$defs/digest" },
+        "scopeId": { "$ref": "#/$defs/scopeId" }
+      }
+    },
+    "groupCommit": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schemaVersion", "method", "generation", "sessionId", "workspaceId", "workspaceRevision", "assistantEntryId", "groupId", "transactionId", "cohortDigest", "decision", "members"],
+      "properties": {
+        "schemaVersion": { "const": 2 }, "method": { "const": "approval.group-commit" },
+        "generation": { "$ref": "#/$defs/generation" },
+        "sessionId": { "type": "string", "pattern": "^session-[0-9a-f]{32}$" },
+        "workspaceId": { "type": "string", "pattern": "^workspace-[0-9a-f]{32}$" },
+        "workspaceRevision": { "$ref": "#/$defs/safeInteger" },
+        "assistantEntryId": { "$ref": "#/$defs/wireId" },
+        "groupId": { "$ref": "#/$defs/groupId" }, "transactionId": { "$ref": "#/$defs/transactionId" },
+        "cohortDigest": { "$ref": "#/$defs/digest" }, "decision": { "const": "approved" },
+        "members": { "type": "array", "minItems": 2, "maxItems": 32, "items": { "$ref": "#/$defs/groupMember" } }
+      }
+    }
+  }
+}
