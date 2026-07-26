@@ -7,27 +7,31 @@ export class ProtocolDecoder {
 
   decode(line: Uint8Array | string): ProtocolEnvelope | UnknownEventDiagnostic {
     const bytes = typeof line === 'string' ? Buffer.from(line, 'utf8') : Buffer.from(line);
-    if (bytes.length > PROTOCOL_LIMITS.maxLineBytes) throw new ProtocolValidationError('Line limit exceeded');
-    if (bytes.length === 0 || bytes.at(-1) !== 0x0a || bytes.includes(0x0d)) {
-      throw new ProtocolValidationError('Protocol input must be one LF-delimited line');
-    }
-    let text: string;
     try {
-      text = new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, -1));
-    } catch {
-      throw new ProtocolValidationError('Invalid UTF-8');
+      if (bytes.length > PROTOCOL_LIMITS.maxLineBytes) throw new ProtocolValidationError('Line limit exceeded');
+      if (bytes.length === 0 || bytes.at(-1) !== 0x0a || bytes.includes(0x0d)) {
+        throw new ProtocolValidationError('Protocol input must be one LF-delimited line');
+      }
+      let text: string;
+      try {
+        text = new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, -1));
+      } catch {
+        throw new ProtocolValidationError('Invalid UTF-8');
+      }
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        throw new ProtocolValidationError('Invalid JSON');
+      }
+      const envelope = validateParsedEnvelope(parsed);
+      if (this.#seenIds.has(envelope.id)) throw new ProtocolValidationError('Duplicate envelope ID');
+      if (this.#seenIds.size >= PROTOCOL_LIMITS.maxPendingIds) throw new ProtocolValidationError('Pending ID limit exceeded');
+      this.#seenIds.add(envelope.id);
+      return envelope;
+    } finally {
+      bytes.fill(0);
     }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      throw new ProtocolValidationError('Invalid JSON');
-    }
-    const envelope = validateParsedEnvelope(parsed);
-    if (this.#seenIds.has(envelope.id)) throw new ProtocolValidationError('Duplicate envelope ID');
-    if (this.#seenIds.size >= PROTOCOL_LIMITS.maxPendingIds) throw new ProtocolValidationError('Pending ID limit exceeded');
-    this.#seenIds.add(envelope.id);
-    return envelope;
   }
 
   acknowledge(id: string): void {

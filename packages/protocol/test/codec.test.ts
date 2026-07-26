@@ -70,4 +70,26 @@ describe('private protocol codec', () => {
     const envelope: ProtocolEnvelope = { version: 1, kind: 'event', id: 'round-trip', sequence: 9, payload: { eventType: 'sidecar.status', status: 'ready' } };
     expect(new ProtocolDecoder().decode(encodeEnvelope(envelope))).toEqual(envelope);
   });
+
+  it('closes versioned workspace request payloads while leaving paths private', () => {
+    const request: ProtocolEnvelope = {
+      version: 1,
+      kind: 'request',
+      id: 'rust-workspace-schema-1',
+      sequence: 1,
+      payload: {
+        method: 'workspace.openUntrusted',
+        schemaVersion: 1,
+        workspaceId: 'workspace-0123456789abcdef0123456789abcdef',
+        generation: 1,
+        revision: 0,
+      },
+    };
+    expect(new ProtocolDecoder().decode(encodeEnvelope(request))).toEqual(request);
+    expect(() => new ProtocolDecoder().decode(encodeEnvelope({
+      ...request,
+      id: 'rust-workspace-schema-extra',
+      payload: { ...request.payload, path: '/private/canary' },
+    }))).toThrow('Envelope failed schema validation');
+  });
 });
