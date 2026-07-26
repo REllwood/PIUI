@@ -45,6 +45,8 @@ pub fn run() {
             commands::bridge::sidecar_stop,
             commands::bridge::bridge_send,
             commands::credentials::present_credential_sheet,
+            commands::approval::approval_pending,
+            commands::approval::approval_submit,
             commands::workspace::workspace_select_directory,
             commands::workspace::workspace_inspect,
             commands::workspace::workspace_open_untrusted,

@@ -3,6 +3,7 @@ use super::router::{SequenceOutcome, SequenceRouter};
 use super::stdio::{GenerationControl, RawFrame, fail_generation};
 use crate::credentials::CredentialProxy;
 use crate::credentials::proxy::discard_private_envelope;
+use crate::domain::approval::{ApprovalRegistry, ApprovalRequest};
 use crate::protocol::{
     AUTHENTICATED_INTERNAL_SNAPSHOT_CORRELATION, Envelope, ProtocolDecoder, ProtocolKind,
 };
@@ -76,6 +77,7 @@ pub(super) struct DispatcherHandles {
     // The coordinator always remains drainable. Only its one separate
     // repository operation thread may be detached if storage never returns.
     pub credential_coordinator: JoinHandle<()>,
+    pub approval_coordinator: JoinHandle<()>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -86,6 +88,7 @@ pub(super) fn start_dispatcher(
     public_sender: SyncSender<PublicMessage>,
     workspace_waiters: Arc<WorkspaceWaiters>,
     proxy: CredentialProxy,
+    approval_registry: Arc<ApprovalRegistry>,
     writer: Arc<Mutex<GenerationWriter>>,
     control: Arc<GenerationControl>,
     diagnostics: Arc<Mutex<VecDeque<String>>>,
@@ -105,6 +108,18 @@ pub(super) fn start_dispatcher(
         );
     });
 
+    let approval_writer = Arc::clone(&writer);
+    let approval_control = Arc::clone(&control);
+    let approval_registry_for_coordinator = Arc::clone(&approval_registry);
+    let approval_coordinator = thread::spawn(move || {
+        approval_coordinator_loop(
+            generation,
+            approval_registry_for_coordinator,
+            approval_writer,
+            approval_control,
+        );
+    });
+
     let dispatcher_writer = Arc::clone(&writer);
     let dispatcher_control = Arc::clone(&control);
     let dispatcher = thread::spawn(move || {
@@ -114,6 +129,7 @@ pub(super) fn start_dispatcher(
             raw_receiver,
             public_sender,
             workspace_waiters,
+            approval_registry,
             private_sender,
             outstanding,
             dispatcher_writer,
@@ -126,6 +142,7 @@ pub(super) fn start_dispatcher(
     DispatcherHandles {
         dispatcher,
         credential_coordinator,
+        approval_coordinator,
     }
 }
 
@@ -136,6 +153,7 @@ fn dispatch_loop(
     raw_receiver: Receiver<RawFrame>,
     public_sender: SyncSender<PublicMessage>,
     workspace_waiters: Arc<WorkspaceWaiters>,
+    approval_registry: Arc<ApprovalRegistry>,
     private_sender: SyncSender<PrivateWork>,
     outstanding: Arc<AtomicUsize>,
     writer: Arc<Mutex<GenerationWriter>>,
@@ -290,6 +308,25 @@ fn dispatch_loop(
         }
 
         if private {
+            let method = envelope.payload.get("method").and_then(Value::as_str);
+            if method == Some("approval.request") {
+                let request = parse_approval_request(generation, &envelope);
+                let private_envelope = envelope;
+                match request.and_then(|request| approval_registry.register(request).map(|_| ())) {
+                    Ok(()) => discard_private_envelope(private_envelope),
+                    Err(_) => {
+                        discard_private_envelope(private_envelope);
+                        fatal("sidecar approval request invalid", &control, &public_sender);
+                        return;
+                    }
+                }
+                continue;
+            }
+            if !method.is_some_and(|method| method.starts_with("credential.")) {
+                discard_private_envelope(envelope);
+                fatal("sidecar private method invalid", &control, &public_sender);
+                return;
+            }
             let Some(permit) = reserve_private_work(&outstanding) else {
                 discard_private_envelope(envelope);
                 fatal(
@@ -351,6 +388,82 @@ fn reserve_private_work(outstanding: &Arc<AtomicUsize>) -> Option<WorkPermit> {
         })
         .ok()
         .map(|_| WorkPermit(Arc::clone(outstanding)))
+}
+
+fn parse_approval_request(generation: u64, envelope: &Envelope) -> Result<ApprovalRequest, String> {
+    crate::protocol::approval::validate_approval_request(&envelope.payload)?;
+    let payload = &envelope.payload;
+    let request_generation = payload
+        .get("generation")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "approval request rejected".to_string())?;
+    if request_generation != generation {
+        return Err("approval request rejected".into());
+    }
+    Ok(ApprovalRequest {
+        generation,
+        correlation_id: envelope.id.clone(),
+        session_id: payload
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        workspace_id: payload
+            .get("workspaceId")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        workspace_revision: payload
+            .get("workspaceRevision")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+        invocation_id: payload
+            .get("invocationId")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        tool_name: payload
+            .get("toolName")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        group_id: payload
+            .get("groupId")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        input: payload
+            .get("input")
+            .cloned()
+            .ok_or_else(|| "approval request rejected".to_string())?,
+    })
+}
+
+fn approval_coordinator_loop(
+    generation: u64,
+    registry: Arc<ApprovalRegistry>,
+    writer: Arc<Mutex<GenerationWriter>>,
+    control: Arc<GenerationControl>,
+) {
+    while control.is_active() {
+        match registry.take_response_job(generation) {
+            Ok(Some(job)) => {
+                let result = writer
+                    .lock()
+                    .map_err(|_| "sidecar writer unavailable".to_string())
+                    .and_then(|mut writer| writer.write_approval_response(generation, job));
+                if result.is_err() {
+                    control.invalidate("sidecar approval response failed");
+                    return;
+                }
+            }
+            Ok(None) => thread::sleep(Duration::from_millis(10)),
+            Err(_) => {
+                control.invalidate("approval state unavailable");
+                return;
+            }
+        }
+    }
+    registry.invalidate_generation(generation);
 }
 
 fn credential_coordinator_loop(
@@ -531,6 +644,7 @@ mod tests {
         control: Arc<GenerationControl>,
         failure: crate::supervisor::stdio::FailureSignal,
         writer: Arc<Mutex<GenerationWriter>>,
+        approval_registry: Arc<ApprovalRegistry>,
         sink: SharedSink,
         handles: DispatcherHandles,
     }
@@ -557,6 +671,7 @@ mod tests {
                 "version":1,"kind":"handshake","id":"handshake-test","sequence":0,
                 "payload":{"protocolVersion":1,"desktopVersion":"0.1.0","piVersion":"0.82.0","nodeVersion":"22.23.1","nonce":"dispatcher-test-nonce","architecture":"arm64","capabilities":["streaming","cancellation","snapshot-resync"]}
             }))).unwrap();
+            let approval_registry = Arc::new(ApprovalRegistry::default());
             let handles = start_dispatcher(
                 1,
                 decoder,
@@ -564,6 +679,7 @@ mod tests {
                 public_sender,
                 workspace_waiters,
                 proxy,
+                Arc::clone(&approval_registry),
                 Arc::clone(&writer),
                 Arc::clone(&control),
                 Arc::new(Mutex::new(VecDeque::new())),
@@ -576,6 +692,7 @@ mod tests {
                 control,
                 failure,
                 writer,
+                approval_registry,
                 sink,
                 handles,
             }
@@ -607,6 +724,7 @@ mod tests {
             drop(self.raw);
             let _ = self.handles.dispatcher.join();
             let _ = self.handles.credential_coordinator.join();
+            let _ = self.handles.approval_coordinator.join();
         }
     }
 
@@ -1280,6 +1398,7 @@ mod tests {
             public_sender,
             workspace_waiters,
             CredentialProxy::in_memory_for_dispatcher_test(),
+            Arc::new(ApprovalRegistry::default()),
             writer,
             Arc::clone(&control),
             Arc::new(Mutex::new(VecDeque::new())),
@@ -1300,5 +1419,61 @@ mod tests {
         drop(raw);
         let _ = handles.dispatcher.join();
         let _ = handles.credential_coordinator.join();
+        let _ = handles.approval_coordinator.join();
+    }
+
+    #[test]
+    fn approval_request_is_private_and_exact_decision_writes_once() {
+        let rig = Rig::new(CredentialProxy::in_memory_for_dispatcher_test());
+        let request_id = "sidecar-1".to_string();
+        rig.send(host(
+            1,
+            &request_id,
+            serde_json::json!({
+                "method":"approval.request", "schemaVersion":1, "generation":1,
+                "sessionId":format!("session-{}", "1".repeat(32)),
+                "workspaceId":format!("workspace-{}", "2".repeat(32)), "workspaceRevision":1,
+                "invocationId":format!("invocation-{}", "3".repeat(32)), "toolName":"write",
+                "input":{"path":"private/canary","content":"safe"}
+            }),
+        ))
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let view = loop {
+            let pending = rig.approval_registry.pending().unwrap();
+            if let Some(view) = pending.into_iter().next() {
+                break view;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        };
+        assert!(rig.public.try_recv().is_err());
+        rig.approval_registry
+            .submit(crate::domain::approval::ApprovalSubmission {
+                approval_id: view.approval_id.clone(),
+                decision_id: view.decision_id.clone(),
+                scope_ids: vec![view.scopes[0].scope_id.clone()],
+                choice: crate::domain::approval::ApprovalChoice::ApproveOnce,
+            })
+            .unwrap();
+        let responses = rig.wait_for_lines(1);
+        assert_eq!(responses.len(), 1);
+        let response = &responses[0];
+        assert_eq!(response.kind, ProtocolKind::HostResponse);
+        assert_eq!(
+            response.correlation_id.as_deref(),
+            Some(request_id.as_str())
+        );
+        assert_eq!(
+            response.decision_id.as_deref(),
+            Some(view.decision_id.as_str())
+        );
+        assert_eq!(
+            response.payload.get("decision"),
+            Some(&Value::String("approved".into()))
+        );
+        let encoded = serde_json::to_string(response).unwrap();
+        assert!(!encoded.contains("private/canary"));
+        rig.shutdown();
     }
 }

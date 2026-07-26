@@ -1,3 +1,4 @@
+pub(crate) mod approval;
 mod envelope;
 pub(crate) mod workspace;
 
