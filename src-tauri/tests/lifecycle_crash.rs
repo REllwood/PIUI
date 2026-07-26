@@ -23,7 +23,7 @@ fn lifecycle_crash_restarts_with_new_generations_then_halts_and_allows_user_reco
         assert_eq!(restart.attempt_count(), attempt as usize);
         assert_eq!(
             supervisor
-                .send_for_generation(generation, &status_request("stale", 1))
+                .send_for_generation(generation, &status_request("web-stale", 1))
                 .unwrap_err(),
             "stale sidecar generation"
         );
@@ -68,7 +68,7 @@ fn crash_generation(supervisor: &mut SidecarSupervisor, generation: u64, attempt
     let request: Envelope = serde_json::from_value(serde_json::json!({
         "version": 1,
         "kind": "request",
-        "id": format!("crash-{attempt}"),
+        "id": format!("web-crash-{attempt}"),
         "sequence": 1,
         "payload": {"method": "spike.crash"}
     }))

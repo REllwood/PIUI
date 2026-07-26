@@ -10,6 +10,26 @@ pub const INVALID_CREDENTIAL_INPUT: &str = "invalid-credential-input";
 pub const CREDENTIAL_SHEET_BUSY: &str = "credential-sheet-busy";
 pub const CREDENTIAL_SHEET_UNAVAILABLE: &str = "credential-sheet-unavailable";
 pub const NATIVE_CREDENTIAL_SHEET_UNSUPPORTED: &str = "native-credential-sheet-unsupported";
+pub const NATIVE_FOLDER_PICKER_UNAVAILABLE: &str = "native-folder-picker-unavailable";
+pub const NATIVE_FOLDER_PICKER_UNSUPPORTED: &str = "native-folder-picker-unsupported";
+
+#[derive(Clone, Copy)]
+pub(crate) struct NativeFolderPickerError(&'static str);
+
+impl NativeFolderPickerError {
+    pub(crate) const fn unavailable() -> Self {
+        Self(NATIVE_FOLDER_PICKER_UNAVAILABLE)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    const fn unsupported() -> Self {
+        Self(NATIVE_FOLDER_PICKER_UNSUPPORTED)
+    }
+
+    pub(crate) const fn code(self) -> &'static str {
+        self.0
+    }
+}
 
 #[cfg(any(target_os = "macos", test))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -290,6 +310,20 @@ pub(crate) async fn present_native_credential_sheet(
     _provider_label: String,
 ) -> Result<CredentialSheetDecision, NativeCredentialSheetError> {
     Err(NativeCredentialSheetError::unsupported())
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) async fn present_native_folder_picker(
+    window: WebviewWindow,
+) -> Result<Option<std::path::PathBuf>, NativeFolderPickerError> {
+    macos::folder_picker::present(window).await
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) async fn present_native_folder_picker(
+    _window: WebviewWindow,
+) -> Result<Option<std::path::PathBuf>, NativeFolderPickerError> {
+    Err(NativeFolderPickerError::unsupported())
 }
 
 #[cfg(test)]

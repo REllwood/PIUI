@@ -20,7 +20,7 @@ export function CredentialProbe() {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<CredentialSheetResult | null>(null);
   const [status, setStatus] = useState(
-    'Ready to open the protected macOS credential sheet.',
+    'Ready to test the optional API-key fallback.',
   );
 
   useEffect(() => {
@@ -70,14 +70,16 @@ export function CredentialProbe() {
   return (
     <main className="gate credential-probe" aria-labelledby="credential-title">
       <section className="gate__card">
-        <p className="gate__eyebrow">Native secret boundary</p>
-        <h1 id="credential-title">Credential sheet probe</h1>
+        <p className="gate__eyebrow">Optional API-key fallback probe</p>
+        <h1 id="credential-title">Test native API-key entry</h1>
         <p className="gate__summary">
-          API key entry, paste and reveal stay in a protected macOS sheet. This page receives safe
-          credential metadata only.
+          PIUI's final onboarding prioritises existing provider subscriptions such as ChatGPT
+          Plus/Pro for Codex. This architecture-only page verifies that optional API-key entry,
+          paste and reveal stay in a protected macOS sheet while the WebView receives safe metadata
+          only.
         </p>
         <button ref={button} type="button" autoFocus disabled={busy} onClick={presentSheet}>
-          {busy ? 'Credential sheet open…' : 'Add API key'}
+          {busy ? 'Credential sheet open…' : 'Test API-key fallback'}
         </button>
         <p role="status" aria-live="polite" className="credential-probe__status">
           {status}

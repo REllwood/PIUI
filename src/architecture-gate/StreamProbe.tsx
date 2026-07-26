@@ -1,12 +1,45 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ProtocolEnvelope } from '@piui/protocol';
-import { BridgeClient } from '../bridge/client';
+import { BridgeClient, isPrivateHostEnvelope } from '../bridge/client';
 
 export type StreamProbeEvent = {
   text?: string;
   replaceText?: string;
   terminal?: 'complete' | 'cancelled';
 };
+
+export const MAX_RENDERED_STREAM_UTF16 = 262_144;
+
+export function normaliseAndTruncateUtf16(value: string, maximumUnits: number): string {
+  if (maximumUnits <= 0) return '';
+  let normalised = '';
+  for (let index = 0; index < value.length; index += 1) {
+    const unit = value.charCodeAt(index);
+    if (unit >= 0xd800 && unit <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        normalised += value[index] + value[index + 1];
+        index += 1;
+      } else normalised += '\ufffd';
+    } else if (unit >= 0xdc00 && unit <= 0xdfff) normalised += '\ufffd';
+    else normalised += value[index];
+  }
+  if (normalised.length <= maximumUnits) return normalised;
+  let end = maximumUnits;
+  const last = normalised.charCodeAt(end - 1);
+  const next = normalised.charCodeAt(end);
+  if (last >= 0xd800 && last <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) end -= 1;
+  return normalised.slice(0, end);
+}
+
+export function takeBoundedStreamText(
+  value: string,
+  usedUnits: number,
+): { text: string; usedUnits: number } {
+  const remaining = Math.max(0, MAX_RENDERED_STREAM_UTF16 - usedUnits);
+  const text = normaliseAndTruncateUtf16(value, remaining);
+  return { text, usedUnits: usedUnits + text.length };
+}
 
 type StreamHarness = {
   start: (request: ProtocolEnvelope) => void | Promise<void>;
@@ -18,6 +51,77 @@ declare global {
   interface Window {
     __PIUI_STREAM_HARNESS__?: StreamHarness;
   }
+}
+
+export type StreamEnvelopeAcceptance = {
+  bridge: BridgeClient;
+  requestId: string;
+  deliver: (event: StreamProbeEvent) => void;
+  sendSnapshot: (snapshot: ProtocolEnvelope) => void;
+};
+
+export function acceptStreamProbeEnvelope(
+  envelope: ProtocolEnvelope,
+  context: StreamEnvelopeAcceptance,
+): void {
+  if (isPrivateHostEnvelope(envelope)) return;
+
+  if (envelope.kind === 'response' && 'snapshot' in envelope.payload) {
+    const snapshot = envelope.payload.snapshot;
+    if (
+      typeof snapshot === 'object' &&
+      snapshot !== null &&
+      !Array.isArray(snapshot) &&
+      Number.isSafeInteger((snapshot as { sequence?: unknown }).sequence) &&
+      Number((snapshot as { sequence: number }).sequence) <= envelope.sequence &&
+      typeof (snapshot as { state?: unknown }).state === 'object' &&
+      (snapshot as { state?: unknown }).state !== null &&
+      !Array.isArray((snapshot as { state?: unknown }).state)
+    ) {
+      const state = (snapshot as { state: Record<string, unknown> }).state;
+      const applied = context.bridge.applySnapshot(
+        { sequence: envelope.sequence, state },
+        envelope.correlationId,
+      );
+      const streams = state.streams;
+      const stream =
+        typeof streams === 'object' && streams !== null && !Array.isArray(streams)
+          ? (streams as Record<string, unknown>)[context.requestId]
+          : undefined;
+      if (applied && typeof stream === 'object' && stream !== null && !Array.isArray(stream)) {
+        const streamState = stream as { text?: unknown; terminal?: unknown };
+        context.deliver({
+          replaceText: typeof streamState.text === 'string' ? streamState.text : '',
+          terminal:
+            streamState.terminal === 'complete' || streamState.terminal === 'cancelled'
+              ? streamState.terminal
+              : undefined,
+        });
+      }
+    }
+    return;
+  }
+
+  const outcome = context.bridge.receive(envelope);
+  if (outcome === 'gap') {
+    const snapshot = context.bridge.takeResynchronisationRequest();
+    if (snapshot) context.sendSnapshot(snapshot);
+    return;
+  }
+  if (
+    outcome !== 'accepted' ||
+    envelope.kind !== 'event' ||
+    envelope.correlationId !== context.requestId
+  ) {
+    return;
+  }
+  context.deliver({
+    text: typeof envelope.payload.text === 'string' ? envelope.payload.text : undefined,
+    terminal:
+      envelope.payload.terminal === 'complete' || envelope.payload.terminal === 'cancelled'
+        ? envelope.payload.terminal
+        : undefined,
+  });
 }
 
 export function StreamProbe({
@@ -32,6 +136,7 @@ export function StreamProbe({
   const queuedText = useRef('');
   const queuedReplacementText = useRef<string | null>(null);
   const queuedTerminal = useRef<'complete' | 'cancelled' | null>(null);
+  const acceptedTextUnits = useRef(0);
   const frame = useRef<number | null>(null);
 
   useEffect(() => {
@@ -51,8 +156,17 @@ export function StreamProbe({
       });
     };
     const unsubscribe = subscribe((event) => {
-      if (event.replaceText !== undefined) queuedReplacementText.current = event.replaceText;
-      if (event.text) queuedText.current += event.text;
+      if (event.replaceText !== undefined) {
+        const bounded = takeBoundedStreamText(event.replaceText, 0);
+        queuedReplacementText.current = bounded.text;
+        queuedText.current = '';
+        acceptedTextUnits.current = bounded.usedUnits;
+      }
+      if (event.text) {
+        const bounded = takeBoundedStreamText(event.text, acceptedTextUnits.current);
+        if (bounded.text) queuedText.current += bounded.text;
+        acceptedTextUnits.current = bounded.usedUnits;
+      }
       if (event.terminal) queuedTerminal.current = event.terminal;
       flushInFrame();
     });
@@ -99,67 +213,18 @@ export function StreamProbeRoute() {
       for (const listener of listeners.current) listener(event);
     };
     const acceptEnvelope = (envelope: ProtocolEnvelope) => {
-      if (envelope.kind === 'response' && 'snapshot' in envelope.payload) {
-        const snapshot = envelope.payload.snapshot;
-        if (
-          typeof snapshot === 'object' &&
-          snapshot !== null &&
-          !Array.isArray(snapshot) &&
-          Number.isSafeInteger((snapshot as { sequence?: unknown }).sequence) &&
-          Number((snapshot as { sequence: number }).sequence) <= envelope.sequence &&
-          typeof (snapshot as { state?: unknown }).state === 'object' &&
-          (snapshot as { state?: unknown }).state !== null &&
-          !Array.isArray((snapshot as { state?: unknown }).state)
-        ) {
-          const state = (snapshot as { state: Record<string, unknown> }).state;
-          const applied = bridge.current?.applySnapshot(
-            { sequence: envelope.sequence, state },
-            envelope.correlationId,
-          );
-          const streams = state.streams;
-          const stream =
-            typeof streams === 'object' && streams !== null && !Array.isArray(streams)
-              ? (streams as Record<string, unknown>)[request.current!.id]
-              : undefined;
-          if (applied && typeof stream === 'object' && stream !== null && !Array.isArray(stream)) {
-            const streamState = stream as { text?: unknown; terminal?: unknown };
-            deliver({
-              replaceText: typeof streamState.text === 'string' ? streamState.text : '',
-              terminal:
-                streamState.terminal === 'complete' || streamState.terminal === 'cancelled'
-                  ? streamState.terminal
-                  : undefined,
-            });
-          }
-        }
-        return;
-      }
-      const outcome = bridge.current?.receive(envelope);
-      if (outcome === 'gap') {
-        const snapshot = bridge.current?.takeResynchronisationRequest();
-        if (snapshot) {
+      acceptStreamProbeEnvelope(envelope, {
+        bridge: bridge.current!,
+        requestId: request.current!.id,
+        deliver,
+        sendSnapshot: (snapshot) => {
           if (window.__PIUI_STREAM_HARNESS__) void window.__PIUI_STREAM_HARNESS__.send(snapshot);
           else {
             void import('@tauri-apps/api/core').then(({ invoke }) =>
               invoke('bridge_send', { envelope: snapshot }),
             );
           }
-        }
-        return;
-      }
-      if (outcome !== 'accepted') return;
-      if (
-        envelope.kind !== 'event' ||
-        envelope.correlationId !== request.current?.id
-      ) {
-        return;
-      }
-      deliver({
-        text: typeof envelope.payload.text === 'string' ? envelope.payload.text : undefined,
-        terminal:
-          envelope.payload.terminal === 'complete' || envelope.payload.terminal === 'cancelled'
-            ? envelope.payload.terminal
-            : undefined,
+        },
       });
     };
 

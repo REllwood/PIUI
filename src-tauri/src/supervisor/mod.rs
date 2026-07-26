@@ -1,3 +1,4 @@
+mod dispatcher;
 mod handshake;
 mod process;
 mod redact;

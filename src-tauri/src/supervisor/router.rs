@@ -75,6 +75,38 @@ impl SequenceRouter {
         self.resynchronisation_issued = false;
         true
     }
+
+    /// Accepts one correlated snapshot response across the gap it repairs and
+    /// records its correlation in the same bounded duplicate history used by
+    /// ordinary responses. A later response with the same correlation is then
+    /// classified as duplicate even when it has a fresh envelope ID.
+    pub fn apply_correlated_snapshot(&mut self, envelope: &Envelope) -> bool {
+        if envelope.kind != ProtocolKind::Response
+            || envelope.correlation_id.is_none()
+            || self
+                .last_sequence
+                .is_some_and(|last| envelope.sequence <= last)
+        {
+            return false;
+        }
+        let correlation = envelope
+            .correlation_id
+            .as_ref()
+            .expect("correlation checked");
+        if !self.acknowledgements.insert(correlation.clone()) {
+            return false;
+        }
+        self.acknowledgement_order.push_back(correlation.clone());
+        if self.acknowledgement_order.len() > MAX_ACKNOWLEDGEMENTS
+            && let Some(oldest) = self.acknowledgement_order.pop_front()
+        {
+            self.acknowledgements.remove(&oldest);
+        }
+        self.last_sequence = Some(envelope.sequence);
+        self.resynchronisation_needed = false;
+        self.resynchronisation_issued = false;
+        true
+    }
 }
 
 #[cfg(test)]
@@ -122,6 +154,33 @@ mod tests {
             SequenceOutcome::Accepted
         );
         assert!(!router.apply_snapshot(2));
+    }
+
+    #[test]
+    fn correlated_snapshot_crosses_gap_and_registers_duplicate_history_once() {
+        let mut router = SequenceRouter::default();
+        assert_eq!(
+            router.observe(&envelope("event", "public-1", 1, None)),
+            SequenceOutcome::Accepted
+        );
+        assert_eq!(
+            router.observe(&envelope("event", "public-3", 3, None)),
+            SequenceOutcome::Gap
+        );
+        let snapshot = envelope("response", "snapshot-4", 4, Some("rust-snapshot-1"));
+        assert!(router.apply_correlated_snapshot(&snapshot));
+        assert_eq!(router.last_sequence(), Some(4));
+        assert!(!router.apply_correlated_snapshot(&snapshot));
+        assert_eq!(
+            router.observe(&envelope(
+                "response",
+                "snapshot-repeat-5",
+                5,
+                Some("rust-snapshot-1"),
+            )),
+            SequenceOutcome::Duplicate
+        );
+        assert_eq!(router.last_sequence(), Some(5));
     }
 
     #[test]

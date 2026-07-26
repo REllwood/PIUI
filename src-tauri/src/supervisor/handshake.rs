@@ -5,7 +5,13 @@ use std::collections::HashSet;
 pub const PROTOCOL_VERSION: u64 = 1;
 pub const NODE_VERSION: &str = "22.23.1";
 pub const PI_VERSION: &str = "0.82.0";
-pub const REQUIRED_CAPABILITIES: [&str; 4] = ["cancel", "status", "stream", "host-credentials"];
+pub const REQUIRED_CAPABILITIES: [&str; 5] = [
+    "cancel",
+    "status",
+    "stream",
+    "host-credentials",
+    "workspace-trust-v1",
+];
 
 pub fn protocol_architecture() -> &'static str {
     match std::env::consts::ARCH {
@@ -70,7 +76,7 @@ mod tests {
           "version":1,"kind":"handshake","id":"h","sequence":0,
           "payload":{"nonce":"0123456789abcdef","desktopVersion":"0.1.0","protocolVersion":1,
           "nodeVersion":"22.23.1","piVersion":"0.82.0","architecture":"arm64",
-          "capabilities":["cancel","status","stream","host-credentials"]}
+          "capabilities":["cancel","status","stream","host-credentials","workspace-trust-v1"]}
         }))
         .unwrap()
     }

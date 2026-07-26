@@ -1,22 +1,31 @@
+use super::dispatcher::{
+    DispatcherHandles, PUBLIC_QUEUE_CAPACITY, RAW_QUEUE_CAPACITY, start_dispatcher,
+};
 use super::handshake::{HandshakeExpectation, protocol_architecture, validate_handshake};
 use super::redact::StderrRedactor;
-use super::router::{SequenceOutcome, SequenceRouter};
-use super::stdio::{FailureSignal, stderr_reader, stdout_reader};
-use crate::protocol::{Envelope, ProtocolKind};
+use super::stdio::{FailureSignal, GenerationControl, RawFrame, stderr_reader, stdout_reader};
+use crate::credentials::CredentialProxy;
+use crate::credentials::proxy::PendingHostResponse;
+use crate::protocol::{Envelope, ProtocolDecoder, ProtocolKind, validate_envelope};
 use serde::Serialize;
-use serde_json::Value;
-use std::collections::VecDeque;
+use serde_json::{Map, Value};
+use std::collections::{HashMap, VecDeque};
 use std::fs;
-use std::io::Write;
+use std::io;
+use std::os::fd::AsRawFd;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{
     Arc, Mutex,
-    mpsc::{self, Receiver},
+    mpsc::{self, Receiver, SyncSender, sync_channel},
 };
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+use zeroize::Zeroizing;
+
+const MAX_JS_SAFE_SEQUENCE: u64 = 9_007_199_254_740_991;
+const MAX_WORKSPACE_WAITERS: usize = 32;
 
 #[derive(Debug, Clone)]
 pub struct SupervisorPaths {
@@ -121,63 +130,470 @@ pub struct SidecarStatus {
     pub pi_version: Option<String>,
 }
 
+const WRITE_DEADLINE: Duration = Duration::from_millis(250);
+const WRITE_POLL_SLICE: Duration = Duration::from_millis(20);
+const RESERVED_INTERNAL_ID_PREFIX: &str = "rust-";
+const RESERVED_UI_ID_PREFIX: &str = "ui-";
+
+fn valid_public_wire_id(id: &str) -> bool {
+    id.starts_with("web-")
+        && !id.starts_with(RESERVED_INTERNAL_ID_PREFIX)
+        && !id.starts_with(RESERVED_UI_ID_PREFIX)
+}
+
+pub(super) trait NonblockingSink: Send {
+    fn try_write(&mut self, bytes: &[u8]) -> io::Result<usize>;
+    fn wait_writable(&mut self, timeout: Duration) -> io::Result<bool>;
+}
+
+struct ChildStdinSink {
+    descriptor: std::os::fd::RawFd,
+}
+
+impl ChildStdinSink {
+    fn new(stdin: &ChildStdin) -> Result<Self, String> {
+        let descriptor = stdin.as_raw_fd();
+        let flags = unsafe { libc::fcntl(descriptor, libc::F_GETFL) };
+        if flags < 0
+            || unsafe { libc::fcntl(descriptor, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0
+        {
+            return Err("sidecar stdin configuration failed".into());
+        }
+        Ok(Self { descriptor })
+    }
+}
+
+impl NonblockingSink for ChildStdinSink {
+    fn try_write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let written = unsafe { libc::write(self.descriptor, bytes.as_ptr().cast(), bytes.len()) };
+        if written < 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(written as usize)
+        }
+    }
+
+    fn wait_writable(&mut self, timeout: Duration) -> io::Result<bool> {
+        let mut descriptor = libc::pollfd {
+            fd: self.descriptor,
+            events: libc::POLLOUT,
+            revents: 0,
+        };
+        let milliseconds = timeout.as_millis().clamp(1, i32::MAX as u128) as i32;
+        let result = unsafe { libc::poll(&mut descriptor, 1, milliseconds) };
+        if result < 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(result > 0)
+        }
+    }
+}
+
+/// Sole per-generation stdin and outbound raw-sequence authority.
+pub(super) struct GenerationWriter {
+    generation: u64,
+    sink: Box<dyn NonblockingSink>,
+    outbound_sequence: u64,
+    internal_request_counter: u64,
+    control: Arc<GenerationControl>,
+}
+
+impl GenerationWriter {
+    fn new(
+        generation: u64,
+        stdin: ChildStdin,
+        control: Arc<GenerationControl>,
+    ) -> Result<Self, String> {
+        let sink = ChildStdinSink::new(&stdin)?;
+        control.attach_stdin(stdin)?;
+        Ok(Self {
+            generation,
+            sink: Box::new(sink),
+            outbound_sequence: 0,
+            internal_request_counter: 0,
+            control,
+        })
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_sink_for_test(
+        generation: u64,
+        sink: Box<dyn NonblockingSink>,
+        control: Arc<GenerationControl>,
+    ) -> Self {
+        Self {
+            generation,
+            sink,
+            outbound_sequence: 0,
+            internal_request_counter: 0,
+            control,
+        }
+    }
+
+    fn ensure_active(&self, expected_generation: u64) -> Result<(), String> {
+        if self.generation != expected_generation || !self.control.is_active() {
+            Err("stale sidecar generation".into())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn next_sequence(&mut self) -> Result<u64, String> {
+        let next = self
+            .outbound_sequence
+            .checked_add(1)
+            .filter(|value| *value <= MAX_JS_SAFE_SEQUENCE)
+            .ok_or_else(|| "sidecar outbound sequence exhausted".to_string())?;
+        self.outbound_sequence = next;
+        Ok(next)
+    }
+
+    fn next_internal_coordinates(&mut self, label: &str) -> Result<(String, u64), String> {
+        self.internal_request_counter = self
+            .internal_request_counter
+            .checked_add(1)
+            .ok_or_else(|| "sidecar request identity exhausted".to_string())?;
+        let sequence = self.next_sequence()?;
+        Ok((
+            format!(
+                "rust-{label}-{}-{}",
+                self.generation, self.internal_request_counter
+            ),
+            sequence,
+        ))
+    }
+
+    pub(super) fn write_public(
+        &mut self,
+        expected_generation: u64,
+        envelope: &Envelope,
+    ) -> Result<(), String> {
+        self.ensure_active(expected_generation)?;
+        if validate_envelope(envelope).is_err()
+            || !matches!(envelope.kind, ProtocolKind::Request | ProtocolKind::Cancel)
+            || !valid_public_wire_id(&envelope.id)
+            || envelope
+                .correlation_id
+                .as_deref()
+                .is_some_and(|id| !valid_public_wire_id(id))
+        {
+            return Err("sidecar request is not permitted".into());
+        }
+        let mut outbound = envelope.clone();
+        outbound.sequence = self.next_sequence()?;
+        let mut bytes = Zeroizing::new(
+            serde_json::to_vec(&outbound)
+                .map_err(|_| "sidecar request encoding failed".to_string())?,
+        );
+        bytes.push(b'\n');
+        self.write_bytes(bytes)
+    }
+
+    pub(super) fn write_snapshot_request(
+        &mut self,
+        expected_generation: u64,
+        after_sequence: u64,
+    ) -> Result<String, String> {
+        let mut payload = Map::new();
+        payload.insert("afterSequence".into(), Value::from(after_sequence));
+        self.write_internal_request(expected_generation, "snapshot", payload)
+    }
+
+    fn write_internal_request(
+        &mut self,
+        expected_generation: u64,
+        method: &str,
+        payload: Map<String, Value>,
+    ) -> Result<String, String> {
+        self.write_internal_request_with_label(expected_generation, method, method, payload)
+    }
+
+    fn write_internal_request_with_label(
+        &mut self,
+        expected_generation: u64,
+        label: &str,
+        method: &str,
+        mut payload: Map<String, Value>,
+    ) -> Result<String, String> {
+        self.ensure_active(expected_generation)?;
+        let (id, sequence) = self.next_internal_coordinates(label)?;
+        payload.insert("method".into(), Value::String(method.into()));
+        let envelope = Envelope {
+            version: 1,
+            kind: ProtocolKind::Request,
+            id: id.clone(),
+            correlation_id: None,
+            decision_id: None,
+            sequence,
+            payload,
+            error: None,
+        };
+        validate_envelope(&envelope).map_err(|_| "internal sidecar request invalid".to_string())?;
+        let mut bytes = Zeroizing::new(
+            serde_json::to_vec(&envelope)
+                .map_err(|_| "internal sidecar request invalid".to_string())?,
+        );
+        bytes.push(b'\n');
+        self.write_bytes(bytes)?;
+        Ok(id)
+    }
+
+    pub(super) fn write_workspace_request<F>(
+        &mut self,
+        expected_generation: u64,
+        method: &str,
+        payload: Map<String, Value>,
+        register: F,
+    ) -> Result<String, String>
+    where
+        F: FnOnce(&str) -> Result<(), String>,
+    {
+        crate::protocol::workspace::validate_workspace_request(method, &payload)?;
+        if !matches!(
+            method,
+            "workspace.openUntrusted"
+                | "workspace.authorise"
+                | "workspace.loadTrusted"
+                | "workspace.revoke"
+                | "workspace.sync"
+        ) {
+            return Err("workspace request is not permitted".into());
+        }
+        self.ensure_active(expected_generation)?;
+        let (id, sequence) = self.next_internal_coordinates("workspace")?;
+        let mut payload = payload;
+        payload.insert("method".into(), Value::String(method.into()));
+        let envelope = Envelope {
+            version: 1,
+            kind: ProtocolKind::Request,
+            id: id.clone(),
+            correlation_id: None,
+            decision_id: None,
+            sequence,
+            payload,
+            error: None,
+        };
+        validate_envelope(&envelope).map_err(|_| "internal sidecar request invalid".to_string())?;
+        register(&id)?;
+        let mut bytes = Zeroizing::new(
+            serde_json::to_vec(&envelope)
+                .map_err(|_| "internal sidecar request invalid".to_string())?,
+        );
+        bytes.push(b'\n');
+        self.write_bytes(bytes)?;
+        Ok(id)
+    }
+
+    pub(super) fn write_private_response(
+        &mut self,
+        expected_generation: u64,
+        pending: PendingHostResponse,
+    ) -> Result<(), String> {
+        self.ensure_active(expected_generation)?;
+        let (id, sequence) = self.next_internal_coordinates("host-response")?;
+        let response = pending
+            .bind(id, sequence)
+            .map_err(|_| "sidecar private response encoding failed".to_string())?;
+        let bytes = response
+            .into_lf_json()
+            .map_err(|_| "sidecar private response encoding failed".to_string())?;
+        self.write_bytes(bytes)
+    }
+
+    fn write_bytes(&mut self, bytes: Zeroizing<Vec<u8>>) -> Result<(), String> {
+        let deadline = Instant::now() + WRITE_DEADLINE;
+        let mut offset = 0;
+        while offset < bytes.len() {
+            if Instant::now() >= deadline {
+                self.control.invalidate("sidecar write timed out");
+                return Err("sidecar write timed out".into());
+            }
+            let attempt = self
+                .control
+                .authorised_attempt(|| self.sink.try_write(&bytes[offset..]));
+            let result = match attempt {
+                Ok(result) => result,
+                Err(()) => return Err("stale sidecar generation".into()),
+            };
+            match result {
+                Ok(0) => {
+                    self.control.invalidate("sidecar write failed");
+                    return Err("sidecar write failed".into());
+                }
+                Ok(written) => offset += written,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        continue;
+                    }
+                    match self.sink.wait_writable(remaining.min(WRITE_POLL_SLICE)) {
+                        Ok(_) => {}
+                        Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                        Err(_) => {
+                            self.control.invalidate("sidecar write failed");
+                            return Err("sidecar write failed".into());
+                        }
+                    }
+                }
+                Err(_) => {
+                    self.control.invalidate("sidecar write failed");
+                    return Err("sidecar write failed".into());
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+pub(super) struct WorkspaceWaiters {
+    pending: Mutex<HashMap<String, (u64, SyncSender<Result<Envelope, String>>)>>,
+}
+
+impl WorkspaceWaiters {
+    pub(super) fn new() -> Self {
+        Self {
+            pending: Mutex::new(HashMap::with_capacity(MAX_WORKSPACE_WAITERS)),
+        }
+    }
+
+    pub(super) fn register(
+        &self,
+        id: &str,
+        generation: u64,
+        sender: SyncSender<Result<Envelope, String>>,
+    ) -> Result<(), String> {
+        let mut pending = self
+            .pending
+            .lock()
+            .map_err(|_| "workspace waiter unavailable".to_string())?;
+        if pending.len() >= MAX_WORKSPACE_WAITERS || pending.contains_key(id) {
+            return Err("workspace waiter unavailable".into());
+        }
+        pending.insert(id.to_string(), (generation, sender));
+        Ok(())
+    }
+
+    pub(super) fn deliver(&self, generation: u64, envelope: Envelope) -> Result<bool, String> {
+        let Some(correlation) = envelope.correlation_id.as_deref() else {
+            return Ok(false);
+        };
+        if !correlation.starts_with("rust-workspace-") {
+            return Ok(false);
+        }
+        let waiter = self
+            .pending
+            .lock()
+            .map_err(|_| "workspace waiter unavailable".to_string())?
+            .remove(correlation);
+        let Some((expected_generation, sender)) = waiter else {
+            return Err("workspace response correlation unavailable".into());
+        };
+        if expected_generation != generation {
+            return Err("stale workspace response".into());
+        }
+        sender
+            .try_send(Ok(envelope))
+            .map_err(|_| "workspace waiter unavailable".to_string())?;
+        Ok(true)
+    }
+
+    fn cancel(&self, id: &str) {
+        if let Ok(mut pending) = self.pending.lock() {
+            pending.remove(id);
+        }
+    }
+}
+
+pub(crate) struct WorkspaceWaiter {
+    id: String,
+    generation: u64,
+    receiver: Receiver<Result<Envelope, String>>,
+    waiters: Arc<WorkspaceWaiters>,
+    control: Arc<GenerationControl>,
+}
+
+impl WorkspaceWaiter {
+    pub(crate) fn wait(mut self, timeout: Duration) -> Result<Envelope, String> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if !self.control.is_active() {
+                return Err("workspace execution uncertain".into());
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                self.control.invalidate("workspace response uncertain");
+                return Err("workspace execution uncertain".into());
+            }
+            match self
+                .receiver
+                .recv_timeout(remaining.min(Duration::from_millis(10)))
+            {
+                Ok(Ok(response)) => {
+                    if response.kind != ProtocolKind::Response
+                        || response.correlation_id.as_deref() != Some(self.id.as_str())
+                    {
+                        self.control.invalidate("workspace response invalid");
+                        return Err("workspace execution uncertain".into());
+                    }
+                    self.waiters.cancel(&self.id);
+                    self.id.clear();
+                    return Ok(response);
+                }
+                Ok(Err(error)) => return Err(error),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err("workspace execution uncertain".into());
+                }
+            }
+        }
+    }
+
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+}
+
+impl Drop for WorkspaceWaiter {
+    fn drop(&mut self) {
+        if !self.id.is_empty() {
+            self.waiters.cancel(&self.id);
+        }
+    }
+}
+
 struct RunningSidecar {
     generation: u64,
     child: Child,
-    stdin: Option<ChildStdin>,
+    writer: Arc<Mutex<GenerationWriter>>,
     messages: Receiver<Result<Envelope, String>>,
-    _stdout: JoinHandle<()>,
-    _stderr: JoinHandle<()>,
+    workspace_waiters: Arc<WorkspaceWaiters>,
+    stdout: Option<JoinHandle<()>>,
+    stderr: Option<JoinHandle<()>>,
+    dispatcher: Option<JoinHandle<()>>,
+    credential_coordinator: Option<JoinHandle<()>>,
+    control: Arc<GenerationControl>,
     diagnostics: Arc<Mutex<VecDeque<String>>>,
     failure: FailureSignal,
     handshake: Envelope,
-    router: SequenceRouter,
-    outbound_sequence: u64,
-    internal_request_counter: u64,
-    snapshot_request: Option<String>,
 }
 
-impl RunningSidecar {
-    fn write_envelope(&mut self, envelope: &Envelope) -> Result<(), String> {
-        self.outbound_sequence = self.outbound_sequence.max(envelope.sequence);
-        let bytes = serde_json::to_vec(envelope)
-            .map_err(|_| "sidecar request encoding failed".to_string())?;
-        let stdin = self
-            .stdin
-            .as_mut()
-            .ok_or_else(|| "sidecar stdin closed".to_string())?;
-        stdin
-            .write_all(&bytes)
-            .and_then(|_| stdin.write_all(b"\n"))
-            .and_then(|_| stdin.flush())
-            .map_err(|_| "sidecar write failed".to_string())
-    }
-
-    fn internal_request(
-        &mut self,
-        method: &str,
-        payload: serde_json::Map<String, Value>,
-    ) -> Result<Envelope, String> {
-        self.internal_request_counter += 1;
-        self.outbound_sequence += 1;
-        let mut payload = payload;
-        payload.insert("method".into(), Value::String(method.into()));
-        serde_json::from_value(serde_json::json!({
-            "version": 1,
-            "kind": "request",
-            "id": format!("rust-{method}-{}", self.internal_request_counter),
-            "sequence": self.outbound_sequence,
-            "payload": payload,
-        }))
-        .map_err(|_| "internal sidecar request invalid".to_string())
-    }
-}
-
-#[derive(Default)]
 pub struct SidecarSupervisor {
     running: Option<RunningSidecar>,
     last_failure: Option<String>,
     generation: u64,
+    credential_proxy: CredentialProxy,
+}
+
+impl Default for SidecarSupervisor {
+    fn default() -> Self {
+        Self {
+            running: None,
+            last_failure: None,
+            generation: 0,
+            credential_proxy: CredentialProxy::default(),
+        }
+    }
 }
 
 impl SidecarSupervisor {
@@ -188,6 +604,10 @@ impl SidecarSupervisor {
         self.running = None;
         self.last_failure = None;
         let nonce = format!("piui-{:016x}-{:08x}", std::process::id(), nonce_counter());
+        let next_generation = self
+            .generation
+            .checked_add(1)
+            .ok_or_else(|| "sidecar generation exhausted".to_string())?;
         let mut command = Command::new(&paths.node);
         command
             .arg(&paths.entrypoint)
@@ -197,6 +617,8 @@ impl SidecarSupervisor {
             .env("PIUI_DESKTOP_VERSION", env!("CARGO_PKG_VERSION"))
             .env("PIUI_HANDSHAKE_NONCE", &nonce)
             .env("PIUI_OWN_PROCESS_GROUP", "1")
+            .env("PIUI_SUPERVISOR_GENERATION", next_generation.to_string())
+            .env("PI_OFFLINE", "1")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -216,69 +638,81 @@ impl SidecarSupervisor {
             .stderr
             .take()
             .ok_or_else(|| "sidecar stderr unavailable".to_string())?;
-        let (sender, receiver) = mpsc::channel();
+        let (raw_sender, raw_receiver) = mpsc::sync_channel(RAW_QUEUE_CAPACITY);
         let diagnostics = Arc::new(Mutex::new(VecDeque::with_capacity(64)));
         let failure: FailureSignal = Arc::new(Mutex::new(None));
         let process_group = child.id() as i32;
-        let stdout_handle = stdout_reader(stdout, sender, process_group, failure.clone());
+        let control = Arc::new(GenerationControl::new(process_group, Arc::clone(&failure)));
+        let stdout_handle = stdout_reader(stdout, raw_sender, Arc::clone(&control));
         let stderr_handle = stderr_reader(
             stderr,
-            diagnostics.clone(),
+            Arc::clone(&diagnostics),
             StderrRedactor::for_current_user(),
         );
-        let handshake = match receiver.recv_timeout(Duration::from_secs(10)) {
-            Ok(Ok(envelope)) if envelope.kind == ProtocolKind::Handshake => envelope,
-            Ok(Err(error)) => {
-                self.last_failure = Some(error.clone());
-                let _ = terminate_group(&mut child, process_group);
-                return Err(error);
-            }
-            Ok(Ok(_)) => {
-                let error = "sidecar handshake was not the first protocol envelope".to_string();
-                self.last_failure = Some(error.clone());
-                let _ = terminate_group(&mut child, process_group);
-                return Err(error);
-            }
-            Err(_) => {
-                let error = "sidecar handshake timed out".to_string();
-                self.last_failure = Some(error.clone());
-                let _ = terminate_group(&mut child, process_group);
-                return Err(error);
+        let mut decoder = ProtocolDecoder::default();
+        let handshake = match raw_receiver.recv_timeout(Duration::from_secs(10)) {
+            Ok(RawFrame::Line(line)) => decoder
+                .decode(&line)
+                .map_err(|_| "sidecar stdout protocol violation".to_string()),
+            Ok(RawFrame::Failure(error)) => Err(error),
+            Err(_) => Err("sidecar handshake timed out".to_string()),
+        };
+        let handshake = match handshake.and_then(accept_first_protocol_envelope) {
+            Ok(envelope) => envelope,
+            Err(error) => {
+                return self.abort_start(child, process_group, control, error);
             }
         };
-        validate_handshake(
+        if let Err(error) = validate_handshake(
             &handshake,
             &HandshakeExpectation {
                 nonce: &nonce,
                 desktop_version: env!("CARGO_PKG_VERSION"),
                 architecture: protocol_architecture(),
             },
-        )
-        .map_err(|error| {
-            self.last_failure = Some(error.clone());
-            let _ = terminate_group(&mut child, process_group);
-            error
-        })?;
-        let mut router = SequenceRouter::default();
-        router.apply_snapshot(handshake.sequence);
-        self.generation = self
-            .generation
-            .checked_add(1)
-            .ok_or_else(|| "sidecar generation exhausted".to_string())?;
+        ) {
+            return self.abort_start(child, process_group, control, error);
+        }
+
+        self.generation = next_generation;
+        let generation = next_generation;
+        let writer = match GenerationWriter::new(generation, stdin, Arc::clone(&control)) {
+            Ok(writer) => Arc::new(Mutex::new(writer)),
+            Err(error) => {
+                return self.abort_start(child, process_group, control, error);
+            }
+        };
+        let (public_sender, public_receiver) = mpsc::sync_channel(PUBLIC_QUEUE_CAPACITY);
+        let workspace_waiters = Arc::new(WorkspaceWaiters::new());
+        let DispatcherHandles {
+            dispatcher,
+            credential_coordinator,
+        } = start_dispatcher(
+            generation,
+            decoder,
+            raw_receiver,
+            public_sender,
+            Arc::clone(&workspace_waiters),
+            self.credential_proxy.clone(),
+            Arc::clone(&writer),
+            Arc::clone(&control),
+            Arc::clone(&diagnostics),
+            handshake.sequence,
+        );
         self.running = Some(RunningSidecar {
-            generation: self.generation,
+            generation,
             child,
-            stdin: Some(stdin),
-            messages: receiver,
-            _stdout: stdout_handle,
-            _stderr: stderr_handle,
+            writer,
+            messages: public_receiver,
+            workspace_waiters,
+            stdout: Some(stdout_handle),
+            stderr: Some(stderr_handle),
+            dispatcher: Some(dispatcher),
+            credential_coordinator: Some(credential_coordinator),
+            control,
             diagnostics,
             failure,
             handshake,
-            router,
-            outbound_sequence: 0,
-            internal_request_counter: 0,
-            snapshot_request: None,
         });
         let status = self.status();
         if status.failed {
@@ -288,6 +722,19 @@ impl SidecarSupervisor {
         } else {
             Ok(status)
         }
+    }
+
+    fn abort_start(
+        &mut self,
+        mut child: Child,
+        process_group: i32,
+        control: Arc<GenerationControl>,
+        error: String,
+    ) -> Result<SidecarStatus, String> {
+        control.deactivate();
+        self.last_failure = Some(error.clone());
+        let _ = terminate_group(&mut child, process_group);
+        Err(error)
     }
 
     pub fn status(&mut self) -> SidecarStatus {
@@ -300,7 +747,10 @@ impl SidecarSupervisor {
         });
         if let Some(failure) = observed_failure {
             if let Some(mut running) = self.running.take() {
-                let _ = running.child.wait();
+                running.control.deactivate();
+                let process_group = running.child.id() as i32;
+                let _ = terminate_group(&mut running.child, process_group);
+                join_transport_threads(&mut running);
             }
             self.last_failure = Some(failure);
             return stopped_status(self.last_failure.clone());
@@ -309,7 +759,11 @@ impl SidecarSupervisor {
             return stopped_status(self.last_failure.clone());
         };
         if let Some(exit) = running.child.try_wait().ok().flatten() {
-            self.running = None;
+            let mut running = self.running.take().expect("running sidecar exists");
+            running.control.deactivate();
+            let process_group = running.child.id() as i32;
+            let _ = terminate_group(&mut running.child, process_group);
+            join_transport_threads(&mut running);
             self.last_failure = Some(match exit.code() {
                 Some(code) => format!("sidecar exited unexpectedly (code {code})"),
                 None => "sidecar exited unexpectedly (signal)".into(),
@@ -379,12 +833,17 @@ impl SidecarSupervisor {
                 .failure
                 .unwrap_or_else(|| "sidecar is not running".into()));
         }
-        let request = {
-            let running = self.running.as_mut().expect("running status has sidecar");
-            running.internal_request("status", serde_json::Map::new())?
+        let generation = status
+            .generation
+            .ok_or_else(|| "sidecar generation unavailable".to_string())?;
+        let request_id = {
+            let running = self.running.as_ref().expect("running status has sidecar");
+            running
+                .writer
+                .lock()
+                .map_err(|_| "sidecar writer unavailable".to_string())?
+                .write_internal_request(generation, "status", Map::new())?
         };
-        let request_id = request.id.clone();
-        self.send_envelope(&request)?;
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             let envelope =
@@ -397,6 +856,50 @@ impl SidecarSupervisor {
         }
     }
 
+    pub(crate) fn begin_workspace_request(
+        &mut self,
+        generation: u64,
+        method: &str,
+        payload: Map<String, Value>,
+    ) -> Result<WorkspaceWaiter, String> {
+        if self.current_generation() != Some(generation) {
+            return Err("stale sidecar generation".into());
+        }
+        let running = self
+            .running
+            .as_ref()
+            .ok_or_else(|| "sidecar unavailable".to_string())?;
+        let (sender, receiver) = sync_channel(1);
+        let waiters = Arc::clone(&running.workspace_waiters);
+        let control = Arc::clone(&running.control);
+        let mut registered = None;
+        let request_id = running
+            .writer
+            .lock()
+            .map_err(|_| "sidecar writer unavailable".to_string())?
+            .write_workspace_request(generation, method, payload, |id| {
+                waiters.register(id, generation, sender)?;
+                registered = Some(id.to_string());
+                Ok(())
+            });
+        let request_id = match request_id {
+            Ok(id) => id,
+            Err(error) => {
+                if let Some(id) = registered.as_deref() {
+                    waiters.cancel(id);
+                }
+                return Err(error);
+            }
+        };
+        Ok(WorkspaceWaiter {
+            id: request_id,
+            generation,
+            receiver,
+            waiters,
+            control,
+        })
+    }
+
     pub fn send_envelope(&mut self, envelope: &Envelope) -> Result<(), String> {
         let status = self.status();
         if !status.running {
@@ -404,10 +907,16 @@ impl SidecarSupervisor {
                 .failure
                 .unwrap_or_else(|| "sidecar is not running".into()));
         }
-        self.running
-            .as_mut()
-            .expect("running status has sidecar")
-            .write_envelope(envelope)
+        let generation = status
+            .generation
+            .ok_or_else(|| "sidecar generation unavailable".to_string())?;
+        let running = self.running.as_ref().expect("running status has sidecar");
+        let result = running
+            .writer
+            .lock()
+            .map_err(|_| "sidecar writer unavailable".to_string())?
+            .write_public(generation, envelope);
+        result
     }
 
     pub fn receive_envelope(&mut self, timeout: Duration) -> Result<Envelope, String> {
@@ -417,81 +926,15 @@ impl SidecarSupervisor {
                 .failure
                 .unwrap_or_else(|| "sidecar is not running".into()));
         }
-        let deadline = Instant::now() + timeout;
-        let running = self.running.as_mut().expect("running status has sidecar");
-        loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return Err("sidecar receive timed out".into());
+        let running = self.running.as_ref().expect("running status has sidecar");
+        match running.messages.recv_timeout(timeout) {
+            Ok(Ok(envelope)) => Ok(envelope),
+            Ok(Err(error)) => Err(error),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                Err("sidecar receive timed out".into())
             }
-            let envelope = match running.messages.recv_timeout(remaining) {
-                Ok(Ok(envelope)) => envelope,
-                Ok(Err(error)) => return Err(error),
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                    return Err("sidecar receive timed out".into());
-                }
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                    return Err("sidecar response channel closed".into());
-                }
-            };
-
-            if running
-                .snapshot_request
-                .as_deref()
-                .is_some_and(|request_id| envelope.correlation_id.as_deref() == Some(request_id))
-            {
-                let snapshot = envelope
-                    .payload
-                    .get("snapshot")
-                    .and_then(Value::as_object)
-                    .ok_or_else(|| "sidecar snapshot invalid".to_string())?;
-                let snapshot_sequence = snapshot
-                    .get("sequence")
-                    .and_then(Value::as_u64)
-                    .ok_or_else(|| "sidecar snapshot invalid".to_string())?;
-                if envelope.kind != ProtocolKind::Response
-                    || snapshot_sequence > envelope.sequence
-                    || !snapshot.get("state").is_some_and(Value::is_object)
-                    || !running.router.apply_snapshot(envelope.sequence)
-                {
-                    return Err("sidecar snapshot invalid".into());
-                }
-                running.snapshot_request = None;
-                return Ok(envelope);
-            }
-
-            match running.router.observe(&envelope) {
-                SequenceOutcome::Accepted => {
-                    if envelope.kind == ProtocolKind::Event
-                        && envelope.payload.get("eventType")
-                            == Some(&Value::String("unknown-event".into()))
-                    {
-                        if let Ok(mut diagnostics) = running.diagnostics.lock() {
-                            if diagnostics.len() == 64 {
-                                diagnostics.pop_front();
-                            }
-                            diagnostics.push_back(
-                                "Unknown sidecar event was redacted and withheld from the interface."
-                                    .into(),
-                            );
-                        }
-                        continue;
-                    }
-                    return Ok(envelope);
-                }
-                SequenceOutcome::Duplicate | SequenceOutcome::Stale => continue,
-                SequenceOutcome::Gap => {
-                    if running.router.take_resynchronisation() {
-                        let mut payload = serde_json::Map::new();
-                        payload.insert(
-                            "afterSequence".into(),
-                            Value::from(running.router.last_sequence().unwrap_or(0)),
-                        );
-                        let request = running.internal_request("snapshot", payload)?;
-                        running.snapshot_request = Some(request.id.clone());
-                        running.write_envelope(&request)?;
-                    }
-                }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                Err("sidecar response channel closed".into())
             }
         }
     }
@@ -500,13 +943,13 @@ impl SidecarSupervisor {
         let Some(mut running) = self.running.take() else {
             return Ok(());
         };
-        if let Ok(failure) = running.failure.lock() {
-            if failure.is_some() {
-                self.last_failure = failure.clone();
-            }
+        if let Ok(failure) = running.failure.lock()
+            && failure.is_some()
+        {
+            self.last_failure = failure.clone();
         }
+        running.control.deactivate();
         let process_group = running.child.id() as i32;
-        running.stdin.take();
         let graceful_deadline = Instant::now() + Duration::from_millis(500);
         while Instant::now() < graceful_deadline {
             if running
@@ -519,7 +962,15 @@ impl SidecarSupervisor {
             }
             std::thread::sleep(Duration::from_millis(20));
         }
-        terminate_group(&mut running.child, process_group)
+        let result = terminate_group(&mut running.child, process_group);
+        join_transport_threads(&mut running);
+        // The coordinator is always drainable and joins within a bounded
+        // interval. Only its separate, already-running repository operation
+        // may remain detached if synchronous storage never returns.
+        if let Some(handle) = running.credential_coordinator.take() {
+            let _ = handle.join();
+        }
+        result
     }
 
     pub fn diagnostics(&self) -> Vec<String> {
@@ -544,6 +995,34 @@ impl Drop for SidecarSupervisor {
     }
 }
 
+fn join_transport_threads(running: &mut RunningSidecar) {
+    if let Some(handle) = running.stdout.take() {
+        let _ = handle.join();
+    }
+    if let Some(handle) = running.dispatcher.take() {
+        let _ = handle.join();
+    }
+    if let Some(handle) = running.credential_coordinator.take() {
+        let _ = handle.join();
+    }
+    if let Some(handle) = running.stderr.take() {
+        let _ = handle.join();
+    }
+}
+
+fn accept_first_protocol_envelope(envelope: Envelope) -> Result<Envelope, String> {
+    if envelope.kind == ProtocolKind::Handshake {
+        return Ok(envelope);
+    }
+    if matches!(
+        envelope.kind,
+        ProtocolKind::HostRequest | ProtocolKind::HostResponse
+    ) {
+        crate::credentials::proxy::discard_private_envelope(envelope);
+    }
+    Err("sidecar handshake was not the first protocol envelope".into())
+}
+
 fn nonce_counter() -> u64 {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -562,6 +1041,7 @@ fn stopped_status(failure: Option<String>) -> SidecarStatus {
         pi_version: None,
     }
 }
+
 fn terminate_group(child: &mut Child, process_group: i32) -> Result<(), String> {
     signal_group(process_group, libc::SIGTERM);
     let deadline = Instant::now() + Duration::from_millis(500);
@@ -591,4 +1071,112 @@ fn group_is_alive(process_group: i32) -> bool {
         return true;
     }
     std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::credentials::proxy::private_zeroised_bytes_for_test;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct NeverWritableSink {
+        control: Arc<GenerationControl>,
+        entered: mpsc::SyncSender<()>,
+        attempts_after_invalidation: Arc<AtomicUsize>,
+    }
+
+    impl NonblockingSink for NeverWritableSink {
+        fn try_write(&mut self, _bytes: &[u8]) -> io::Result<usize> {
+            if !self.control.is_active() {
+                self.attempts_after_invalidation
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            let _ = self.entered.try_send(());
+            Err(io::Error::from(io::ErrorKind::WouldBlock))
+        }
+
+        fn wait_writable(&mut self, timeout: Duration) -> io::Result<bool> {
+            std::thread::sleep(timeout);
+            Ok(false)
+        }
+    }
+
+    #[test]
+    fn transition_gate_invalidates_a_waiting_write_without_late_attempts() {
+        let failure = Arc::new(Mutex::new(None));
+        let control = Arc::new(GenerationControl::new(i32::MAX, failure));
+        let (entered_sender, entered_receiver) = mpsc::sync_channel(1);
+        let attempts_after_invalidation = Arc::new(AtomicUsize::new(0));
+        let mut writer = GenerationWriter::with_sink_for_test(
+            1,
+            Box::new(NeverWritableSink {
+                control: Arc::clone(&control),
+                entered: entered_sender,
+                attempts_after_invalidation: Arc::clone(&attempts_after_invalidation),
+            }),
+            Arc::clone(&control),
+        );
+        let request: Envelope = serde_json::from_value(serde_json::json!({
+            "version":1,"kind":"request","id":"web-bounded-public","sequence":9,
+            "payload":{"method":"snapshot","afterSequence":0}
+        }))
+        .unwrap();
+        let writer_thread = std::thread::spawn(move || writer.write_public(1, &request));
+        entered_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("nonblocking write attempted");
+        let invalidation_started = Instant::now();
+        assert!(control.deactivate());
+        assert!(invalidation_started.elapsed() < Duration::from_millis(50));
+        assert_eq!(
+            writer_thread.join().unwrap().unwrap_err(),
+            "stale sidecar generation"
+        );
+        assert_eq!(attempts_after_invalidation.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn workspace_wait_does_not_hold_supervisor_control_and_observes_prompt_cutoff() {
+        let failure = Arc::new(Mutex::new(None));
+        let control = Arc::new(GenerationControl::new(i32::MAX, failure));
+        let waiters = Arc::new(WorkspaceWaiters::new());
+        let (sender, receiver) = sync_channel(1);
+        waiters
+            .register("rust-workspace-hung-1", 1, sender)
+            .unwrap();
+        let waiter = WorkspaceWaiter {
+            id: "rust-workspace-hung-1".into(),
+            generation: 1,
+            receiver,
+            waiters,
+            control: Arc::clone(&control),
+        };
+        let started = Instant::now();
+        let waiting = std::thread::spawn(move || waiter.wait(Duration::from_secs(30)));
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(control.deactivate());
+        assert_eq!(
+            waiting.join().unwrap().unwrap_err(),
+            "workspace execution uncertain"
+        );
+        assert!(started.elapsed() < Duration::from_millis(150));
+    }
+
+    #[test]
+    fn private_first_envelope_is_recursively_erased_before_startup_rejection() {
+        let canary = format!("startup-private-canary-{}", std::process::id());
+        let canary_len = canary.len();
+        let envelope: Envelope = serde_json::from_value(serde_json::json!({
+            "version":1,"kind":"host-request","id":"startup-private","sequence":0,
+            "payload":{"method":"credential.set","providerId":"provider",
+                "credential":{"type":"api_key","key":canary}}
+        }))
+        .unwrap();
+        let before = private_zeroised_bytes_for_test();
+        assert_eq!(
+            accept_first_protocol_envelope(envelope).unwrap_err(),
+            "sidecar handshake was not the first protocol envelope"
+        );
+        assert!(private_zeroised_bytes_for_test() >= before + canary_len);
+    }
 }

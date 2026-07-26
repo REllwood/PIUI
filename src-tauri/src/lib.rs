@@ -2,6 +2,7 @@ use serde::Serialize;
 
 pub mod commands;
 pub mod credentials;
+pub mod domain;
 pub mod platform;
 pub mod protocol;
 pub mod supervisor;
@@ -44,6 +45,12 @@ pub fn run() {
             commands::bridge::sidecar_stop,
             commands::bridge::bridge_send,
             commands::credentials::present_credential_sheet,
+            commands::workspace::workspace_select_directory,
+            commands::workspace::workspace_inspect,
+            commands::workspace::workspace_open_untrusted,
+            commands::workspace::workspace_authorise,
+            commands::workspace::workspace_load_trusted,
+            commands::workspace::workspace_revoke,
             commands::stream::stream_probe,
             commands::stream::cancel_stream,
         ])

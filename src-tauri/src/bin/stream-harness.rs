@@ -1,13 +1,21 @@
 #[cfg(debug_assertions)]
 fn main() {
     use piui_lib::commands::bridge::{BridgeState, bridge_send_transport, bridge_stop_transport};
+    use piui_lib::commands::harness_output::HarnessOutputQueue;
     use piui_lib::commands::stream::{cancel_stream_transport, run_stream_transport};
     use piui_lib::protocol::{Envelope, ProtocolKind};
     use piui_lib::supervisor::SupervisorPaths;
-    use std::io::{BufRead, Write};
+    use std::io::BufRead;
     use std::sync::Arc;
 
-    let paths = SupervisorPaths::development().expect("development sidecar paths");
+    let paths = match (
+        std::env::var_os("PIUI_HARNESS_TEST_NODE"),
+        std::env::var_os("PIUI_HARNESS_TEST_RESOURCES"),
+    ) {
+        (Some(node), Some(resources)) => SupervisorPaths::validated(node.into(), resources.into())
+            .expect("isolated harness test paths"),
+        _ => SupervisorPaths::development().expect("development sidecar paths"),
+    };
     let state = Arc::new(BridgeState::new(paths));
     let mut stream_thread = None;
 
@@ -21,14 +29,12 @@ fn main() {
             ProtocolKind::Request if stream_thread.is_none() => {
                 let stream_state = Arc::clone(&state);
                 stream_thread = Some(std::thread::spawn(move || {
-                    run_stream_transport(&stream_state, envelope, |event| {
-                        let encoded = serde_json::to_string(event)
-                            .map_err(|_| "harness event encoding failed".to_string())?;
-                        let mut stdout = std::io::stdout().lock();
-                        writeln!(stdout, "{encoded}")
-                            .and_then(|_| stdout.flush())
-                            .map_err(|_| "harness output failed".to_string())
-                    })
+                    let output = HarnessOutputQueue::stdout()?;
+                    let result = run_stream_transport(&stream_state, envelope, |event| {
+                        output.enqueue(event)
+                    });
+                    let close = output.close();
+                    result.and(close)
                 }));
             }
             ProtocolKind::Request => {
