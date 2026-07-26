@@ -3,7 +3,13 @@ import type { ProtocolEnvelope } from '@piui/protocol';
 export const PROTOCOL_VERSION = 1 as const;
 export const PI_VERSION = '0.82.0' as const;
 export const NODE_VERSION = '22.23.1' as const;
-export const REQUIRED_CAPABILITIES = ['cancel', 'status', 'stream', 'host-credentials'] as const;
+export const REQUIRED_CAPABILITIES = [
+  'cancel',
+  'status',
+  'stream',
+  'host-credentials',
+  'workspace-trust-v1',
+] as const;
 
 export type HandshakeExpectation = {
   nonce: string;

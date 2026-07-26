@@ -2,7 +2,10 @@ import { spawn } from 'node:child_process';
 
 export type AbortableWork = ReadonlyMap<string, AbortController>;
 
-export function installParentPipeLifecycle(work: AbortableWork): void {
+export function installParentPipeLifecycle(
+  work: AbortableWork,
+  onDisconnect: () => void = () => undefined,
+): void {
   let closed = false;
   const parentPipeLiveness = setInterval(() => undefined, 60_000);
 
@@ -10,6 +13,11 @@ export function installParentPipeLifecycle(work: AbortableWork): void {
     if (closed) return;
     closed = true;
     clearInterval(parentPipeLiveness);
+    try {
+      onDisconnect();
+    } catch {
+      process.exitCode = 70;
+    }
     for (const controller of work.values()) controller.abort();
 
     const exitCode = process.exitCode ?? 0;

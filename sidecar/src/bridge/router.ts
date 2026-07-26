@@ -10,6 +10,27 @@ type StreamSnapshot = {
   truncated?: true;
 };
 
+function normaliseAndTruncateUtf16(value: string, maximumUnits: number): string {
+  let normalised = '';
+  for (let index = 0; index < value.length; index += 1) {
+    const unit = value.charCodeAt(index);
+    if (unit >= 0xd800 && unit <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        normalised += value[index] + value[index + 1];
+        index += 1;
+      } else normalised += '\ufffd';
+    } else if (unit >= 0xdc00 && unit <= 0xdfff) normalised += '\ufffd';
+    else normalised += value[index];
+  }
+  if (normalised.length <= maximumUnits) return normalised;
+  let end = maximumUnits;
+  const last = normalised.charCodeAt(end - 1);
+  const next = normalised.charCodeAt(end);
+  if (last >= 0xd800 && last <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) end -= 1;
+  return normalised.slice(0, end);
+}
+
 export class SidecarRouter {
   #sequence = 1;
   #seen = new Map<string, ProtocolEnvelope>();
@@ -62,10 +83,11 @@ export class SidecarRouter {
     if (eventType === 'stream.delta' && typeof payload.text === 'string') {
       const current = this.#streams.get(correlationId) ?? { text: '' };
       const appended = current.text + payload.text;
+      const text = normaliseAndTruncateUtf16(appended, MAX_STREAM_SNAPSHOT_TEXT);
       this.#streams.delete(correlationId);
       this.#streams.set(correlationId, {
         ...current,
-        text: appended.slice(0, MAX_STREAM_SNAPSHOT_TEXT),
+        text,
         ...(appended.length > MAX_STREAM_SNAPSHOT_TEXT ? { truncated: true as const } : {}),
       });
     } else if (eventType === 'stream.complete' || eventType === 'stream.cancelled') {
