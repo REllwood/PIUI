@@ -1,12 +1,14 @@
 import Ajv2020, { type ErrorObject, type ValidateFunction } from 'ajv/dist/2020.js';
 import envelopeSchema from '../schema/envelope.schema.json' with { type: 'json' };
 import messagesSchema from '../schema/messages.schema.json' with { type: 'json' };
+import approvalSchema from '../schema/approval.schema.json' with { type: 'json' };
 import { PROTOCOL_LIMITS } from './index.js';
 import type { ProtocolEnvelope, UnknownEventDiagnostic } from './types.js';
 
 const ajv = new Ajv2020({ allErrors: true, strict: true, strictRequired: false });
 const validateEnvelope = ajv.compile(envelopeSchema) as ValidateFunction<ProtocolEnvelope>;
 const validateMessage = ajv.compile(messagesSchema) as ValidateFunction<ProtocolEnvelope>;
+const validateApprovalPayload = ajv.compile(approvalSchema) as ValidateFunction<Record<string, unknown>>;
 const secretNeedles = ['secret', 'token', 'password', 'apikey', 'authorization', 'credential'] as const;
 const knownEvents = new Set([
   'sidecar.status',
@@ -62,6 +64,11 @@ export function validateParsedEnvelope(value: unknown): ProtocolEnvelope | Unkno
     ]);
   }
   const envelope = value as ProtocolEnvelope;
+  const privateApproval = (envelope.kind === 'host-request' || envelope.kind === 'host-response')
+    && (String(envelope.payload.method ?? '').startsWith('approval.') || envelope.decisionId !== undefined);
+  if (privateApproval && !validateApprovalPayload(envelope.payload)) {
+    throw new ProtocolValidationError('Approval payload failed schema validation', validateApprovalPayload.errors ?? []);
+  }
   const payloadBytes = Buffer.byteLength(JSON.stringify(envelope.payload));
   if (payloadBytes > PROTOCOL_LIMITS.maxPayloadBytes) throw new ProtocolValidationError('Payload limit exceeded');
   if (envelope.kind === 'event') {

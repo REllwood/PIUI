@@ -20,6 +20,11 @@ import {
   isForbiddenDocumentationFile,
   isForbiddenDocumentationPath,
 } from './sidecar-closure-policy.mjs';
+import {
+  prepareCandidateForRename,
+  renamePreparedCandidate,
+  sealPublishedOutput,
+} from './sidecar-publication-policy.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const cacheRoot = resolve(root, '.cache');
@@ -106,28 +111,41 @@ try {
     `${JSON.stringify({ node: '22.23.1', piSdk: '0.82.0', closure: 'isolated-v1', files: manifest }, null, 2)}\n`,
     { mode: 0o644 },
   );
-  // Seal only after the manifest is complete: remove any Finder metadata that
-  // raced the manifest walk, then make every directory non-writable so Finder
-  // cannot recreate unlisted files in the published closure.
-  await sealDirectories(prepared);
+  // Nested directories are sealed after the manifest, but macOS rename needs
+  // the candidate root to remain 0755 until it reaches its published name.
+  await prepareCandidateForRename(prepared);
 
   await mkdir(dirname(output), { recursive: true });
   const retired = resolve(workspace, 'retired');
-  if (await pathExists(output)) makeTreeOwnerWritable(output);
-  try {
-    await rename(output, retired);
-  } catch (error) {
-    if (error?.code !== 'ENOENT') {
-      if (await pathExists(output)) await sealDirectories(output);
+  const failedPublish = resolve(workspace, 'failed-publish');
+  const hadPriorOutput = await pathExists(output);
+  if (hadPriorOutput) {
+    makeTreeOwnerWritable(output);
+    try {
+      await rename(output, retired);
+    } catch (error) {
+      await prepareCandidateForRename(output);
+      await sealPublishedOutput(output);
       throw error;
     }
   }
   try {
-    await rename(prepared, output);
+    await renamePreparedCandidate(prepared, output);
   } catch (error) {
-    if (await pathExists(retired)) {
+    // If rename succeeded but post-rename metadata cleanup/sealing failed,
+    // remove the candidate from the live path before restoring the prior tree.
+    if (await pathExists(output)) {
+      makeTreeOwnerWritable(output);
+      try {
+        await rename(output, failedPublish);
+      } catch {
+        await rm(output, { recursive: true, force: true });
+      }
+    }
+    if (hadPriorOutput && await pathExists(retired)) {
       await rename(retired, output);
-      await sealDirectories(output);
+      await prepareCandidateForRename(output);
+      await sealPublishedOutput(output);
     }
     throw error;
   }
@@ -343,16 +361,3 @@ function makeTreeOwnerWritable(path) {
   if (result.status !== 0) throw new Error('Unable to unlock prior staged closure');
 }
 
-async function sealDirectories(path) {
-  for (const name of await readdir(path)) {
-    const child = resolve(path, name);
-    if (name === '.DS_Store') {
-      await rm(child, { recursive: true, force: true });
-    } else if ((await lstat(child)).isDirectory()) {
-      await sealDirectories(child);
-    }
-  }
-  // Close the final Finder race in this directory immediately before sealing.
-  await rm(resolve(path, '.DS_Store'), { recursive: true, force: true });
-  await chmod(path, 0o555);
-}

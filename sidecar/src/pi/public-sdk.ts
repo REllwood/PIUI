@@ -10,10 +10,15 @@ import {
   VERSION,
   createAgentSession,
   type CreateModelRuntimeOptions,
+  type ExtensionContext,
   type InlineExtension,
+  type ToolDefinition,
 } from '@earendil-works/pi-coding-agent';
 
 export type PublicInlineExtension = InlineExtension;
+export type PublicExtensionContext = ExtensionContext;
+export type PublicAgentSession = AgentSession;
+export type PublicToolDefinition = ToolDefinition;
 
 export type PublicCredentialStore = NonNullable<CreateModelRuntimeOptions['credentials']>;
 export type PublicCredential = NonNullable<Awaited<ReturnType<PublicCredentialStore['read']>>>;
