@@ -6,10 +6,13 @@ use zeroize::Zeroize;
 
 const SERVICE_NAMESPACE: &str = "au.com.piui.desktop.credentials";
 const LABEL_NAMESPACE: &str = "au.com.piui.desktop.credential-labels";
+const INDEX_NAMESPACE: &str = "au.com.piui.desktop.credential-index";
+const INDEX_ACCOUNT: &str = "provider-index-v1";
 const MAX_SECRET_BYTES: usize = 65_536;
+const MAX_INDEX_BYTES: usize = 262_144;
 const MAX_LABEL_CHARS: usize = 128;
-const CREATE_ROLLBACK_ATTEMPTS: usize = 3;
-const CREATE_ROLLBACK_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(10);
+const RECONCILIATION_ATTEMPTS: usize = 3;
+const RECONCILIATION_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(10);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -42,19 +45,58 @@ impl Drop for SecretMaterial {
     }
 }
 
+pub(crate) struct IndexMaterial(Vec<u8>);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CredentialPairStatus {
+    Complete,
+    Incomplete,
+}
+
+impl IndexMaterial {
+    pub(crate) fn new(mut bytes: Vec<u8>) -> Result<Self, CredentialError> {
+        if bytes.is_empty() || bytes.len() > MAX_INDEX_BYTES {
+            bytes.zeroize();
+            return Err(CredentialError::invalid_input());
+        }
+        Ok(Self(bytes))
+    }
+
+    pub(crate) fn expose(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl Drop for IndexMaterial {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
+
 #[derive(Clone)]
 pub struct KeychainRepository {
     service: String,
     labels: String,
+    index: String,
 }
 
 trait KeychainEntry {
+    fn get_password(&self) -> keyring::Result<String>;
+    fn get_secret(&self) -> keyring::Result<Vec<u8>>;
     fn set_password(&self, password: &str) -> keyring::Result<()>;
     fn set_secret(&self, secret: &[u8]) -> keyring::Result<()>;
     fn delete_credential(&self) -> keyring::Result<()>;
 }
 
 impl KeychainEntry for Entry {
+    fn get_password(&self) -> keyring::Result<String> {
+        Entry::get_password(self)
+    }
+
+    fn get_secret(&self) -> keyring::Result<Vec<u8>> {
+        Entry::get_secret(self)
+    }
+
     fn set_password(&self, password: &str) -> keyring::Result<()> {
         Entry::set_password(self, password)
     }
@@ -79,6 +121,7 @@ impl KeychainRepository {
         Self {
             service: SERVICE_NAMESPACE.into(),
             labels: LABEL_NAMESPACE.into(),
+            index: INDEX_NAMESPACE.into(),
         }
     }
 
@@ -101,6 +144,7 @@ impl KeychainRepository {
         Ok(Self {
             service: format!("{SERVICE_NAMESPACE}.test.{namespace}"),
             labels: format!("{LABEL_NAMESPACE}.test.{namespace}"),
+            index: format!("{INDEX_NAMESPACE}.test.{namespace}"),
         })
     }
 
@@ -118,34 +162,83 @@ impl KeychainRepository {
         &self,
         account_label: &str,
         secret: SecretMaterial,
-        mut make_entry: impl FnMut(&str, &str) -> Result<E, CredentialError>,
+        make_entry: impl FnMut(&str, &str) -> Result<E, CredentialError>,
     ) -> Result<CredentialMetadata, CredentialError>
     where
         E: KeychainEntry,
     {
-        let account_label = validate_label(account_label)?;
         let credential_id = format!("credential-{}", Uuid::new_v4().simple());
+        self.create_at_with_entry_factory(
+            &credential_id,
+            account_label,
+            secret,
+            false,
+            make_entry,
+        )?;
+        Ok(CredentialMetadata {
+            credential_id,
+            account_label: validate_label(account_label)?.into(),
+        })
+    }
+
+    /// Creates the complete label/secret pair at a caller-reserved opaque
+    /// reference. The proxy persists that reference before calling this API,
+    /// so every possible secret write remains reachable for reconciliation.
+    pub(crate) fn create_at_reference(
+        &self,
+        credential_id: &str,
+        account_label: &str,
+        secret: SecretMaterial,
+    ) -> Result<(), CredentialError> {
+        self.create_at_with_entry_factory(
+            credential_id,
+            account_label,
+            secret,
+            true,
+            |service, credential_id| {
+                Entry::new(service, credential_id).map_err(|_| CredentialError::unavailable())
+            },
+        )
+    }
+
+    fn create_at_with_entry_factory<E>(
+        &self,
+        credential_id: &str,
+        account_label: &str,
+        secret: SecretMaterial,
+        accept_identical_ambiguous_commit: bool,
+        mut make_entry: impl FnMut(&str, &str) -> Result<E, CredentialError>,
+    ) -> Result<(), CredentialError>
+    where
+        E: KeychainEntry,
+    {
+        validate_reference(credential_id)?;
+        let account_label = validate_label(account_label)?;
 
         // Construct both handles before writing anything. Persist the
-        // non-secret label first so no later label failure can orphan secret
-        // material under an identifier the application never received.
-        let secret_entry = make_entry(&self.service, &credential_id)?;
-        let label_entry = make_entry(&self.labels, &credential_id)?;
+        // non-secret label first so a label error cannot create secret-only
+        // state. A proxy-created reference is already present in the index.
+        let secret_entry = make_entry(&self.service, credential_id)?;
+        let label_entry = make_entry(&self.labels, credential_id)?;
         label_entry
             .set_password(account_label)
             .map_err(|_| CredentialError::unavailable())?;
         if secret_entry.set_secret(secret.expose()).is_err() {
-            // A backend can persist a write before reporting an error. Keep
-            // both identifier-bound handles alive while reconciling both
-            // entries, without ever reflecting backend errors to the caller.
-            reconcile_failed_create(&secret_entry, &label_entry);
+            // A create-at-reference write that committed before reporting an
+            // error is a successful transaction only when both authoritative
+            // entries read back byte-for-byte as requested.
+            if accept_identical_ambiguous_commit
+                && pair_matches(&secret_entry, &label_entry, secret.expose(), account_label)
+            {
+                return Ok(());
+            }
+            // Keep both identifier-bound handles alive while reconciling each
+            // entry independently. If the backend remains unavailable, the
+            // pre-persisted index entry is the durable recovery reference.
+            let _ = reconcile_entries(&secret_entry, &label_entry);
             return Err(CredentialError::unavailable());
         }
-
-        Ok(CredentialMetadata {
-            credential_id,
-            account_label: account_label.into(),
-        })
+        Ok(())
     }
 
     pub fn read(&self, credential_id: &str) -> Result<SecretMaterial, CredentialError> {
@@ -155,6 +248,89 @@ impl KeychainRepository {
             .get_secret()
             .map_err(map_read_error)?;
         SecretMaterial::new(bytes)
+    }
+
+    /// Replaces secret material in place. The opaque reference and its label
+    /// remain unchanged. The complete pair is checked again immediately before
+    /// the upserting Keychain call, preventing a stale reference from being
+    /// recreated as secret-only state. An ambiguous write is never retried.
+    pub(crate) fn overwrite(
+        &self,
+        credential_id: &str,
+        secret: &SecretMaterial,
+    ) -> Result<(), CredentialError> {
+        self.overwrite_with_entry_factory(credential_id, secret, |service, credential_id| {
+            Entry::new(service, credential_id).map_err(|_| CredentialError::unavailable())
+        })
+    }
+
+    fn overwrite_with_entry_factory<E>(
+        &self,
+        credential_id: &str,
+        secret: &SecretMaterial,
+        mut make_entry: impl FnMut(&str, &str) -> Result<E, CredentialError>,
+    ) -> Result<(), CredentialError>
+    where
+        E: KeychainEntry,
+    {
+        validate_reference(credential_id)?;
+        let secret_entry = make_entry(&self.service, credential_id)?;
+        let label_entry = make_entry(&self.labels, credential_id)?;
+        if pair_status_entries(&secret_entry, &label_entry)? != CredentialPairStatus::Complete {
+            return Err(CredentialError::not_found());
+        }
+        secret_entry
+            .set_secret(secret.expose())
+            .map_err(|_| CredentialError::unavailable())
+    }
+
+    /// Reads secret and label independently using the same Keychain APIs used
+    /// by production reads. Any backend uncertainty fails closed.
+    pub(crate) fn pair_status(
+        &self,
+        credential_id: &str,
+    ) -> Result<CredentialPairStatus, CredentialError> {
+        validate_reference(credential_id)?;
+        let secret = self.secret_entry(credential_id)?;
+        let label = self.label_entry(credential_id)?;
+        pair_status_entries(&secret, &label)
+    }
+
+    /// Independently and boundedly reconciles the secret and label to proven
+    /// absence. Success means both delete operations returned either success or
+    /// `NoEntry`; failure retains the caller's indexed recovery reference.
+    pub(crate) fn reconcile_delete(&self, credential_id: &str) -> Result<(), CredentialError> {
+        validate_reference(credential_id)?;
+        let secret = self.secret_entry(credential_id)?;
+        let label = self.label_entry(credential_id)?;
+        if reconcile_entries(&secret, &label) {
+            Ok(())
+        } else {
+            Err(CredentialError::unavailable())
+        }
+    }
+
+    pub(crate) fn read_index(&self) -> Result<Option<IndexMaterial>, CredentialError> {
+        let bytes = match self.index_entry()?.get_secret() {
+            Ok(bytes) => bytes,
+            Err(keyring::Error::NoEntry) => return Ok(None),
+            Err(_) => return Err(CredentialError::unavailable()),
+        };
+        IndexMaterial::new(bytes).map(Some)
+    }
+
+    pub(crate) fn write_index(&self, index: IndexMaterial) -> Result<(), CredentialError> {
+        self.index_entry()?
+            .set_secret(index.expose())
+            .map_err(|_| CredentialError::unavailable())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn delete_index(&self) -> Result<(), CredentialError> {
+        match self.index_entry()?.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(_) => Err(CredentialError::unavailable()),
+        }
     }
 
     pub fn metadata(&self, credential_id: &str) -> Result<CredentialMetadata, CredentialError> {
@@ -197,13 +373,69 @@ impl KeychainRepository {
     fn label_entry(&self, credential_id: &str) -> Result<Entry, CredentialError> {
         Entry::new(&self.labels, credential_id).map_err(|_| CredentialError::unavailable())
     }
+
+    fn index_entry(&self) -> Result<Entry, CredentialError> {
+        Entry::new(&self.index, INDEX_ACCOUNT).map_err(|_| CredentialError::unavailable())
+    }
 }
 
-fn reconcile_failed_create<E: KeychainEntry>(secret_entry: &E, label_entry: &E) {
+fn pair_matches<E: KeychainEntry>(
+    secret_entry: &E,
+    label_entry: &E,
+    expected_secret: &[u8],
+    expected_label: &str,
+) -> bool {
+    let secret_matches = match secret_entry.get_secret() {
+        Ok(mut stored) => {
+            let matches = stored == expected_secret;
+            stored.zeroize();
+            matches
+        }
+        Err(_) => false,
+    };
+    let label_matches = match label_entry.get_password() {
+        Ok(mut stored) => {
+            let matches = stored == expected_label;
+            stored.zeroize();
+            matches
+        }
+        Err(_) => false,
+    };
+    secret_matches && label_matches
+}
+
+fn pair_status_entries<E: KeychainEntry>(
+    secret_entry: &E,
+    label_entry: &E,
+) -> Result<CredentialPairStatus, CredentialError> {
+    let secret = secret_entry.get_secret();
+    let label = label_entry.get_password();
+    let secret_present = classify_presence(secret.map(|mut bytes| {
+        bytes.zeroize();
+    }))?;
+    let label_present = classify_presence(label.map(|mut text| {
+        text.zeroize();
+    }))?;
+    if secret_present && label_present {
+        Ok(CredentialPairStatus::Complete)
+    } else {
+        Ok(CredentialPairStatus::Incomplete)
+    }
+}
+
+fn classify_presence<T>(result: keyring::Result<T>) -> Result<bool, CredentialError> {
+    match result {
+        Ok(_) => Ok(true),
+        Err(keyring::Error::NoEntry) => Ok(false),
+        Err(_) => Err(CredentialError::unavailable()),
+    }
+}
+
+fn reconcile_entries<E: KeychainEntry>(secret_entry: &E, label_entry: &E) -> bool {
     let mut secret_pending = true;
     let mut label_pending = true;
 
-    for attempt in 0..CREATE_ROLLBACK_ATTEMPTS {
+    for attempt in 0..RECONCILIATION_ATTEMPTS {
         if secret_pending {
             secret_pending = !cleanup_succeeded(secret_entry.delete_credential());
         }
@@ -211,12 +443,13 @@ fn reconcile_failed_create<E: KeychainEntry>(secret_entry: &E, label_entry: &E) 
             label_pending = !cleanup_succeeded(label_entry.delete_credential());
         }
         if !secret_pending && !label_pending {
-            return;
+            return true;
         }
-        if attempt + 1 < CREATE_ROLLBACK_ATTEMPTS {
-            std::thread::sleep(CREATE_ROLLBACK_RETRY_DELAY);
+        if attempt + 1 < RECONCILIATION_ATTEMPTS {
+            std::thread::sleep(RECONCILIATION_RETRY_DELAY);
         }
     }
+    false
 }
 
 fn cleanup_succeeded(result: keyring::Result<()>) -> bool {
@@ -256,7 +489,10 @@ fn map_read_error(error: keyring::Error) -> CredentialError {
 
 #[cfg(test)]
 mod tests {
-    use super::{CredentialError, KeychainEntry, KeychainRepository, SecretMaterial};
+    use super::{
+        CredentialError, KeychainEntry, KeychainRepository, LABEL_NAMESPACE, SERVICE_NAMESPACE,
+        SecretMaterial,
+    };
     use std::{cell::RefCell, rc::Rc};
 
     const FAILURE_SENTINEL: &str = "PIUI_CREDENTIAL_SHEET_FAILURE_SENTINEL";
@@ -282,6 +518,32 @@ mod tests {
     }
 
     impl KeychainEntry for FakeEntry {
+        fn get_password(&self) -> keyring::Result<String> {
+            let mut state = self.state.borrow_mut();
+            state.calls.push("read-label");
+            match self.kind {
+                EntryKind::Label if state.label_stored => Ok("Test account".into()),
+                EntryKind::Label => Err(keyring::Error::NoEntry),
+                EntryKind::Secret => Err(keyring::Error::Invalid(
+                    "entry-kind".into(),
+                    "invalid test operation".into(),
+                )),
+            }
+        }
+
+        fn get_secret(&self) -> keyring::Result<Vec<u8>> {
+            let mut state = self.state.borrow_mut();
+            state.calls.push("read-secret");
+            match self.kind {
+                EntryKind::Secret if state.secret_stored => Ok(b"bounded-test-secret".to_vec()),
+                EntryKind::Secret => Err(keyring::Error::NoEntry),
+                EntryKind::Label => Err(keyring::Error::Invalid(
+                    "entry-kind".into(),
+                    "invalid test operation".into(),
+                )),
+            }
+        }
+
         fn set_password(&self, _password: &str) -> keyring::Result<()> {
             let mut state = self.state.borrow_mut();
             match self.kind {
@@ -342,6 +604,30 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn credential_proxy_test_namespaces_cannot_address_production_entries() {
+        let production = KeychainRepository::new();
+        let isolated = KeychainRepository::for_tests("namespace-check").unwrap();
+        assert_eq!(production.service, SERVICE_NAMESPACE);
+        assert_eq!(production.labels, LABEL_NAMESPACE);
+        assert_eq!(production.index, super::INDEX_NAMESPACE);
+        assert_eq!(
+            isolated.service,
+            format!("{SERVICE_NAMESPACE}.test.namespace-check")
+        );
+        assert_eq!(
+            isolated.labels,
+            format!("{LABEL_NAMESPACE}.test.namespace-check")
+        );
+        assert_eq!(
+            isolated.index,
+            format!("{}.test.namespace-check", super::INDEX_NAMESPACE)
+        );
+        assert_ne!(isolated.service, production.service);
+        assert_ne!(isolated.labels, production.labels);
+        assert_ne!(isolated.index, production.index);
     }
 
     #[test]
@@ -409,5 +695,103 @@ mod tests {
         assert!(!state.label_stored);
         assert!(!state.secret_stored);
         assert_eq!(state.secret_cleanup_failures_remaining, 0);
+    }
+
+    #[test]
+    fn proxy_create_at_accepts_only_an_exact_pair_after_ambiguous_secret_write() {
+        let repository = KeychainRepository::for_tests("create-readback").unwrap();
+        let state = Rc::new(RefCell::new(FakeState::default()));
+        let factory_state = Rc::clone(&state);
+        let secret_service = repository.service.clone();
+        let label_service = repository.labels.clone();
+        let credential_id = "credential-00000000000000000000000000000001";
+
+        let result = repository.create_at_with_entry_factory(
+            credential_id,
+            "Test account",
+            SecretMaterial::new(b"bounded-test-secret".to_vec()).unwrap(),
+            true,
+            move |service, received_id| {
+                assert_eq!(received_id, credential_id);
+                let (kind, call) = if service == secret_service {
+                    (EntryKind::Secret, "construct-secret")
+                } else if service == label_service {
+                    (EntryKind::Label, "construct-label")
+                } else {
+                    return Err(CredentialError::unavailable());
+                };
+                factory_state.borrow_mut().calls.push(call);
+                Ok(FakeEntry {
+                    kind,
+                    state: Rc::clone(&factory_state),
+                })
+            },
+        );
+
+        assert!(result.is_ok());
+        let state = state.borrow();
+        assert!(state.secret_stored);
+        assert!(state.label_stored);
+        assert_eq!(
+            state.calls,
+            [
+                "construct-secret",
+                "construct-label",
+                "write-label",
+                "write-secret",
+                "read-secret",
+                "read-label"
+            ]
+        );
+        assert!(!state.calls.iter().any(|call| call.starts_with("rollback")));
+    }
+
+    #[test]
+    fn proxy_overwrite_rechecks_complete_pair_before_upserting_secret() {
+        let repository = KeychainRepository::for_tests("overwrite-guard").unwrap();
+        let state = Rc::new(RefCell::new(FakeState {
+            secret_stored: true,
+            label_stored: false,
+            ..FakeState::default()
+        }));
+        let factory_state = Rc::clone(&state);
+        let secret_service = repository.service.clone();
+        let label_service = repository.labels.clone();
+        let credential_id = "credential-00000000000000000000000000000002";
+        let secret = SecretMaterial::new(b"replacement-secret".to_vec()).unwrap();
+
+        let result = repository.overwrite_with_entry_factory(
+            credential_id,
+            &secret,
+            move |service, received_id| {
+                assert_eq!(received_id, credential_id);
+                let (kind, call) = if service == secret_service {
+                    (EntryKind::Secret, "construct-secret")
+                } else if service == label_service {
+                    (EntryKind::Label, "construct-label")
+                } else {
+                    return Err(CredentialError::unavailable());
+                };
+                factory_state.borrow_mut().calls.push(call);
+                Ok(FakeEntry {
+                    kind,
+                    state: Rc::clone(&factory_state),
+                })
+            },
+        );
+
+        let error = result.expect_err("incomplete pair must prevent overwrite upsert");
+        assert_eq!(error.code(), CredentialError::not_found().code());
+        let state = state.borrow();
+        assert_eq!(
+            state.calls,
+            [
+                "construct-secret",
+                "construct-label",
+                "read-secret",
+                "read-label"
+            ]
+        );
+        assert!(!state.calls.contains(&"write-secret"));
     }
 }

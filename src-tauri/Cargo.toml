@@ -40,6 +40,7 @@ objc2-app-kit = { version = "=0.3.2", default-features = false, features = [
   "NSButton",
   "NSCell",
   "NSControl",
+  "NSOpenPanel",
   "NSPasteboard",
   "NSResponder",
   "NSSecureTextField",
@@ -52,4 +53,5 @@ objc2-foundation = { version = "=0.3.2", default-features = false, features = [
   "std",
   "NSNotification",
   "NSString",
+  "NSURL",
 ] }

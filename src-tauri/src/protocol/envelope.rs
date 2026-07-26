@@ -1,14 +1,35 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::{HashSet, VecDeque};
-use std::fmt::{Display, Formatter};
+use std::fmt::{Debug, Display, Formatter};
+use zeroize::{Zeroize, Zeroizing};
+
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub const MAX_LINE_BYTES: usize = 1_048_576;
 const MAX_PAYLOAD_BYTES: usize = 524_288;
 const MAX_DEPTH: usize = 32;
+// A credential is validated with depth zero at `payload.credential`; the
+// private envelope and payload wrappers consume exactly two additional levels.
+const PRIVATE_HOST_REQUEST_MAX_DEPTH: usize = MAX_DEPTH + 2;
 const MAX_RECENT_IDS: usize = 4_096;
 const MAX_SEQUENCE: u64 = 9_007_199_254_740_991;
 const MAX_PAYLOAD_PROPERTIES: usize = 128;
+
+#[cfg(test)]
+static PRIVATE_DECODE_ZEROISED_BYTES: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(test)]
+fn private_decode_zeroised_bytes() -> usize {
+    PRIVATE_DECODE_ZEROISED_BYTES.load(Ordering::Relaxed)
+}
+
+fn zeroise_private_string(value: &mut String) {
+    #[cfg(test)]
+    PRIVATE_DECODE_ZEROISED_BYTES.fetch_add(value.len(), Ordering::Relaxed);
+    value.zeroize();
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -23,7 +44,7 @@ pub enum ProtocolKind {
     Ack,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Envelope {
     pub version: u8,
@@ -48,6 +69,33 @@ pub struct EnvelopeError {
     pub retryable: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diagnostic_id: Option<String>,
+}
+
+impl Debug for Envelope {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        let mut debug = formatter.debug_struct("Envelope");
+        debug
+            .field("version", &self.version)
+            .field("kind", &self.kind)
+            .field("id", &self.id)
+            .field("correlation_id", &self.correlation_id)
+            .field("decision_id", &self.decision_id)
+            .field("sequence", &self.sequence);
+        if matches!(
+            self.kind,
+            ProtocolKind::HostRequest | ProtocolKind::HostResponse
+        ) {
+            debug.field("payload", &"<redacted private payload>").field(
+                "error",
+                &self.error.as_ref().map(|_| "<redacted private error>"),
+            );
+        } else {
+            debug
+                .field("payload", &self.payload)
+                .field("error", &self.error);
+        }
+        debug.finish()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -89,14 +137,34 @@ impl ProtocolDecoder {
         }
         let text = std::str::from_utf8(&bytes[..bytes.len() - 1])
             .map_err(|_| ProtocolError("invalid UTF-8"))?;
-        let value: Value = serde_json::from_str(text).map_err(|_| ProtocolError("invalid JSON"))?;
-        if json_depth(&value, 0) > MAX_DEPTH {
+        let raw: Value = serde_json::from_str(text).map_err(|_| ProtocolError("invalid JSON"))?;
+        let raw = RawEnvelopeGuard::new(raw);
+        let private_kind = raw.private_kind();
+        let depth_limit = if private_kind == Some(ProtocolKind::HostRequest) {
+            PRIVATE_HOST_REQUEST_MAX_DEPTH
+        } else {
+            MAX_DEPTH
+        };
+        if json_depth(raw.value(), 0) > depth_limit {
             return Err(ProtocolError("depth limit exceeded"));
         }
-        validate_raw_envelope(&value)?;
-        let mut envelope: Envelope =
-            serde_json::from_value(value).map_err(|_| ProtocolError("schema mismatch"))?;
-        validate_envelope(&envelope)?;
+        validate_raw_envelope(raw.value())?;
+
+        // Once a private kind is identified, avoid serde's fallible
+        // Value-to-typed clone/deserialisation path. Strictly validate all
+        // fields first, then move the already-parsed allocations into the
+        // envelope. Both raw and decoded guards recursively erase strings on
+        // every subsequent failure.
+        let mut decoded = if private_kind.is_some() {
+            DecodedEnvelope::Private(decode_private_envelope(raw)?)
+        } else {
+            DecodedEnvelope::Ordinary(
+                serde_json::from_value(raw.into_value())
+                    .map_err(|_| ProtocolError("schema mismatch"))?,
+            )
+        };
+        let envelope = decoded.envelope_mut();
+        validate_envelope(envelope)?;
         if !self.seen_ids.insert(envelope.id.clone()) {
             return Err(ProtocolError("duplicate envelope ID"));
         }
@@ -142,8 +210,281 @@ impl ProtocolDecoder {
                 ]);
             }
         }
-        Ok(envelope)
+        Ok(decoded.into_envelope())
     }
+}
+
+struct RawEnvelopeGuard(Value);
+
+impl RawEnvelopeGuard {
+    fn new(value: Value) -> Self {
+        Self(value)
+    }
+
+    fn value(&self) -> &Value {
+        &self.0
+    }
+
+    fn private_kind(&self) -> Option<ProtocolKind> {
+        match self.0.get("kind").and_then(Value::as_str) {
+            Some("host-request") => Some(ProtocolKind::HostRequest),
+            Some("host-response") => Some(ProtocolKind::HostResponse),
+            _ => None,
+        }
+    }
+
+    fn into_value(mut self) -> Value {
+        std::mem::take(&mut self.0)
+    }
+}
+
+impl Drop for RawEnvelopeGuard {
+    fn drop(&mut self) {
+        zeroise_json_value(&mut self.0);
+    }
+}
+
+enum DecodedEnvelope {
+    Ordinary(Envelope),
+    Private(DecodedPrivateEnvelope),
+}
+
+impl DecodedEnvelope {
+    fn envelope_mut(&mut self) -> &mut Envelope {
+        match self {
+            Self::Ordinary(envelope) => envelope,
+            Self::Private(envelope) => &mut envelope.0,
+        }
+    }
+
+    fn into_envelope(self) -> Envelope {
+        match self {
+            Self::Ordinary(envelope) => envelope,
+            Self::Private(mut envelope) => std::mem::replace(&mut envelope.0, empty_envelope()),
+        }
+    }
+}
+
+struct DecodedPrivateEnvelope(Envelope);
+
+impl Drop for DecodedPrivateEnvelope {
+    fn drop(&mut self) {
+        zeroise_envelope_strings(&mut self.0);
+    }
+}
+
+fn decode_private_envelope(
+    mut raw: RawEnvelopeGuard,
+) -> Result<DecodedPrivateEnvelope, ProtocolError> {
+    validate_private_raw_schema(raw.value())?;
+    let mut object = match std::mem::take(&mut raw.0) {
+        Value::Object(object) => object,
+        _ => unreachable!("private raw schema checked object"),
+    };
+    let kind = match take_raw_string(&mut object, "kind").as_str() {
+        "host-request" => ProtocolKind::HostRequest,
+        "host-response" => ProtocolKind::HostResponse,
+        _ => unreachable!("private raw schema checked kind"),
+    };
+    let error = object.remove("error").map(|value| {
+        let Value::Object(mut error) = value else {
+            unreachable!("private error checked");
+        };
+        EnvelopeError {
+            category: parse_error_category(&take_raw_string(&mut error, "category"))
+                .expect("private category checked"),
+            message: take_raw_string(&mut error, "message"),
+            retryable: error.remove("retryable").map(|value| match value {
+                Value::Bool(value) => value,
+                _ => unreachable!("private retryable checked"),
+            }),
+            diagnostic_id: take_optional_raw_string(&mut error, "diagnosticId"),
+        }
+    });
+    let envelope = Envelope {
+        version: take_raw_unsigned_integer(&mut object, "version", u8::MAX as u64)
+            .expect("private version checked") as u8,
+        kind,
+        id: take_raw_string(&mut object, "id"),
+        correlation_id: take_optional_raw_string(&mut object, "correlationId"),
+        decision_id: take_optional_raw_string(&mut object, "decisionId"),
+        sequence: take_raw_unsigned_integer(&mut object, "sequence", MAX_SEQUENCE)
+            .expect("private sequence checked"),
+        payload: match object.remove("payload").expect("private payload checked") {
+            Value::Object(payload) => payload,
+            _ => unreachable!("private payload checked"),
+        },
+        error,
+    };
+    Ok(DecodedPrivateEnvelope(envelope))
+}
+
+fn validate_private_raw_schema(value: &Value) -> Result<(), ProtocolError> {
+    let object = value
+        .as_object()
+        .ok_or(ProtocolError("envelope must be an object"))?;
+    const ALLOWED: [&str; 8] = [
+        "version",
+        "kind",
+        "id",
+        "correlationId",
+        "decisionId",
+        "sequence",
+        "payload",
+        "error",
+    ];
+    if object.keys().any(|key| !ALLOWED.contains(&key.as_str()))
+        || !["version", "kind", "id", "sequence", "payload"]
+            .iter()
+            .all(|key| object.contains_key(*key))
+        || raw_unsigned_integer(object.get("version"), u8::MAX as u64).is_none()
+        || !matches!(
+            object.get("kind").and_then(Value::as_str),
+            Some("host-request" | "host-response")
+        )
+        || !object.get("id").is_some_and(Value::is_string)
+        || raw_unsigned_integer(object.get("sequence"), MAX_SEQUENCE).is_none()
+        || !object.get("payload").is_some_and(Value::is_object)
+    {
+        return Err(ProtocolError("schema mismatch"));
+    }
+    for optional in ["correlationId", "decisionId"] {
+        if object.get(optional).is_some_and(|value| !value.is_string()) {
+            return Err(ProtocolError("schema mismatch"));
+        }
+    }
+    if let Some(error) = object.get("error") {
+        let error = error.as_object().ok_or(ProtocolError("schema mismatch"))?;
+        if error.keys().any(|key| {
+            !["category", "message", "retryable", "diagnosticId"].contains(&key.as_str())
+        }) || !error.get("category").is_some_and(Value::is_string)
+            || !error.get("message").is_some_and(Value::is_string)
+            || parse_error_category(
+                error
+                    .get("category")
+                    .and_then(Value::as_str)
+                    .expect("checked category string"),
+            )
+            .is_none()
+            || error
+                .get("retryable")
+                .is_some_and(|value| !value.is_boolean())
+            || error
+                .get("diagnosticId")
+                .is_some_and(|value| !value.is_string())
+        {
+            return Err(ProtocolError("schema mismatch"));
+        }
+    }
+    Ok(())
+}
+
+fn raw_unsigned_integer(value: Option<&Value>, maximum: u64) -> Option<u64> {
+    let number = value?.as_number()?;
+    if let Some(value) = number.as_u64() {
+        return (value <= maximum).then_some(value);
+    }
+    if let Some(value) = number.as_i64() {
+        return (value >= 0 && value as u64 <= maximum).then_some(value as u64);
+    }
+    number.as_f64().and_then(|value| {
+        (value.is_finite() && value >= 0.0 && value.fract() == 0.0 && value <= maximum as f64)
+            .then_some(value as u64)
+    })
+}
+
+fn take_raw_unsigned_integer(
+    object: &mut Map<String, Value>,
+    key: &str,
+    maximum: u64,
+) -> Option<u64> {
+    let value = object.remove(key)?;
+    raw_unsigned_integer(Some(&value), maximum)
+}
+
+fn take_raw_string(object: &mut Map<String, Value>, key: &str) -> String {
+    match object.remove(key).expect("private string checked") {
+        Value::String(value) => value,
+        _ => unreachable!("private string checked"),
+    }
+}
+
+fn take_optional_raw_string(object: &mut Map<String, Value>, key: &str) -> Option<String> {
+    object.remove(key).map(|value| match value {
+        Value::String(value) => value,
+        _ => unreachable!("private optional string checked"),
+    })
+}
+
+fn parse_error_category(category: &str) -> Option<ErrorCategory> {
+    Some(match category {
+        "invalid-request" => ErrorCategory::InvalidRequest,
+        "unsupported-version" => ErrorCategory::UnsupportedVersion,
+        "unavailable" => ErrorCategory::Unavailable,
+        "cancelled" => ErrorCategory::Cancelled,
+        "timeout" => ErrorCategory::Timeout,
+        "permission-denied" => ErrorCategory::PermissionDenied,
+        "conflict" => ErrorCategory::Conflict,
+        "internal" => ErrorCategory::Internal,
+        _ => return None,
+    })
+}
+
+fn empty_envelope() -> Envelope {
+    Envelope {
+        version: 0,
+        kind: ProtocolKind::HostRequest,
+        id: String::new(),
+        correlation_id: None,
+        decision_id: None,
+        sequence: 0,
+        payload: Map::new(),
+        error: None,
+    }
+}
+
+fn zeroise_envelope_strings(envelope: &mut Envelope) {
+    zeroise_private_string(&mut envelope.id);
+    if let Some(value) = envelope.correlation_id.as_mut() {
+        zeroise_private_string(value);
+    }
+    envelope.correlation_id = None;
+    if let Some(value) = envelope.decision_id.as_mut() {
+        zeroise_private_string(value);
+    }
+    envelope.decision_id = None;
+    let payload = std::mem::take(&mut envelope.payload);
+    zeroise_json_map(payload);
+    if let Some(error) = envelope.error.as_mut() {
+        zeroise_private_string(&mut error.message);
+        if let Some(value) = error.diagnostic_id.as_mut() {
+            zeroise_private_string(value);
+        }
+        error.diagnostic_id = None;
+    }
+    envelope.error = None;
+}
+
+fn zeroise_json_map(map: Map<String, Value>) {
+    for (mut key, mut value) in map {
+        zeroise_private_string(&mut key);
+        zeroise_json_value(&mut value);
+    }
+}
+
+fn zeroise_json_value(value: &mut Value) {
+    match value {
+        Value::String(text) => zeroise_private_string(text),
+        Value::Array(values) => {
+            for value in &mut *values {
+                zeroise_json_value(value);
+            }
+            values.clear();
+        }
+        Value::Object(map) => zeroise_json_map(std::mem::take(map)),
+        _ => {}
+    }
+    *value = Value::Null;
 }
 
 fn validate_raw_envelope(value: &Value) -> Result<(), ProtocolError> {
@@ -203,9 +544,11 @@ pub fn validate_envelope(envelope: &Envelope) -> Result<(), ProtocolError> {
     if envelope.payload.len() > MAX_PAYLOAD_PROPERTIES {
         return Err(ProtocolError("payload property limit exceeded"));
     }
-    let payload_bytes = serde_json::to_vec(&envelope.payload)
-        .map_err(|_| ProtocolError("payload encoding failed"))?
-        .len();
+    let payload_bytes = Zeroizing::new(
+        serde_json::to_vec(&envelope.payload)
+            .map_err(|_| ProtocolError("payload encoding failed"))?,
+    )
+    .len();
     if payload_bytes > MAX_PAYLOAD_BYTES {
         return Err(ProtocolError("payload limit exceeded"));
     }
@@ -351,9 +694,6 @@ fn contains_secret_key(value: &Value) -> bool {
     }
 }
 fn json_depth(value: &Value, level: usize) -> usize {
-    if level > MAX_DEPTH {
-        return level;
-    }
     match value {
         Value::Object(map) => map
             .values()
@@ -373,6 +713,7 @@ fn json_depth(value: &Value, level: usize) -> usize {
 mod tests {
     use super::{Envelope, ProtocolKind};
     use serde_json::{Map, Value};
+    use uuid::Uuid;
 
     #[test]
     fn absent_optional_fields_are_omitted_from_the_wire_shape() {
@@ -399,6 +740,31 @@ mod tests {
                 "payload": {"method": "status"}
             })
         );
+    }
+
+    #[test]
+    fn private_decode_failures_recursively_zeroise_parsed_raw_and_decoded_strings() {
+        let canary = format!("private-decode-{}", Uuid::new_v4().simple());
+        let cases = [
+            format!(
+                "{{\"version\":1,\"kind\":\"host-request\",\"id\":\"private-raw-schema\",\"sequence\":1,\"payload\":{{\"method\":\"credential.set\",\"credential\":{{\"key\":\"{canary}\"}}}},\"unknown\":true}}\n"
+            ),
+            format!(
+                "{{\"version\":1,\"kind\":\"host-request\",\"id\":\"private-type-schema\",\"sequence\":1.5,\"payload\":{{\"method\":\"credential.set\",\"credential\":{{\"key\":\"{canary}\"}}}}}}\n"
+            ),
+            format!(
+                "{{\"version\":2,\"kind\":\"host-request\",\"id\":\"private-envelope-validation\",\"sequence\":1,\"payload\":{{\"method\":\"credential.set\",\"credential\":{{\"key\":\"{canary}\"}}}}}}\n"
+            ),
+        ];
+        for line in cases {
+            let before = super::private_decode_zeroised_bytes();
+            assert!(
+                super::ProtocolDecoder::default()
+                    .decode(line.as_bytes())
+                    .is_err()
+            );
+            assert!(super::private_decode_zeroised_bytes() >= before + canary.len());
+        }
     }
 
     #[test]

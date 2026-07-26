@@ -14,6 +14,10 @@ export type BridgeClientOptions = {
 
 type PendingRequest = { deadline: number; method: string };
 
+export function isPrivateHostEnvelope(envelope: ProtocolEnvelope): boolean {
+  return envelope.kind === 'host-request' || envelope.kind === 'host-response';
+}
+
 export class BridgeClient {
   #incomingSequence = 0;
   #outgoingSequence = 0;
@@ -74,7 +78,11 @@ export class BridgeClient {
     return cancellation;
   }
 
-  receive(envelope: ProtocolEnvelope): 'accepted' | 'duplicate' | 'stale' | 'gap' {
+  receive(
+    envelope: ProtocolEnvelope,
+  ): 'accepted' | 'duplicate' | 'stale' | 'gap' | 'rejected' {
+    if (isPrivateHostEnvelope(envelope)) return 'rejected';
+
     if (envelope.sequence <= this.#incomingSequence) {
       return envelope.sequence === this.#incomingSequence ? 'duplicate' : 'stale';
     }

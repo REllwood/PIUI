@@ -42,7 +42,10 @@ fn keychain_round_trip_delete_and_redacted_surfaces() {
     let recovered = repository
         .read(&metadata.credential_id)
         .expect("Keychain read");
-    assert_eq!(recovered.expose(), sentinel);
+    assert!(
+        recovered.expose() == sentinel,
+        "recovered Keychain secret did not match"
+    );
     drop(recovered);
 
     repository
