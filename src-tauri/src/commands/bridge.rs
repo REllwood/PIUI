@@ -1,6 +1,7 @@
 use super::ack_settlement::AckSettlement;
 use super::event_output::{EventOutputQueue, EventReceipt};
 use super::projector::{PublicOperationClass, WebViewProjector};
+use crate::domain::approval::ApprovalRegistry;
 use crate::domain::workspace::WorkspaceRegistry;
 use crate::protocol::{Envelope, ProtocolKind, validate_envelope};
 use crate::supervisor::{RestartController, SidecarStatus, SidecarSupervisor, SupervisorPaths};
@@ -27,18 +28,23 @@ pub struct BridgeState {
     acknowledgement_settlement: AckSettlement,
     projector: Arc<WebViewProjector>,
     event_output: Arc<EventOutputQueue>,
+    approval_registry: Arc<ApprovalRegistry>,
     workspace_registry: Arc<WorkspaceRegistry>,
 }
 
 impl BridgeState {
     pub fn new(paths: SupervisorPaths) -> Self {
+        let approval_registry = Arc::new(ApprovalRegistry::default());
         Self {
-            supervisor: Arc::new(Mutex::new(SidecarSupervisor::default())),
+            supervisor: Arc::new(Mutex::new(SidecarSupervisor::with_approval_registry(
+                Arc::clone(&approval_registry),
+            ))),
             restart: Arc::new(Mutex::new(RestartController::default())),
             paths,
             acknowledgement_settlement: AckSettlement::default(),
             projector: Arc::new(WebViewProjector::default()),
             event_output: Arc::new(EventOutputQueue::default()),
+            approval_registry,
             workspace_registry: Arc::new(WorkspaceRegistry::default()),
         }
     }
@@ -90,8 +96,13 @@ impl BridgeState {
 
     pub(crate) fn deactivate_generation(&self, generation: u64) -> Result<(), String> {
         self.projector.deactivate_generation(generation)?;
+        self.approval_registry.invalidate_generation(generation);
         self.workspace_registry.invalidate_generation(generation);
         Ok(())
+    }
+
+    pub(crate) fn approval_registry(&self) -> Arc<ApprovalRegistry> {
+        Arc::clone(&self.approval_registry)
     }
 
     pub(crate) fn workspace_registry(&self) -> Arc<WorkspaceRegistry> {

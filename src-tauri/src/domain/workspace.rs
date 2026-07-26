@@ -223,6 +223,13 @@ pub(crate) struct TrustGrant {
     pub(crate) lease_id: String,
 }
 
+#[derive(Clone)]
+pub(crate) struct WorkspaceApprovalBinding {
+    workspace_id: String,
+    revision: u64,
+    lease_id: String,
+}
+
 pub(crate) struct WorkspaceSync {
     pub(crate) workspace_id: String,
     pub(crate) revision: u64,
@@ -271,6 +278,43 @@ impl Drop for RevokeOutcome {
 }
 
 impl WorkspaceRegistry {
+    pub(crate) fn with_approval_binding<T>(
+        &self,
+        workspace_id: &str,
+        revision: u64,
+        operation: impl FnOnce(WorkspaceApprovalBinding) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let inner = self.inner.lock().map_err(|_| WORKSPACE_UNAVAILABLE.to_string())?;
+        let record = inner.records.get(workspace_id).ok_or_else(|| WORKSPACE_UNAVAILABLE.to_string())?;
+        if record.lifecycle != WorkspaceLifecycle::OpenUntrusted
+            || record.trust_state != TrustState::Trusted
+            || record.revision != revision
+            || record.pending_authorisation.is_some()
+        {
+            return Err(WORKSPACE_UNTRUSTED.into());
+        }
+        let lease_id = record.lease_id.clone().ok_or_else(|| WORKSPACE_UNTRUSTED.to_string())?;
+        operation(WorkspaceApprovalBinding { workspace_id: record.id.clone(), revision, lease_id })
+    }
+
+    pub(crate) fn with_valid_approval_binding<T>(
+        &self,
+        binding: &WorkspaceApprovalBinding,
+        operation: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
+        let inner = self.inner.lock().map_err(|_| WORKSPACE_UNAVAILABLE.to_string())?;
+        let record = inner.records.get(&binding.workspace_id).ok_or_else(|| WORKSPACE_UNAVAILABLE.to_string())?;
+        if record.lifecycle != WorkspaceLifecycle::OpenUntrusted
+            || record.trust_state != TrustState::Trusted
+            || record.revision != binding.revision
+            || record.lease_id.as_deref() != Some(binding.lease_id.as_str())
+            || record.pending_authorisation.is_some()
+        {
+            return Err(WORKSPACE_UNTRUSTED.into());
+        }
+        operation()
+    }
+
     pub fn acquire_selected_directory(&self, selected: &Path) -> Result<WorkspaceSummary, String> {
         let metadata =
             fs::symlink_metadata(selected).map_err(|_| WORKSPACE_REJECTED.to_string())?;

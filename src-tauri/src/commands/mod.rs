@@ -1,4 +1,5 @@
 pub(crate) mod ack_settlement;
+pub mod approval;
 pub mod bridge;
 pub mod credentials;
 pub(crate) mod event_output;

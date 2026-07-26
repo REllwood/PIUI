@@ -530,6 +530,17 @@ pub fn validate_envelope(envelope: &Envelope) -> Result<(), ProtocolError> {
     }
     if let Some(id) = &envelope.decision_id {
         validate_id(id, "invalid decision ID")?;
+        match envelope.kind {
+            ProtocolKind::Ack => {}
+            ProtocolKind::HostResponse
+                if id.strip_prefix("decision-").is_some_and(|suffix| {
+                    suffix.len() == 32
+                        && suffix
+                            .bytes()
+                            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+                }) => {}
+            _ => return Err(ProtocolError("decision ID not permitted")),
+        }
     }
     if matches!(
         envelope.kind,

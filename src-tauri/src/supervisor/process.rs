@@ -5,7 +5,8 @@ use super::handshake::{HandshakeExpectation, protocol_architecture, validate_han
 use super::redact::StderrRedactor;
 use super::stdio::{FailureSignal, GenerationControl, RawFrame, stderr_reader, stdout_reader};
 use crate::credentials::CredentialProxy;
-use crate::credentials::proxy::PendingHostResponse;
+use crate::credentials::proxy::{PendingHostResponse, discard_private_envelope};
+use crate::domain::approval::ApprovalRegistry;
 use crate::protocol::{Envelope, ProtocolDecoder, ProtocolKind, validate_envelope};
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -384,6 +385,50 @@ impl GenerationWriter {
         Ok(id)
     }
 
+    pub(super) fn write_approval_response(
+        &mut self,
+        expected_generation: u64,
+        job: crate::domain::approval::ApprovalResponseJob,
+    ) -> Result<(), String> {
+        self.ensure_active(expected_generation)?;
+        let (id, sequence) = self.next_internal_coordinates("approval-response")?;
+        let mut payload = Map::new();
+        payload.insert("schemaVersion".into(), Value::from(1));
+        payload.insert("approvalId".into(), Value::String(job.approval_id.clone()));
+        payload.insert(
+            "invocationId".into(),
+            Value::String(job.invocation_id.clone()),
+        );
+        payload.insert(
+            "inputDigest".into(),
+            Value::String(job.input_digest.clone()),
+        );
+        payload.insert("decision".into(), Value::String(job.decision.into()));
+        payload.insert(
+            "scopeIds".into(),
+            Value::Array(job.scope_ids.iter().cloned().map(Value::String).collect()),
+        );
+        crate::protocol::approval::validate_approval_response(&job.decision_id, &payload)?;
+        let response = Envelope {
+            version: 1,
+            kind: ProtocolKind::HostResponse,
+            id,
+            correlation_id: Some(job.correlation_id.clone()),
+            decision_id: Some(job.decision_id.clone()),
+            sequence,
+            payload,
+            error: None,
+        };
+        validate_envelope(&response)
+            .map_err(|_| "approval response encoding failed".to_string())?;
+        let encoded = serde_json::to_vec(&response)
+            .map_err(|_| "approval response encoding failed".to_string());
+        discard_private_envelope(response);
+        let mut bytes = Zeroizing::new(encoded?);
+        bytes.push(b'\n');
+        self.write_bytes(bytes)
+    }
+
     pub(super) fn write_private_response(
         &mut self,
         expected_generation: u64,
@@ -572,6 +617,7 @@ struct RunningSidecar {
     stderr: Option<JoinHandle<()>>,
     dispatcher: Option<JoinHandle<()>>,
     credential_coordinator: Option<JoinHandle<()>>,
+    approval_coordinator: Option<JoinHandle<()>>,
     control: Arc<GenerationControl>,
     diagnostics: Arc<Mutex<VecDeque<String>>>,
     failure: FailureSignal,
@@ -583,6 +629,7 @@ pub struct SidecarSupervisor {
     last_failure: Option<String>,
     generation: u64,
     credential_proxy: CredentialProxy,
+    approval_registry: Arc<ApprovalRegistry>,
 }
 
 impl Default for SidecarSupervisor {
@@ -592,11 +639,22 @@ impl Default for SidecarSupervisor {
             last_failure: None,
             generation: 0,
             credential_proxy: CredentialProxy::default(),
+            approval_registry: Arc::new(ApprovalRegistry::default()),
         }
     }
 }
 
 impl SidecarSupervisor {
+    pub(crate) fn with_approval_registry(approval_registry: Arc<ApprovalRegistry>) -> Self {
+        Self {
+            running: None,
+            last_failure: None,
+            generation: 0,
+            credential_proxy: CredentialProxy::default(),
+            approval_registry,
+        }
+    }
+
     pub fn start(&mut self, paths: &SupervisorPaths) -> Result<SidecarStatus, String> {
         if self.status().running {
             return Err("sidecar is already running".into());
@@ -687,6 +745,7 @@ impl SidecarSupervisor {
         let DispatcherHandles {
             dispatcher,
             credential_coordinator,
+            approval_coordinator,
         } = start_dispatcher(
             generation,
             decoder,
@@ -694,6 +753,7 @@ impl SidecarSupervisor {
             public_sender,
             Arc::clone(&workspace_waiters),
             self.credential_proxy.clone(),
+            Arc::clone(&self.approval_registry),
             Arc::clone(&writer),
             Arc::clone(&control),
             Arc::clone(&diagnostics),
@@ -709,6 +769,7 @@ impl SidecarSupervisor {
             stderr: Some(stderr_handle),
             dispatcher: Some(dispatcher),
             credential_coordinator: Some(credential_coordinator),
+            approval_coordinator: Some(approval_coordinator),
             control,
             diagnostics,
             failure,
@@ -970,6 +1031,9 @@ impl SidecarSupervisor {
         if let Some(handle) = running.credential_coordinator.take() {
             let _ = handle.join();
         }
+        if let Some(handle) = running.approval_coordinator.take() {
+            let _ = handle.join();
+        }
         result
     }
 
@@ -1003,6 +1067,9 @@ fn join_transport_threads(running: &mut RunningSidecar) {
         let _ = handle.join();
     }
     if let Some(handle) = running.credential_coordinator.take() {
+        let _ = handle.join();
+    }
+    if let Some(handle) = running.approval_coordinator.take() {
         let _ = handle.join();
     }
     if let Some(handle) = running.stderr.take() {
