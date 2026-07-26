@@ -53,7 +53,25 @@
     "request": {
       "allOf": [
         { "$ref": "#/$defs/base" },
-        { "type": "object", "properties": { "kind": { "const": "request" }, "payload": { "type": "object", "required": ["method"], "properties": { "method": { "type": "string", "maxLength": 96 } } } } }
+        { "type": "object", "properties": { "kind": { "const": "request" }, "payload": { "type": "object", "required": ["method"], "properties": { "method": { "type": "string", "maxLength": 96 } } } } },
+        {
+          "if": {
+            "type": "object",
+            "properties": {
+              "payload": {
+                "type": "object",
+                "required": ["method"],
+                "properties": { "method": { "type": "string", "pattern": "^workspace\\." } }
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "properties": {
+              "payload": { "$ref": "#/$defs/workspacePayload" }
+            }
+          }
+        }
       ]
     },
     "response": {
@@ -79,6 +97,114 @@
         { "$ref": "#/$defs/base" },
         { "type": "object", "properties": { "kind": { "const": "host-response" }, "correlationId": { "type": "string" } }, "required": ["correlationId"] }
       ]
+    },
+    "workspacePayload": {
+      "oneOf": [
+        { "$ref": "#/$defs/workspaceSync" },
+        { "$ref": "#/$defs/workspaceOpen" },
+        { "$ref": "#/$defs/workspaceAuthorise" },
+        { "$ref": "#/$defs/workspaceLoad" },
+        { "$ref": "#/$defs/workspaceRevoke" }
+      ]
+    },
+    "workspaceSync": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["method", "schemaVersion", "workspaceId", "generation", "revision", "trustState"],
+          "properties": {
+            "method": { "const": "workspace.sync" },
+            "schemaVersion": { "const": 1 },
+            "workspaceId": { "$ref": "#/$defs/workspaceId" },
+            "generation": { "$ref": "#/$defs/safeRevision" },
+            "revision": { "$ref": "#/$defs/safeRevision" },
+            "trustState": { "enum": ["untrusted", "revoked"] }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["method", "schemaVersion", "workspaceId", "generation", "revision", "trustState", "leaseId"],
+          "properties": {
+            "method": { "const": "workspace.sync" },
+            "schemaVersion": { "const": 1 },
+            "workspaceId": { "$ref": "#/$defs/workspaceId" },
+            "generation": { "$ref": "#/$defs/safeRevision" },
+            "revision": { "$ref": "#/$defs/safeRevision" },
+            "trustState": { "const": "trusted" },
+            "leaseId": { "$ref": "#/$defs/leaseId" }
+          }
+        }
+      ]
+    },
+    "workspaceOpen": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "schemaVersion", "workspaceId", "generation", "revision"],
+      "properties": {
+        "method": { "const": "workspace.openUntrusted" },
+        "schemaVersion": { "const": 1 },
+        "workspaceId": { "$ref": "#/$defs/workspaceId" },
+        "generation": { "$ref": "#/$defs/safeRevision" },
+        "revision": { "$ref": "#/$defs/safeRevision" }
+      }
+    },
+    "workspaceAuthorise": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "schemaVersion", "workspaceId", "generation", "expectedRevision", "revision", "leaseId"],
+      "properties": {
+        "method": { "const": "workspace.authorise" },
+        "schemaVersion": { "const": 1 },
+        "workspaceId": { "$ref": "#/$defs/workspaceId" },
+        "generation": { "$ref": "#/$defs/safeRevision" },
+        "expectedRevision": { "$ref": "#/$defs/safeRevision" },
+        "revision": { "$ref": "#/$defs/safeRevision" },
+        "leaseId": { "$ref": "#/$defs/leaseId" }
+      }
+    },
+    "workspaceLoad": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "schemaVersion", "workspaceId", "generation", "revision", "leaseId", "snapshotRoot", "agentRoot"],
+      "properties": {
+        "method": { "const": "workspace.loadTrusted" },
+        "schemaVersion": { "const": 1 },
+        "workspaceId": { "$ref": "#/$defs/workspaceId" },
+        "generation": { "$ref": "#/$defs/safeRevision" },
+        "revision": { "$ref": "#/$defs/safeRevision" },
+        "leaseId": { "$ref": "#/$defs/leaseId" },
+        "snapshotRoot": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "agentRoot": { "type": "string", "minLength": 1, "maxLength": 4096 }
+      }
+    },
+    "workspaceRevoke": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "schemaVersion", "workspaceId", "generation", "expectedRevision", "revision", "leaseId"],
+      "properties": {
+        "method": { "const": "workspace.revoke" },
+        "schemaVersion": { "const": 1 },
+        "workspaceId": { "$ref": "#/$defs/workspaceId" },
+        "generation": { "$ref": "#/$defs/safeRevision" },
+        "expectedRevision": { "$ref": "#/$defs/safeRevision" },
+        "revision": { "$ref": "#/$defs/safeRevision" },
+        "leaseId": { "$ref": "#/$defs/leaseId" }
+      }
+    },
+    "workspaceId": {
+      "type": "string",
+      "pattern": "^workspace-[a-f0-9]{32}$"
+    },
+    "leaseId": {
+      "type": "string",
+      "pattern": "^trust-[a-f0-9]{32}$"
+    },
+    "safeRevision": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
     },
     "cancel": {
       "allOf": [

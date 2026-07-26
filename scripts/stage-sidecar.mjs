@@ -15,6 +15,11 @@ import { dirname, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
+import {
+  isForbiddenDocumentationDirectoryPath,
+  isForbiddenDocumentationFile,
+  isForbiddenDocumentationPath,
+} from './sidecar-closure-policy.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const cacheRoot = resolve(root, '.cache');
@@ -101,16 +106,19 @@ try {
     `${JSON.stringify({ node: '22.23.1', piSdk: '0.82.0', closure: 'isolated-v1', files: manifest }, null, 2)}\n`,
     { mode: 0o644 },
   );
-  await normaliseDirectories(prepared);
+  // Seal only after the manifest is complete: remove any Finder metadata that
+  // raced the manifest walk, then make every directory non-writable so Finder
+  // cannot recreate unlisted files in the published closure.
+  await sealDirectories(prepared);
 
   await mkdir(dirname(output), { recursive: true });
   const retired = resolve(workspace, 'retired');
-  if (await pathExists(output)) await chmod(output, 0o755);
+  if (await pathExists(output)) makeTreeOwnerWritable(output);
   try {
     await rename(output, retired);
   } catch (error) {
     if (error?.code !== 'ENOENT') {
-      if (await pathExists(output)) await chmod(output, 0o755);
+      if (await pathExists(output)) await sealDirectories(output);
       throw error;
     }
   }
@@ -119,11 +127,10 @@ try {
   } catch (error) {
     if (await pathExists(retired)) {
       await rename(retired, output);
-      await chmod(output, 0o755);
+      await sealDirectories(output);
     }
     throw error;
   }
-  await chmod(output, 0o755);
 
   console.log(
     `Staged ${manifest.length} production resources; manifest=${relative(root, resolve(output, 'manifest.json'))}`,
@@ -255,9 +262,17 @@ async function files(path, boundary) {
 async function validateProductionClosure(path) {
   const required = [
     'dist/index.js',
+    'dist/pi/trust-gate.js',
+    'dist/pi/trust-loader.js',
+    'dist/pi/trust-loader-worker.js',
+    'dist/pi/trust-loader-executor.js',
+    'dist/pi/trust-loader-project-thread.js',
     'node_modules/@piui/protocol/dist/codec.js',
     'node_modules/@piui/protocol/schema/envelope.schema.json',
     'node_modules/@earendil-works/pi-coding-agent/dist/index.js',
+    'node_modules/@earendil-works/pi-coding-agent/dist/utils/changelog.js',
+    'node_modules/yaml/dist/doc/directives.js',
+    'node_modules/yaml/dist/doc/Document.js',
     'node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme-schema.json',
     'node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/light.json',
     'node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/dark.json',
@@ -287,8 +302,10 @@ async function validateProductionClosure(path) {
     }
   }
   const staged = await files(path, path);
-  const forbiddenPath = /^(?:docs?|examples?)(?:\/|$)|^node_modules\/(?:@[^/]+\/[^/]+|[^/]+)\/(?:docs?|examples?)(?:\/|$)|(^|\/)(?:tests?|\.github|\.history)(\/|$)|(^|\/)(?:package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|yarn\.lock)$|\.(?:d\.)?(?:m|c)?ts$|\.map$/;
-  const rejected = staged.map((entry) => relative(path, entry)).filter((entry) => forbiddenPath.test(entry));
+  const forbiddenPath = /(^|\/)(?:\.github|\.history)(\/|$)|(^|\/)(?:package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|yarn\.lock)$|\.(?:d\.)?(?:m|c)?ts$|\.map$/;
+  const rejected = staged
+    .map((entry) => relative(path, entry))
+    .filter((entry) => isForbiddenDocumentationPath(entry) || forbiddenPath.test(entry));
   if (rejected.length) {
     throw new Error(`Rejected production resources remain: ${rejected.slice(0, 10).join(', ')}`);
   }
@@ -301,8 +318,8 @@ async function prune(path, boundary = path) {
     if (stat.isDirectory()) {
       const relativePath = relative(boundary, child);
       if (
-        /^(test|tests|@types|\.cache|\.git|\.github|\.history|\.bin|\.pnpm|\.pnpm-store)$/.test(name) ||
-        isPackageDocumentation(relativePath, name)
+        /^(?:@types|\.cache|\.git|\.github|\.history|\.bin|\.pnpm|\.pnpm-store)$/.test(name) ||
+        isForbiddenDocumentationDirectoryPath(relativePath)
       ) {
         await rm(child, { recursive: true, force: true });
       } else {
@@ -313,6 +330,7 @@ async function prune(path, boundary = path) {
       name === '.modules.yaml' ||
       /^(package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|yarn\.lock)$/.test(name) ||
       /^(\.editorconfig|\.eslintignore|\.eslintrc.*|\.gitignore|\.jscs.*|\.npmignore|\.nvmrc|\.prettier.*|\.travis.*|\.yarnrc.*)$/.test(name) ||
+      isForbiddenDocumentationFile(name) ||
       /\.(d\.)?(m|c)?ts$|\.map$/.test(name)
     ) {
       await rm(child, { force: true });
@@ -320,18 +338,21 @@ async function prune(path, boundary = path) {
   }
 }
 
-function isPackageDocumentation(relativePath, name) {
-  if (!/^(docs?|examples?)$/.test(name)) return false;
-  const segments = relativePath.split('/');
-  if (segments.length === 1) return true;
-  if (segments[0] !== 'node_modules') return false;
-  return segments[1]?.startsWith('@') ? segments.length === 4 : segments.length === 3;
+function makeTreeOwnerWritable(path) {
+  const result = spawnSync('chmod', ['-R', 'u+w', path], { stdio: 'ignore' });
+  if (result.status !== 0) throw new Error('Unable to unlock prior staged closure');
 }
 
-async function normaliseDirectories(path) {
+async function sealDirectories(path) {
   for (const name of await readdir(path)) {
     const child = resolve(path, name);
-    if ((await lstat(child)).isDirectory()) await normaliseDirectories(child);
+    if (name === '.DS_Store') {
+      await rm(child, { recursive: true, force: true });
+    } else if ((await lstat(child)).isDirectory()) {
+      await sealDirectories(child);
+    }
   }
-  await chmod(path, 0o755);
+  // Close the final Finder race in this directory immediately before sealing.
+  await rm(resolve(path, '.DS_Store'), { recursive: true, force: true });
+  await chmod(path, 0o555);
 }

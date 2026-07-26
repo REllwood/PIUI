@@ -1,0 +1,32 @@
+{
+  "validRequests": [
+    {"method":"workspace.sync","schemaVersion":1,"workspaceId":"workspace-0123456789abcdef0123456789abcdef","generation":1,"revision":0,"trustState":"untrusted"},
+    {"method":"workspace.sync","schemaVersion":1,"workspaceId":"workspace-0123456789abcdef0123456789abcdef","generation":2,"revision":1,"trustState":"trusted","leaseId":"trust-0123456789abcdef0123456789abcdef"},
+    {"method":"workspace.openUntrusted","schemaVersion":1,"workspaceId":"workspace-0123456789abcdef0123456789abcdef","generation":1,"revision":0},
+    {"method":"workspace.authorise","schemaVersion":1,"workspaceId":"workspace-0123456789abcdef0123456789abcdef","generation":1,"expectedRevision":0,"revision":1,"leaseId":"trust-0123456789abcdef0123456789abcdef"},
+    {"method":"workspace.loadTrusted","schemaVersion":1,"workspaceId":"workspace-0123456789abcdef0123456789abcdef","generation":1,"revision":1,"leaseId":"trust-0123456789abcdef0123456789abcdef","snapshotRoot":"/private/snapshot","agentRoot":"/private/agent"},
+    {"method":"workspace.revoke","schemaVersion":1,"workspaceId":"workspace-0123456789abcdef0123456789abcdef","generation":1,"expectedRevision":1,"revision":2,"leaseId":"trust-0123456789abcdef0123456789abcdef"}
+  ],
+  "invalidRequests": [
+    {"method":"workspace.sync","schemaVersion":1,"workspaceId":"workspace-0123456789abcdef0123456789abcdef","generation":1,"revision":1,"trustState":"trusted"},
+    {"method":"workspace.authorise","schemaVersion":1,"workspaceId":"workspace-0123456789abcdef0123456789abcdef","generation":1,"expectedRevision":0,"revision":2,"leaseId":"trust-0123456789abcdef0123456789abcdef"},
+    {"method":"workspace.loadTrusted","schemaVersion":1,"workspaceId":"workspace-0123456789abcdef0123456789abcdef","generation":1,"revision":1,"leaseId":"trust-0123456789abcdef0123456789abcdef","snapshotRoot":"relative","agentRoot":"/private/agent"},
+    {"method":"workspace.openUntrusted","schemaVersion":1,"workspaceId":"workspace-0123456789abcdef0123456789abcdef","generation":1,"revision":0,"path":"/forged"},
+    {"method":"workspace.openUntrusted","schemaVersion":1,"workspaceId":"workspace-too-long-0123456789abcdef0123456789abcdef","generation":1,"revision":0},
+    {"method":"workspace.openUntrusted","schemaVersion":1,"workspaceId":"workspace-0123456789abcdef0123456789abcdef","generation":9007199254740992,"revision":0},
+    {"method":"workspace.openUntrusted","schemaVersion":1,"workspaceId":"workspace-0123456789abcdef0123456789abcdef","generation":1,"revision":-1}
+  ],
+  "validResponses": [
+    {"schemaVersion":1,"revision":0,"trustState":"untrusted","resourceState":"open","synced":true},
+    {"schemaVersion":1,"revision":1,"trustState":"trusted","resourceState":"loaded","synced":true},
+    {"schemaVersion":1,"revision":1,"resourceState":"trusted"},
+    {"schemaVersion":1,"revision":1,"resourceState":"loaded","counts":{"extensions":0,"skills":0,"prompts":0,"themes":0,"packages":0,"truncated":true},"cached":false},
+    {"schemaVersion":1,"revision":2,"resourceState":"revoked","requiresGenerationStop":false}
+  ],
+  "invalidResponses": [
+    {"schemaVersion":1,"revision":1,"resourceState":"loaded","synced":true},
+    {"schemaVersion":1,"revision":1,"trustState":"untrusted","resourceState":"loaded","synced":true},
+    {"schemaVersion":1,"revision":1,"resourceState":"trusted","path":"/private/canary"},
+    {"schemaVersion":1,"revision":1,"resourceState":"loaded","counts":{"extensions":65,"skills":0,"prompts":0,"themes":0,"packages":0,"truncated":false},"cached":false}
+  ]
+}
