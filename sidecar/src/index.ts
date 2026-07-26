@@ -201,8 +201,11 @@ process.stdin.on('data', (chunk: Buffer) => {
           selectTerminalExitCode(70);
           if (
             error instanceof HostRequestError
-            && error.code === 'credential-response-rejected'
+            && (error.code === 'credential-response-rejected'
+              || error.code === 'approval-response-rejected')
           ) {
+            disconnectPrivateWork();
+            clearInput();
             process.stdin.destroy();
           }
         })
@@ -210,6 +213,8 @@ process.stdin.on('data', (chunk: Buffer) => {
     } catch {
       diagnostic('invalid protocol input rejected');
       selectTerminalExitCode(65);
+      disconnectPrivateWork();
+      clearInput();
       process.stdin.destroy();
       return;
     } finally {
