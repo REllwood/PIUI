@@ -265,6 +265,16 @@ pub(crate) fn revoke_workspace(
     // Rust authority changes first. If any code attempt was associated with a
     // generation, that exact generation is cut off before a mirror request.
     let outcome = registry.revoke(workspace_id, expected_revision)?;
+    if state
+        .approval_registry()
+        .cancel_workspace(workspace_id)
+        .is_err()
+    {
+        if let Ok(generation) = current_generation(state) {
+            let _ = state.cutoff_generation(generation);
+        }
+        return Err(PRIVATE_REJECTED.into());
+    }
     if let Some(generation) = outcome.stop_generation {
         state.cutoff_generation(generation)?;
         return Ok(outcome.cleanup());

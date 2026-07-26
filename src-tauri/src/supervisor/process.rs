@@ -3,10 +3,14 @@ use super::dispatcher::{
 };
 use super::handshake::{HandshakeExpectation, protocol_architecture, validate_handshake};
 use super::redact::StderrRedactor;
-use super::stdio::{FailureSignal, GenerationControl, RawFrame, stderr_reader, stdout_reader};
+use super::stdio::{
+    AttemptAuthorisationError, FailureSignal, GenerationControl, RawFrame, stderr_reader,
+    stdout_reader,
+};
 use crate::credentials::CredentialProxy;
 use crate::credentials::proxy::{PendingHostResponse, discard_private_envelope};
 use crate::domain::approval::ApprovalRegistry;
+use crate::domain::workspace::WorkspaceRegistry;
 use crate::protocol::{Envelope, ProtocolDecoder, ProtocolKind, validate_envelope};
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -131,7 +135,7 @@ pub struct SidecarStatus {
     pub pi_version: Option<String>,
 }
 
-const WRITE_DEADLINE: Duration = Duration::from_millis(250);
+pub(super) const APPROVAL_WRITE_MAX_DURATION: Duration = Duration::from_millis(250);
 const WRITE_POLL_SLICE: Duration = Duration::from_millis(20);
 const RESERVED_INTERNAL_ID_PREFIX: &str = "rust-";
 const RESERVED_UI_ID_PREFIX: &str = "ui-";
@@ -389,11 +393,25 @@ impl GenerationWriter {
         &mut self,
         expected_generation: u64,
         job: crate::domain::approval::ApprovalResponseJob,
+        absolute_deadline: Instant,
     ) -> Result<(), String> {
+        self.ensure_before_deadline(absolute_deadline)?;
         self.ensure_active(expected_generation)?;
         let (id, sequence) = self.next_internal_coordinates("approval-response")?;
+        self.ensure_before_deadline(absolute_deadline)?;
         let mut payload = Map::new();
-        payload.insert("schemaVersion".into(), Value::from(1));
+        if let (Some(tool_call_id), Some(cohort_digest)) = (&job.tool_call_id, &job.cohort_digest) {
+            payload.insert("schemaVersion".into(), Value::from(2));
+            payload.insert("method".into(), Value::String("approval.resolve".into()));
+            payload.insert(
+                "transactionId".into(),
+                Value::String(job.transaction_id.clone()),
+            );
+            payload.insert("toolCallId".into(), Value::String(tool_call_id.clone()));
+            payload.insert("cohortDigest".into(), Value::String(cohort_digest.clone()));
+        } else {
+            payload.insert("schemaVersion".into(), Value::from(1));
+        }
         payload.insert("approvalId".into(), Value::String(job.approval_id.clone()));
         payload.insert(
             "invocationId".into(),
@@ -408,7 +426,9 @@ impl GenerationWriter {
             "scopeIds".into(),
             Value::Array(job.scope_ids.iter().cloned().map(Value::String).collect()),
         );
+        self.ensure_before_deadline(absolute_deadline)?;
         crate::protocol::approval::validate_approval_response(&job.decision_id, &payload)?;
+        self.ensure_before_deadline(absolute_deadline)?;
         let response = Envelope {
             version: 1,
             kind: ProtocolKind::HostResponse,
@@ -421,12 +441,177 @@ impl GenerationWriter {
         };
         validate_envelope(&response)
             .map_err(|_| "approval response encoding failed".to_string())?;
+        self.ensure_before_deadline(absolute_deadline)?;
+        let encoded = serde_json::to_vec(&response)
+            .map_err(|_| "approval response encoding failed".to_string());
+        discard_private_envelope(response);
+        let bytes = Zeroizing::new(encoded?);
+        self.ensure_before_deadline(absolute_deadline)?;
+        self.write_approval_frame(bytes, absolute_deadline)
+    }
+
+    pub(super) fn write_approval_ready_ack(
+        &mut self,
+        expected_generation: u64,
+        ack: crate::domain::approval::ApprovalReadyAck,
+    ) -> Result<(), String> {
+        let payload = Map::from_iter([
+            ("schemaVersion".into(), Value::from(2)),
+            ("method".into(), Value::String("approval.ready-ack".into())),
+            ("invocationId".into(), Value::String(ack.invocation_id)),
+            ("accepted".into(), Value::Bool(true)),
+        ]);
+        self.write_approval_control_response(expected_generation, ack.correlation_id, payload)
+    }
+
+    pub(super) fn write_approval_abandon_ack(
+        &mut self,
+        expected_generation: u64,
+        ack: crate::domain::approval::ApprovalAbandonAck,
+    ) -> Result<(), String> {
+        let payload = Map::from_iter([
+            ("schemaVersion".into(), Value::from(2)),
+            (
+                "method".into(),
+                Value::String("approval.abandon-ack".into()),
+            ),
+            ("cohortDigest".into(), Value::String(ack.cohort_digest)),
+            ("cancelled".into(), Value::Bool(true)),
+        ]);
+        self.write_approval_control_response(expected_generation, ack.correlation_id, payload)
+    }
+
+    fn write_approval_control_response(
+        &mut self,
+        expected_generation: u64,
+        correlation_id: String,
+        payload: Map<String, Value>,
+    ) -> Result<(), String> {
+        self.ensure_active(expected_generation)?;
+        let (id, sequence) = self.next_internal_coordinates("approval-control")?;
+        let response = Envelope {
+            version: 1,
+            kind: ProtocolKind::HostResponse,
+            id,
+            correlation_id: Some(correlation_id),
+            decision_id: None,
+            sequence,
+            payload,
+            error: None,
+        };
+        validate_envelope(&response)
+            .map_err(|_| "approval response encoding failed".to_string())?;
         let encoded = serde_json::to_vec(&response)
             .map_err(|_| "approval response encoding failed".to_string());
         discard_private_envelope(response);
         let mut bytes = Zeroizing::new(encoded?);
         bytes.push(b'\n');
         self.write_bytes(bytes)
+    }
+
+    pub(super) fn write_group_approval_response(
+        &mut self,
+        expected_generation: u64,
+        job: crate::domain::approval::GroupApprovalResponseJob,
+        absolute_deadline: Instant,
+    ) -> Result<(), String> {
+        self.ensure_before_deadline(absolute_deadline)?;
+        self.ensure_active(expected_generation)?;
+        let (id, sequence) = self.next_internal_coordinates("approval-group")?;
+        self.ensure_before_deadline(absolute_deadline)?;
+        let correlation_id = job
+            .members
+            .first()
+            .map(|member| member.correlation_id.clone())
+            .ok_or_else(|| "approval group response encoding failed".to_string())?;
+        let members = job
+            .members
+            .iter()
+            .map(|member| {
+                Value::Object(Map::from_iter([
+                    (
+                        "correlationId".into(),
+                        Value::String(member.correlation_id.clone()),
+                    ),
+                    (
+                        "approvalId".into(),
+                        Value::String(member.approval_id.clone()),
+                    ),
+                    (
+                        "decisionId".into(),
+                        Value::String(member.decision_id.clone()),
+                    ),
+                    (
+                        "invocationId".into(),
+                        Value::String(member.invocation_id.clone()),
+                    ),
+                    (
+                        "toolCallId".into(),
+                        Value::String(member.tool_call_id.clone()),
+                    ),
+                    (
+                        "inputDigest".into(),
+                        Value::String(member.input_digest.clone()),
+                    ),
+                    ("scopeId".into(), Value::String(member.scope_id.clone())),
+                ]))
+            })
+            .collect();
+        self.ensure_before_deadline(absolute_deadline)?;
+        let payload = Map::from_iter([
+            ("schemaVersion".into(), Value::from(2)),
+            (
+                "method".into(),
+                Value::String("approval.group-commit".into()),
+            ),
+            ("generation".into(), Value::from(job.generation)),
+            ("sessionId".into(), Value::String(job.session_id.clone())),
+            (
+                "workspaceId".into(),
+                Value::String(job.workspace_id.clone()),
+            ),
+            (
+                "workspaceRevision".into(),
+                Value::from(job.workspace_revision),
+            ),
+            (
+                "assistantEntryId".into(),
+                Value::String(job.assistant_entry_id.clone()),
+            ),
+            ("groupId".into(), Value::String(job.group_id.clone())),
+            (
+                "transactionId".into(),
+                Value::String(job.transaction_id.clone()),
+            ),
+            (
+                "cohortDigest".into(),
+                Value::String(job.cohort_digest.clone()),
+            ),
+            ("decision".into(), Value::String("approved".into())),
+            ("members".into(), Value::Array(members)),
+        ]);
+        self.ensure_before_deadline(absolute_deadline)?;
+        crate::protocol::approval::validate_group_response(&job.decision_id, &payload)?;
+        self.ensure_before_deadline(absolute_deadline)?;
+        let response = Envelope {
+            version: 1,
+            kind: ProtocolKind::HostResponse,
+            id,
+            correlation_id: Some(correlation_id),
+            decision_id: Some(job.decision_id.clone()),
+            sequence,
+            payload,
+            error: None,
+        };
+        validate_envelope(&response)
+            .map_err(|_| "approval group response encoding failed".to_string())?;
+        self.ensure_before_deadline(absolute_deadline)?;
+        let encoded = serde_json::to_vec(&response)
+            .map_err(|_| "approval group response encoding failed".to_string());
+        discard_private_envelope(response);
+        let bytes = Zeroizing::new(encoded?);
+        self.ensure_before_deadline(absolute_deadline)?;
+        self.write_approval_frame(bytes, absolute_deadline)
     }
 
     pub(super) fn write_private_response(
@@ -446,19 +631,50 @@ impl GenerationWriter {
     }
 
     fn write_bytes(&mut self, bytes: Zeroizing<Vec<u8>>) -> Result<(), String> {
-        let deadline = Instant::now() + WRITE_DEADLINE;
+        let deadline = Instant::now()
+            .checked_add(APPROVAL_WRITE_MAX_DURATION)
+            .ok_or_else(|| "sidecar write timed out".to_string())?;
+        self.write_slice_until(&bytes, deadline)
+    }
+
+    fn ensure_before_deadline(&self, deadline: Instant) -> Result<(), String> {
+        if Instant::now() >= deadline {
+            self.control.invalidate("sidecar write timed out");
+            Err("sidecar write timed out".into())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn write_approval_frame(
+        &mut self,
+        body: Zeroizing<Vec<u8>>,
+        absolute_deadline: Instant,
+    ) -> Result<(), String> {
+        self.ensure_before_deadline(absolute_deadline)?;
+        self.write_slice_until(&body, absolute_deadline)?;
+        // The LF is the approval publication point. It is a separate write and
+        // is never attempted after the one dispatcher-minted deadline.
+        self.ensure_before_deadline(absolute_deadline)?;
+        self.write_slice_until(b"\n", absolute_deadline)
+    }
+
+    fn write_slice_until(&mut self, bytes: &[u8], deadline: Instant) -> Result<(), String> {
         let mut offset = 0;
         while offset < bytes.len() {
-            if Instant::now() >= deadline {
-                self.control.invalidate("sidecar write timed out");
-                return Err("sidecar write timed out".into());
-            }
+            self.ensure_before_deadline(deadline)?;
             let attempt = self
                 .control
-                .authorised_attempt(|| self.sink.try_write(&bytes[offset..]));
+                .authorised_attempt_before(deadline, || self.sink.try_write(&bytes[offset..]));
             let result = match attempt {
                 Ok(result) => result,
-                Err(()) => return Err("stale sidecar generation".into()),
+                Err(AttemptAuthorisationError::Inactive) => {
+                    return Err("stale sidecar generation".into());
+                }
+                Err(AttemptAuthorisationError::DeadlineElapsed) => {
+                    self.control.invalidate("sidecar write timed out");
+                    return Err("sidecar write timed out".into());
+                }
             };
             match result {
                 Ok(0) => {
@@ -630,6 +846,7 @@ pub struct SidecarSupervisor {
     generation: u64,
     credential_proxy: CredentialProxy,
     approval_registry: Arc<ApprovalRegistry>,
+    workspace_registry: Arc<WorkspaceRegistry>,
 }
 
 impl Default for SidecarSupervisor {
@@ -640,18 +857,23 @@ impl Default for SidecarSupervisor {
             generation: 0,
             credential_proxy: CredentialProxy::default(),
             approval_registry: Arc::new(ApprovalRegistry::default()),
+            workspace_registry: Arc::new(WorkspaceRegistry::default()),
         }
     }
 }
 
 impl SidecarSupervisor {
-    pub(crate) fn with_approval_registry(approval_registry: Arc<ApprovalRegistry>) -> Self {
+    pub(crate) fn with_registries(
+        approval_registry: Arc<ApprovalRegistry>,
+        workspace_registry: Arc<WorkspaceRegistry>,
+    ) -> Self {
         Self {
             running: None,
             last_failure: None,
             generation: 0,
             credential_proxy: CredentialProxy::default(),
             approval_registry,
+            workspace_registry,
         }
     }
 
@@ -754,6 +976,7 @@ impl SidecarSupervisor {
             Arc::clone(&workspace_waiters),
             self.credential_proxy.clone(),
             Arc::clone(&self.approval_registry),
+            Arc::clone(&self.workspace_registry),
             Arc::clone(&writer),
             Arc::clone(&control),
             Arc::clone(&diagnostics),
@@ -1200,6 +1423,568 @@ mod tests {
             "stale sidecar generation"
         );
         assert_eq!(attempts_after_invalidation.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn approval_write_respects_a_real_short_remaining_budget() {
+        let failure = Arc::new(Mutex::new(None));
+        let control = Arc::new(GenerationControl::new(i32::MAX, failure));
+        let (entered_sender, _entered_receiver) = mpsc::sync_channel(1);
+        let mut writer = GenerationWriter::with_sink_for_test(
+            1,
+            Box::new(NeverWritableSink {
+                control: Arc::clone(&control),
+                entered: entered_sender,
+                attempts_after_invalidation: Arc::new(AtomicUsize::new(0)),
+            }),
+            Arc::clone(&control),
+        );
+        let started = Instant::now();
+        assert_eq!(
+            writer
+                .write_approval_frame(
+                    Zeroizing::new(b"approval-short-budget".to_vec()),
+                    Instant::now() + Duration::from_millis(5),
+                )
+                .unwrap_err(),
+            "sidecar write timed out"
+        );
+        assert!(started.elapsed() < Duration::from_millis(100));
+        assert!(!control.is_active());
+    }
+
+    #[derive(Clone, Copy)]
+    enum ApprovalBarrierPoint {
+        BodyContinuation,
+        FinalLf,
+    }
+
+    struct ApprovalBarrierSink {
+        point: ApprovalBarrierPoint,
+        writes: usize,
+        bytes: Arc<Mutex<Vec<u8>>>,
+        sink_attempts: Arc<AtomicUsize>,
+        marker: Arc<AtomicUsize>,
+    }
+
+    impl NonblockingSink for ApprovalBarrierSink {
+        fn try_write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.sink_attempts.fetch_add(1, Ordering::SeqCst);
+            let written = if self.writes == 0
+                && matches!(self.point, ApprovalBarrierPoint::BodyContinuation)
+            {
+                1.min(bytes.len())
+            } else {
+                bytes.len()
+            };
+            self.writes += 1;
+            let written_bytes = &bytes[..written];
+            if written_bytes.contains(&b'\n') {
+                self.marker.fetch_add(1, Ordering::SeqCst);
+            }
+            self.bytes.lock().unwrap().extend_from_slice(written_bytes);
+            Ok(written)
+        }
+
+        fn wait_writable(&mut self, _timeout: Duration) -> io::Result<bool> {
+            Ok(true)
+        }
+    }
+
+    #[test]
+    fn approval_deadline_is_rechecked_inside_transition_gate_for_body_and_lf() {
+        use crate::domain::approval::{
+            ApprovalResponseJob, GroupApprovalMemberJob, GroupApprovalResponseJob,
+        };
+        use crate::domain::workspace::WorkspaceApprovalBinding;
+
+        for group in [false, true] {
+            for point in [
+                ApprovalBarrierPoint::BodyContinuation,
+                ApprovalBarrierPoint::FinalLf,
+            ] {
+                let failure = Arc::new(Mutex::new(None));
+                let control = Arc::new(GenerationControl::new(i32::MAX, failure));
+                let bytes = Arc::new(Mutex::new(Vec::new()));
+                let sink_attempts = Arc::new(AtomicUsize::new(0));
+                let marker = Arc::new(AtomicUsize::new(0));
+                let mut writer = GenerationWriter::with_sink_for_test(
+                    1,
+                    Box::new(ApprovalBarrierSink {
+                        point,
+                        writes: 0,
+                        bytes: Arc::clone(&bytes),
+                        sink_attempts: Arc::clone(&sink_attempts),
+                        marker: Arc::clone(&marker),
+                    }),
+                    Arc::clone(&control),
+                );
+                let (paused_sender, paused_receiver) = mpsc::sync_channel(1);
+                let (release_sender, release_receiver) = mpsc::sync_channel(1);
+                let release_receiver = Arc::new(Mutex::new(release_receiver));
+                let hook_calls = Arc::new(AtomicUsize::new(0));
+                control.set_authorisation_hook(Some(Arc::new({
+                    let hook_calls = Arc::clone(&hook_calls);
+                    let release_receiver = Arc::clone(&release_receiver);
+                    move || {
+                        if hook_calls.fetch_add(1, Ordering::SeqCst) == 1 {
+                            paused_sender.send(()).unwrap();
+                            release_receiver.lock().unwrap().recv().unwrap();
+                        }
+                    }
+                })));
+                let absolute_deadline = Instant::now() + Duration::from_millis(100);
+                let attempt = std::thread::spawn(move || {
+                    if group {
+                        writer.write_group_approval_response(
+                            1,
+                            GroupApprovalResponseJob {
+                                response_token: format!("response-{:032x}", 1),
+                                binding: WorkspaceApprovalBinding::for_test(
+                                    format!("workspace-{:032x}", 2),
+                                    1,
+                                ),
+                                generation: 1,
+                                session_id: format!("session-{:032x}", 1),
+                                workspace_id: format!("workspace-{:032x}", 2),
+                                workspace_revision: 1,
+                                assistant_entry_id: "assistant-entry-barrier".into(),
+                                group_id: format!("group-{:032x}", 3),
+                                decision_id: format!("decision-{:032x}", 4),
+                                transaction_id: format!("transaction-{:032x}", 5),
+                                cohort_digest: "a".repeat(64),
+                                members: (0..2)
+                                    .map(|index| GroupApprovalMemberJob {
+                                        correlation_id: format!("sidecar-barrier-{index}"),
+                                        approval_id: format!("approval-{:032x}", index + 10),
+                                        decision_id: format!("decision-{:032x}", index + 20),
+                                        invocation_id: format!("invocation-{:032x}", index + 30),
+                                        tool_call_id: format!("tool-call-{}", index + 1),
+                                        input_digest: "b".repeat(64),
+                                        scope_id: format!("scope-{:032x}", index + 40),
+                                    })
+                                    .collect(),
+                            },
+                            absolute_deadline,
+                        )
+                    } else {
+                        writer.write_approval_response(
+                            1,
+                            ApprovalResponseJob {
+                                response_token: format!("response-{:032x}", 1),
+                                binding: WorkspaceApprovalBinding::for_test(
+                                    format!("workspace-{:032x}", 2),
+                                    1,
+                                ),
+                                correlation_id: "sidecar-barrier-individual".into(),
+                                decision_id: format!("decision-{:032x}", 4),
+                                approval_id: format!("approval-{:032x}", 3),
+                                transaction_id: format!("transaction-{:032x}", 5),
+                                invocation_id: format!("invocation-{:032x}", 6),
+                                tool_call_id: Some("tool-call-1".into()),
+                                cohort_digest: Some("a".repeat(64)),
+                                input_digest: "b".repeat(64),
+                                decision: "approved",
+                                scope_ids: vec![format!("scope-{:032x}", 7)],
+                            },
+                            absolute_deadline,
+                        )
+                    }
+                });
+                paused_receiver
+                    .recv_timeout(Duration::from_secs(1))
+                    .expect("write paused before transition-gated attempt");
+                while Instant::now() < absolute_deadline {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                release_sender.send(()).unwrap();
+                assert_eq!(
+                    attempt.join().unwrap().unwrap_err(),
+                    "sidecar write timed out"
+                );
+                let captured = bytes.lock().unwrap();
+                assert!(!captured.is_empty(), "approval body must make progress");
+                assert!(!captured.contains(&b'\n'), "final LF must be absent");
+                if matches!(point, ApprovalBarrierPoint::FinalLf) {
+                    serde_json::from_slice::<Value>(&captured)
+                        .expect("complete JSON body reached the LF publication barrier");
+                }
+                assert_eq!(sink_attempts.load(Ordering::SeqCst), 1);
+                assert_eq!(marker.load(Ordering::SeqCst), 0, "no complete frame marker");
+                assert!(!control.is_active(), "generation must be invalidated");
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires the authorised pre-staged Node runtime; no staging in test"]
+    fn staged_approval_sigkill_cancels_every_old_member_without_delegate_replay() {
+        use crate::domain::approval::{
+            ApprovalChoice, ApprovalGroupSubmission, ApprovalState, ApprovalSubmission,
+            ApprovalTerminalReason,
+        };
+        use sha2::{Digest, Sha256};
+
+        struct FixtureDirectory(PathBuf);
+        impl Drop for FixtureDirectory {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+
+        let fixture_directory = FixtureDirectory(std::env::temp_dir().join(format!(
+            "piui-a18-approval-sigkill-{}",
+            uuid::Uuid::new_v4().simple()
+        )));
+        let fixture_root = &fixture_directory.0;
+        let workspace_root = fixture_root.join("workspace");
+        let resources = fixture_root.join("sidecar");
+        let dist = resources.join("dist");
+        fs::create_dir_all(&workspace_root).unwrap();
+        fs::create_dir_all(&dist).unwrap();
+        fs::write(resources.join("manifest.json"), b"{}\n").unwrap();
+        let marker = fixture_root.join("delegate-marker");
+
+        let workspace_registry = Arc::new(WorkspaceRegistry::default());
+        let acquired = workspace_registry
+            .acquire_selected_directory(&workspace_root)
+            .unwrap();
+        workspace_registry
+            .inspect_metadata(&acquired.workspace_id)
+            .unwrap();
+        workspace_registry
+            .open_untrusted(&acquired.workspace_id, 0)
+            .unwrap();
+        let (trusted, _) = workspace_registry
+            .authorise(&acquired.workspace_id, 0)
+            .unwrap();
+        assert_eq!(trusted.revision, 1);
+
+        let script = r#"
+const { createHash } = require('node:crypto');
+const fs = require('node:fs');
+const markerPath = __MARKER__;
+const workspaceId = __WORKSPACE__;
+const generation = Number(process.env.PIUI_SUPERVISOR_GENERATION);
+const sessionId = `session-${generation.toString(16).padStart(32, '0')}`;
+const assistantEntryId = `assistant-entry-fixture-${generation}`;
+const tools = ['read', 'grep', 'find'];
+const orderedMembers = tools.map((toolName, ordinal) => ({
+  ordinal, toolCallId: `fixture-call-${ordinal + 1}`, toolName,
+}));
+const digest = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+const cohortDigest = digest({ assistantEntryId, orderedMembers });
+let sequence = 0;
+const send = (kind, id, payload, extra = {}) => process.stdout.write(`${JSON.stringify({
+  version: 1, kind, id, sequence: sequence++, payload, ...extra,
+})}\n`);
+send('handshake', 'sidecar-handshake', {
+  nonce: process.env.PIUI_HANDSHAKE_NONCE,
+  desktopVersion: process.env.PIUI_DESKTOP_VERSION,
+  protocolVersion: 1,
+  nodeVersion: '22.23.1',
+  piVersion: '0.82.0',
+  architecture: process.arch === 'arm64' ? 'arm64' : process.arch,
+  capabilities: ['cancel', 'status', 'stream', 'host-credentials', 'workspace-trust-v1'],
+});
+for (let ordinal = 0; ordinal < tools.length; ordinal += 1) {
+  const input = { value: `safe-${ordinal + 1}` };
+  send('host-request', `sidecar-approval-${ordinal + 1}`, {
+    method: 'approval.request', schemaVersion: 2, generation, sessionId, workspaceId,
+    workspaceRevision: 1,
+    invocationId: `invocation-${(generation * 100 + ordinal + 1).toString(16).padStart(32, '0')}`,
+    toolCallId: orderedMembers[ordinal].toolCallId, toolName: tools[ordinal],
+    inputDigest: digest(input), input,
+    cohort: { assistantEntryId, cohortDigest, orderedMembers },
+  });
+}
+for (let ordinal = 0; ordinal < tools.length; ordinal += 1) {
+  const input = { value: `safe-${ordinal + 1}` };
+  send('host-request', `sidecar-ready-${ordinal + 1}`, {
+    method: 'approval.ready', schemaVersion: 2, generation,
+    invocationId: `invocation-${(generation * 100 + ordinal + 1).toString(16).padStart(32, '0')}`,
+    toolCallId: orderedMembers[ordinal].toolCallId,
+    inputDigest: digest(input), cohortDigest,
+  });
+}
+let buffered = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', (chunk) => {
+  buffered += chunk;
+  for (;;) {
+    const lf = buffered.indexOf('\n');
+    if (lf < 0) break;
+    const line = buffered.slice(0, lf);
+    buffered = buffered.slice(lf + 1);
+    if (!line) continue;
+    const frame = JSON.parse(line);
+    if (frame?.payload?.decision === 'approved'
+      || frame?.payload?.method === 'approval.group-commit') {
+      fs.appendFileSync(markerPath, 'delegate\n', { encoding: 'utf8', mode: 0o600 });
+    }
+  }
+});
+process.stdin.resume();
+"#
+        .replace("__MARKER__", &serde_json::to_string(&marker).unwrap())
+        .replace(
+            "__WORKSPACE__",
+            &serde_json::to_string(&acquired.workspace_id).unwrap(),
+        );
+        fs::write(dist.join("index.js"), script).unwrap();
+        let node =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("binaries/piui-node-aarch64-apple-darwin");
+        let paths = SupervisorPaths::validated(node, resources.clone()).unwrap();
+
+        let approval_registry = Arc::new(ApprovalRegistry::default());
+        let mut supervisor = SidecarSupervisor::with_registries(
+            Arc::clone(&approval_registry),
+            Arc::clone(&workspace_registry),
+        );
+        let first = supervisor.start(&paths).unwrap();
+        let old_generation = first.generation.unwrap();
+        let old_pid = first.pid.unwrap() as i32;
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let old_views = loop {
+            let pending = approval_registry.pending().unwrap();
+            if pending.len() == 3 && pending.iter().all(|view| view.group_action.is_some()) {
+                break pending;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "approval cohort did not become ready"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        let old_group = old_views[0].group_action.clone().unwrap();
+        let old_individual_submission = ApprovalSubmission {
+            approval_id: old_views[0].approval_id.clone(),
+            decision_id: old_views[0].decision_id.clone(),
+            scope_ids: old_views[0]
+                .scopes
+                .iter()
+                .map(|scope| scope.scope_id.clone())
+                .collect(),
+            choice: ApprovalChoice::ApproveOnce,
+        };
+        let old_group_submission = ApprovalGroupSubmission {
+            group_id: old_group.group_id.clone(),
+            decision_id: old_group.decision_id.clone(),
+            scope_id: old_group.scope_id.clone(),
+        };
+        let old_session_id = format!("session-{old_generation:032x}");
+        let old_assistant_entry_id = format!("assistant-entry-fixture-{old_generation}");
+        let old_tools = ["read", "grep", "find"];
+        let old_descriptor = serde_json::json!({
+            "assistantEntryId": old_assistant_entry_id,
+            "orderedMembers": old_tools.iter().enumerate().map(|(ordinal, tool_name)| {
+                serde_json::json!({
+                    "ordinal": ordinal,
+                    "toolCallId": format!("fixture-call-{}", ordinal + 1),
+                    "toolName": tool_name,
+                })
+            }).collect::<Vec<_>>(),
+        });
+        let old_cohort_digest = format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&old_descriptor).unwrap())
+        );
+        let old_input_digests: Vec<String> = (0..old_tools.len())
+            .map(|index| {
+                format!(
+                    "{:x}",
+                    Sha256::digest(
+                        serde_json::to_vec(&serde_json::json!({
+                            "value": format!("safe-{}", index + 1)
+                        }))
+                        .unwrap()
+                    )
+                )
+            })
+            .collect();
+        let old_individual_payload = serde_json::json!({
+            "schemaVersion": 2,
+            "method": "approval.resolve",
+            "approvalId": old_views[0].approval_id,
+            "transactionId": format!("transaction-{:032x}", 1),
+            "invocationId": format!("invocation-{:032x}", old_generation * 100 + 1),
+            "toolCallId": "fixture-call-1",
+            "inputDigest": old_input_digests[0],
+            "cohortDigest": old_cohort_digest,
+            "decision": "approved",
+            "scopeIds": old_views[0].scopes.iter().map(|scope| scope.scope_id.clone()).collect::<Vec<_>>(),
+        });
+        let old_individual_payload = old_individual_payload.as_object().unwrap().clone();
+        crate::protocol::approval::validate_approval_response(
+            &old_views[0].decision_id,
+            &old_individual_payload,
+        )
+        .unwrap();
+        let old_individual_frame = Envelope {
+            version: 1,
+            kind: ProtocolKind::HostResponse,
+            id: "rust-old-private-individual".into(),
+            correlation_id: Some("sidecar-approval-1".into()),
+            decision_id: Some(old_views[0].decision_id.clone()),
+            sequence: 1,
+            payload: old_individual_payload,
+            error: None,
+        };
+        validate_envelope(&old_individual_frame).unwrap();
+
+        let old_group_members = old_views
+            .iter()
+            .enumerate()
+            .map(|(index, view)| {
+                serde_json::json!({
+                    "correlationId": format!("sidecar-approval-{}", index + 1),
+                    "approvalId": view.approval_id,
+                    "decisionId": view.decision_id,
+                    "invocationId": format!("invocation-{:032x}", old_generation * 100 + index as u64 + 1),
+                    "toolCallId": format!("fixture-call-{}", index + 1),
+                    "inputDigest": old_input_digests[index],
+                    "scopeId": view.scopes[0].scope_id,
+                })
+            })
+            .collect::<Vec<_>>();
+        let old_group_payload = serde_json::json!({
+            "schemaVersion": 2,
+            "method": "approval.group-commit",
+            "generation": old_generation,
+            "sessionId": old_session_id,
+            "workspaceId": acquired.workspace_id,
+            "workspaceRevision": 1,
+            "assistantEntryId": old_assistant_entry_id,
+            "groupId": old_group.group_id,
+            "transactionId": format!("transaction-{:032x}", 2),
+            "cohortDigest": old_cohort_digest,
+            "decision": "approved",
+            "members": old_group_members,
+        });
+        let old_group_payload = old_group_payload.as_object().unwrap().clone();
+        crate::protocol::approval::validate_group_response(
+            &old_group.decision_id,
+            &old_group_payload,
+        )
+        .unwrap();
+        let old_group_frame = Envelope {
+            version: 1,
+            kind: ProtocolKind::HostResponse,
+            id: "rust-old-private-group".into(),
+            correlation_id: Some("sidecar-approval-1".into()),
+            decision_id: Some(old_group.decision_id.clone()),
+            sequence: 2,
+            payload: old_group_payload,
+            error: None,
+        };
+        validate_envelope(&old_group_frame).unwrap();
+        assert!(!marker.exists());
+
+        assert_eq!(unsafe { libc::kill(old_pid, libc::SIGKILL) }, 0);
+        let _ = supervisor.receive_for_generation(old_generation, Duration::from_secs(1));
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            let _ = supervisor.status();
+            let snapshot = approval_registry.snapshot().unwrap();
+            if snapshot.records.len() == 3
+                && snapshot.records.iter().all(|view| {
+                    view.state == ApprovalState::Cancelled
+                        && view.terminal_reason == Some(ApprovalTerminalReason::GenerationLost)
+                })
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "old approvals were not cancelled"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!marker.exists());
+
+        let replacement = supervisor.start(&paths).unwrap();
+        let replacement_generation = replacement.generation.unwrap();
+        assert!(replacement_generation > old_generation);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let replacement_views = loop {
+            let pending = approval_registry.pending().unwrap();
+            if pending.len() == 3 && pending.iter().all(|view| view.group_action.is_some()) {
+                break pending;
+            }
+            assert!(Instant::now() < deadline, "replacement cohort unavailable");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        let replacement_before: Vec<_> = replacement_views
+            .iter()
+            .map(|view| {
+                (
+                    view.approval_id.clone(),
+                    view.decision_id.clone(),
+                    view.revision,
+                    view.state,
+                    view.scopes
+                        .iter()
+                        .map(|scope| scope.scope_id.clone())
+                        .collect::<Vec<_>>(),
+                    view.group_action.as_ref().map(|group| {
+                        (
+                            group.group_id.clone(),
+                            group.decision_id.clone(),
+                            group.scope_id.clone(),
+                        )
+                    }),
+                )
+            })
+            .collect();
+
+        assert_eq!(
+            approval_registry
+                .submit(old_individual_submission)
+                .unwrap_err(),
+            "approval already settled"
+        );
+        assert_eq!(
+            approval_registry
+                .submit_group(old_group_submission)
+                .unwrap_err(),
+            "approval group rejected"
+        );
+        for old_frame in [&old_individual_frame, &old_group_frame] {
+            assert_eq!(
+                supervisor
+                    .send_for_generation(replacement_generation, old_frame)
+                    .unwrap_err(),
+                "sidecar request is not permitted"
+            );
+        }
+        let replacement_after: Vec<_> = approval_registry
+            .pending()
+            .unwrap()
+            .iter()
+            .map(|view| {
+                (
+                    view.approval_id.clone(),
+                    view.decision_id.clone(),
+                    view.revision,
+                    view.state,
+                    view.scopes
+                        .iter()
+                        .map(|scope| scope.scope_id.clone())
+                        .collect::<Vec<_>>(),
+                    view.group_action.as_ref().map(|group| {
+                        (
+                            group.group_id.clone(),
+                            group.decision_id.clone(),
+                            group.scope_id.clone(),
+                        )
+                    }),
+                )
+            })
+            .collect();
+        assert_eq!(replacement_after, replacement_before);
+        assert!(!marker.exists());
+        supervisor.stop().unwrap();
+        assert!(!marker.exists());
     }
 
     #[test]

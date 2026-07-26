@@ -1,0 +1,97 @@
+{
+  "validRequests": [
+    {
+      "method": "approval.request",
+      "schemaVersion": 1,
+      "generation": 1,
+      "sessionId": "session-11111111111111111111111111111111",
+      "workspaceId": "workspace-22222222222222222222222222222222",
+      "workspaceRevision": 3,
+      "invocationId": "invocation-33333333333333333333333333333333",
+      "toolName": "write",
+      "inputDigest": "caf15a1471289b51826e494b0401054cd698a80020a91ea8a8314f49cfc2417e",
+      "input": {"content": "safe", "path": "private"}
+    },
+    {
+      "method": "approval.request",
+      "schemaVersion": 1,
+      "generation": 9007199254740991,
+      "sessionId": "session-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "workspaceId": "workspace-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "workspaceRevision": 9007199254740991,
+      "invocationId": "invocation-cccccccccccccccccccccccccccccccc",
+      "groupId": "group-dddddddddddddddddddddddddddddddd",
+      "toolName": "bash",
+      "inputDigest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "input": {}
+    },
+    {
+      "method": "approval.request",
+      "schemaVersion": 2,
+      "generation": 18,
+      "sessionId": "session-11111111111111111111111111111111",
+      "workspaceId": "workspace-22222222222222222222222222222222",
+      "workspaceRevision": 4,
+      "invocationId": "invocation-eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "toolCallId": "fixture-call-1",
+      "toolName": "read",
+      "inputDigest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "input": {},
+      "cohort": {
+        "assistantEntryId": "assistant-entry-fixture",
+        "cohortDigest": "d466c26a8997a21cef1b16ae74eab6d62f084179d8c5cbc5b2d2e88159b5a422",
+        "orderedMembers": [
+          {"ordinal":0,"toolCallId":"fixture-call-1","toolName":"read"},
+          {"ordinal":1,"toolCallId":"fixture-call-2","toolName":"grep"}
+        ]
+      }
+    }
+  ],
+  "validResponses": [
+    {"decisionId":"decision-44444444444444444444444444444444","payload":{"schemaVersion":1,"approvalId":"approval-55555555555555555555555555555555","invocationId":"invocation-33333333333333333333333333333333","inputDigest":"0000000000000000000000000000000000000000000000000000000000000000","decision":"approved","scopeIds":["scope-66666666666666666666666666666666"]}},
+    {"decisionId":"decision-44444444444444444444444444444444","payload":{"schemaVersion":1,"approvalId":"approval-55555555555555555555555555555555","invocationId":"invocation-33333333333333333333333333333333","inputDigest":"0000000000000000000000000000000000000000000000000000000000000000","decision":"denied","scopeIds":[]}},
+    {"decisionId":"decision-44444444444444444444444444444444","payload":{"schemaVersion":2,"method":"approval.resolve","approvalId":"approval-55555555555555555555555555555555","transactionId":"transaction-77777777777777777777777777777777","invocationId":"invocation-33333333333333333333333333333333","toolCallId":"fixture-call-1","inputDigest":"0000000000000000000000000000000000000000000000000000000000000000","cohortDigest":"d466c26a8997a21cef1b16ae74eab6d62f084179d8c5cbc5b2d2e88159b5a422","decision":"approved","scopeIds":["scope-66666666666666666666666666666666"]}}
+  ],
+  "invalidResponses": [
+    {"decisionId":"decision-44444444444444444444444444444444","payload":{"schemaVersion":1,"approvalId":"approval-55555555555555555555555555555555","invocationId":"invocation-33333333333333333333333333333333","inputDigest":"0000000000000000000000000000000000000000000000000000000000000000","decision":"approved","scopeIds":[]}},
+    {"decisionId":"decision-bad","payload":{"schemaVersion":1,"approvalId":"approval-55555555555555555555555555555555","invocationId":"invocation-33333333333333333333333333333333","inputDigest":"0000000000000000000000000000000000000000000000000000000000000000","decision":"denied","scopeIds":[]}},
+    {"decisionId":"decision-44444444444444444444444444444444","payload":{"schemaVersion":1,"approvalId":"approval-55555555555555555555555555555555","invocationId":"invocation-33333333333333333333333333333333","inputDigest":"0000000000000000000000000000000000000000000000000000000000000000","decision":"denied","scopeIds":[],"path":"/private"}}
+  ],
+  "invalidRequests": [
+    {"method":"approval.request","schemaVersion":1,"generation":0,"sessionId":"session-11111111111111111111111111111111","workspaceId":"workspace-22222222222222222222222222222222","workspaceRevision":0,"invocationId":"invocation-33333333333333333333333333333333","toolName":"read","inputDigest":"44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a","input":{}},
+    {"method":"approval.request","schemaVersion":1,"generation":1,"sessionId":"session-11111111111111111111111111111111","workspaceId":"workspace-22222222222222222222222222222222","workspaceRevision":0,"invocationId":"invocation-33333333333333333333333333333333","toolName":"read","inputDigest":"44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a","input":{},"risk":"routine"},
+    {"method":"approval.request","schemaVersion":1,"generation":1,"sessionId":"session-bad","workspaceId":"workspace-22222222222222222222222222222222","workspaceRevision":0,"invocationId":"invocation-33333333333333333333333333333333","toolName":"read","inputDigest":"44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a","input":{}},
+    {"method":"approval.request","schemaVersion":1,"generation":1,"sessionId":"session-11111111111111111111111111111111","workspaceId":"workspace-22222222222222222222222222222222","workspaceRevision":0,"invocationId":"invocation-33333333333333333333333333333333","toolName":"read","inputDigest":"44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"},
+    {"method":"approval.request","schemaVersion":2,"generation":1,"sessionId":"session-11111111111111111111111111111111","workspaceId":"workspace-22222222222222222222222222222222","workspaceRevision":0,"invocationId":"invocation-33333333333333333333333333333333","toolName":"read","inputDigest":"44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a","input":{}},
+    {"method":"approval.request","schemaVersion":1,"generation":1,"sessionId":"session-11111111111111111111111111111111","workspaceId":"workspace-22222222222222222222222222222222","workspaceRevision":0,"invocationId":"invocation-33333333333333333333333333333333","toolName":"read","inputDigest":"0000000000000000000000000000000000000000000000000000000000000000","input":{}}
+  ],
+  "toolNameCases": {
+    "valid": [
+      "read",
+      "Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    ],
+    "invalid": [
+      "",
+      "Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "réad",
+      "1read",
+      "read.dot"
+    ]
+  },
+  "canonicalCases": [
+    {"name":"integer-like-keys","jsonText":"{\"2\":\"two\",\"10\":\"ten\"}","canonical":"{\"10\":\"ten\",\"2\":\"two\"}","sha256":"b71e124675fc80e7314688bffdb68e83515851fb51474125db9a0c4c8aca3808"},
+    {"name":"bmp-before-supplementary-utf8","jsonText":"{\"😀\":\"supplementary\",\"\":\"bmp\"}","canonical":"{\"\":\"bmp\",\"😀\":\"supplementary\"}","sha256":"d7dce2425300ac0417387858fba9ab9ef4378796354c9469378ff1cdb09b3851"},
+    {"name":"escaping","jsonText":"{\"quote\\\"\":\"line\\n\\t\\u0001\\\\/\"}","canonical":"{\"quote\\\"\":\"line\\n\\t\\u0001\\\\/\"}","sha256":"2e375969016eaea881b52441f9f4ab38de4016cdab72a9bbd122c79aa6f9c1fd"}
+  ],
+  "canonicalRejections": [
+    {"name":"float","jsonText":"{\"v\":1.5}"},
+    {"name":"unsafe-integer","jsonText":"{\"v\":9007199254740992}"},
+    {"name":"negative-zero","jsonText":"{\"v\":-0}"},
+    {"name":"lone-surrogate","jsonText":"{\"v\":\"\\ud800\"}"}
+  ],
+  "canonicalBounds": [
+    {"name":"depth","validNestedArrays":15,"rejectedNestedArrays":16},
+    {"name":"nodes","validArrayItems":254,"rejectedArrayItems":255},
+    {"name":"bytes","validStringBytes":65528,"rejectedStringBytes":65529}
+  ]
+}

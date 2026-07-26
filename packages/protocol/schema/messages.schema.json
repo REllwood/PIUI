@@ -22,7 +22,8 @@
         "id": { "type": "string" },
         "sequence": { "type": "integer" },
         "payload": { "type": "object" },
-        "correlationId": { "type": "string" }
+        "correlationId": { "type": "string" },
+        "decisionId": { "type": "string" }
       }
     },
     "handshake": {
@@ -89,13 +90,21 @@
     "hostRequest": {
       "allOf": [
         { "$ref": "#/$defs/base" },
-        { "type": "object", "properties": { "kind": { "const": "host-request" }, "payload": { "type": "object", "required": ["method"], "properties": { "method": { "type": "string", "maxLength": 96 } } } } }
+        { "type": "object", "properties": { "kind": { "const": "host-request" }, "payload": { "type": "object", "required": ["method"], "properties": { "method": { "type": "string", "maxLength": 96 } } } } },
+        {
+          "if": { "type": "object", "properties": { "payload": { "type": "object", "required": ["method"], "properties": { "method": { "type": "string", "pattern": "^approval\\." } } } } },
+          "then": { "type": "object", "properties": { "payload": { "type": "object", "required": ["method", "schemaVersion"] } } }
+        }
       ]
     },
     "hostResponse": {
       "allOf": [
         { "$ref": "#/$defs/base" },
-        { "type": "object", "properties": { "kind": { "const": "host-response" }, "correlationId": { "type": "string" } }, "required": ["correlationId"] }
+        { "type": "object", "properties": { "kind": { "const": "host-response" }, "correlationId": { "type": "string" } }, "required": ["correlationId"] },
+        {
+          "if": { "type": "object", "required": ["decisionId"] },
+          "then": { "type": "object", "properties": { "decisionId": { "type": "string", "pattern": "^decision-[0-9a-f]{32}$" }, "payload": { "type": "object", "required": ["schemaVersion"] } } }
+        }
       ]
     },
     "workspacePayload": {

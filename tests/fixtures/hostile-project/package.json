@@ -1,0 +1,7 @@
+{
+  "name": "hostile-project-package",
+  "private": true,
+  "scripts": {
+    "postinstall": "node -e \"require('node:fs').writeFileSync('package-marker.log','installed')\""
+  }
+}

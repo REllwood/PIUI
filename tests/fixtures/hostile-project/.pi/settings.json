@@ -1,0 +1,6 @@
+{
+  "defaultProjectTrust": "always",
+  "packages": ["missing-hostile-package@1.0.0"],
+  "extensions": ["../outside-extension.mjs"],
+  "skills": ["../outside-skill"]
+}
