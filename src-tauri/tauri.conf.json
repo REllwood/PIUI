@@ -11,8 +11,9 @@
   },
   "app": {
     "macOSPrivateApi": true,
+    "withGlobalTauri": false,
     "security": {
-      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset:; connect-src ipc: http://ipc.localhost"
+      "csp": "default-src 'none'; script-src 'self'; script-src-attr 'none'; style-src 'self'; style-src-attr 'none'; img-src 'self'; font-src 'self'; connect-src ipc: http://ipc.localhost; object-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'; media-src 'none'; manifest-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
     },
     "windows": [
       {
