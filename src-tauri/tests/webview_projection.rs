@@ -567,7 +567,7 @@ const EXIT_AFTER_HANDSHAKE_FIXTURE: &str = r#"
 const handshake = {version:1,kind:'handshake',id:'sidecar-handshake',sequence:0,payload:{
   nonce:process.env.PIUI_HANDSHAKE_NONCE,desktopVersion:process.env.PIUI_DESKTOP_VERSION,
   protocolVersion:1,nodeVersion:'22.23.1',piVersion:'0.82.0',architecture:'arm64',
-  capabilities:['cancel','status','stream','host-credentials']
+  capabilities:['cancel','status','stream','host-credentials','workspace-trust-v1']
 }};
 process.stdout.write(`${JSON.stringify(handshake)}\n`, () => process.exit(0));
 "#;
@@ -577,7 +577,7 @@ const write = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
 write({version:1,kind:'handshake',id:'sidecar-handshake',sequence:0,payload:{
   nonce:process.env.PIUI_HANDSHAKE_NONCE,desktopVersion:process.env.PIUI_DESKTOP_VERSION,
   protocolVersion:1,nodeVersion:'22.23.1',piVersion:'0.82.0',architecture:'arm64',
-  capabilities:['cancel','status','stream','host-credentials']
+  capabilities:['cancel','status','stream','host-credentials','workspace-trust-v1']
 }});
 let input = '';
 const mode = '__MODE__';
@@ -606,7 +606,7 @@ const write = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
 write({version:1,kind:'handshake',id:'sidecar-handshake',sequence:0,payload:{
   nonce:process.env.PIUI_HANDSHAKE_NONCE,desktopVersion:process.env.PIUI_DESKTOP_VERSION,
   protocolVersion:1,nodeVersion:'22.23.1',piVersion:'0.82.0',architecture:'arm64',
-  capabilities:['cancel','status','stream','host-credentials']
+  capabilities:['cancel','status','stream','host-credentials','workspace-trust-v1']
 }});
 let input = '';
 process.stdin.setEncoding('utf8');
@@ -640,7 +640,7 @@ const write = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
 write({version:1,kind:'handshake',id:'sidecar-handshake',sequence:0,payload:{
   nonce:process.env.PIUI_HANDSHAKE_NONCE,desktopVersion:process.env.PIUI_DESKTOP_VERSION,
   protocolVersion:1,nodeVersion:'22.23.1',piVersion:'0.82.0',architecture:'arm64',
-  capabilities:['cancel','status','stream','host-credentials']
+  capabilities:['cancel','status','stream','host-credentials','workspace-trust-v1']
 }});
 let input = '';
 process.stdin.setEncoding('utf8');
@@ -673,7 +673,7 @@ const write = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
 write({version:1,kind:'handshake',id:'sidecar-handshake',sequence:0,payload:{
   nonce:process.env.PIUI_HANDSHAKE_NONCE,desktopVersion:process.env.PIUI_DESKTOP_VERSION,
   protocolVersion:1,nodeVersion:'22.23.1',piVersion:'0.82.0',architecture:'arm64',
-  capabilities:['cancel','status','stream','host-credentials']
+  capabilities:['cancel','status','stream','host-credentials','workspace-trust-v1']
 }});
 let input = '';
 let streamId = '';
@@ -716,7 +716,7 @@ const write = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
 write({version:1,kind:'handshake',id:'sidecar-handshake',sequence:0,payload:{
   nonce:process.env.PIUI_HANDSHAKE_NONCE,desktopVersion:process.env.PIUI_DESKTOP_VERSION,
   protocolVersion:1,nodeVersion:'22.23.1',piVersion:'0.82.0',architecture:'arm64',
-  capabilities:['cancel','status','stream','host-credentials']
+  capabilities:['cancel','status','stream','host-credentials','workspace-trust-v1']
 }});
 let input = '';
 let streamId = '';
@@ -753,7 +753,7 @@ write({
     nonce:process.env.PIUI_HANDSHAKE_NONCE,
     desktopVersion:process.env.PIUI_DESKTOP_VERSION,
     protocolVersion:1, nodeVersion:'22.23.1', piVersion:'0.82.0', architecture:'arm64',
-    capabilities:['cancel','status','stream','host-credentials']
+    capabilities:['cancel','status','stream','host-credentials','workspace-trust-v1']
   }
 });
 let input = '';
@@ -807,7 +807,7 @@ write({
     piVersion: '0.82.0',
     architecture: 'arm64',
     capabilities: [
-      'cancel', 'status', 'stream', 'host-credentials', 'AgentSession',
+      'cancel', 'status', 'stream', 'host-credentials', 'workspace-trust-v1', 'AgentSession',
       'AgentSessionRuntime', 'ModelRuntime', 'ProjectTrustStore',
       'SessionManager', 'createAgentSession'
     ]
