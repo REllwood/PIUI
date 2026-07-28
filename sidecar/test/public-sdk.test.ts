@@ -41,6 +41,13 @@ describe('public Pi SDK adapter', () => {
     expect(metadata.piVersion).toBe('0.82.0');
     expect(metadata.nodeVersion).toMatch(/^22\./);
     expect(Object.values(REQUIRED_PUBLIC_CAPABILITIES).every(Boolean)).toBe(true);
+    expect(metadata.capabilities).toEqual(expect.arrayContaining([
+      'AgentSessionRuntime',
+      'SessionManager',
+      'createAgentSessionFromServices',
+      'createAgentSessionRuntime',
+      'createAgentSessionServices',
+    ]));
     expect(credentialMethods).toEqual(['read', 'list', 'modify', 'delete']);
   });
 

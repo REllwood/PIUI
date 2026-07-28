@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { CredentialProbe } from './architecture-gate/CredentialProbe';
 import { StreamProbeRoute } from './architecture-gate/StreamProbe';
+import { SafeMarkdownSpikeRoute } from './security/SafeMarkdownSpike';
 
 type HostStatus = {
   status: 'ready';
@@ -22,6 +23,7 @@ export function App() {
   const spike = new URLSearchParams(window.location.search).get('spike');
   if (spike === 'credential') return <CredentialProbe />;
   if (spike === 'stream') return <StreamProbeRoute />;
+  if (spike === 'markdown') return <SafeMarkdownSpikeRoute />;
   return <ArchitectureGate />;
 }
 

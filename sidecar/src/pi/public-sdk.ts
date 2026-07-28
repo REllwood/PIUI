@@ -1,6 +1,7 @@
 import {
   AgentSession,
   AgentSessionRuntime,
+  CURRENT_SESSION_VERSION,
   DefaultPackageManager,
   DefaultResourceLoader,
   ModelRuntime,
@@ -9,16 +10,37 @@ import {
   SettingsManager,
   VERSION,
   createAgentSession,
+  createAgentSessionFromServices,
+  createAgentSessionRuntime,
+  createAgentSessionServices,
+  type AgentSessionServices,
+  type CreateAgentSessionRuntimeFactory,
   type CreateModelRuntimeOptions,
   type ExtensionContext,
   type InlineExtension,
+  type SessionEntry,
+  type SessionHeader,
   type ToolDefinition,
 } from '@earendil-works/pi-coding-agent';
 
 export type PublicInlineExtension = InlineExtension;
 export type PublicExtensionContext = ExtensionContext;
 export type PublicAgentSession = AgentSession;
+export type PublicAgentSessionRuntime = AgentSessionRuntime;
+export type PublicAgentSessionServices = AgentSessionServices;
+export type PublicCreateAgentSessionRuntimeFactory = CreateAgentSessionRuntimeFactory;
+export type PublicSessionEntry = SessionEntry;
+export type PublicSessionHeader = SessionHeader;
+export type PublicSessionManagerInstance = SessionManager;
 export type PublicToolDefinition = ToolDefinition;
+
+export const PublicModelRuntime = ModelRuntime;
+export const PublicSessionManager = SessionManager;
+export const PublicSettingsManager = SettingsManager;
+export const publicCreateAgentSessionFromServices = createAgentSessionFromServices;
+export const publicCreateAgentSessionRuntime = createAgentSessionRuntime;
+export const publicCreateAgentSessionServices = createAgentSessionServices;
+export const PUBLIC_SESSION_VERSION = CURRENT_SESSION_VERSION;
 
 export type PublicCredentialStore = NonNullable<CreateModelRuntimeOptions['credentials']>;
 export type PublicCredential = NonNullable<Awaited<ReturnType<PublicCredentialStore['read']>>>;
@@ -34,6 +56,9 @@ export const REQUIRED_PUBLIC_CAPABILITIES = Object.freeze({
   SessionManager: typeof SessionManager === 'function',
   SettingsManager: typeof SettingsManager === 'function',
   createAgentSession: typeof createAgentSession === 'function',
+  createAgentSessionFromServices: typeof createAgentSessionFromServices === 'function',
+  createAgentSessionRuntime: typeof createAgentSessionRuntime === 'function',
+  createAgentSessionServices: typeof createAgentSessionServices === 'function',
 });
 
 // Captured before any project isolate can execute. Post-reload success checks
