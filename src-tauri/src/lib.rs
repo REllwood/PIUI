@@ -5,6 +5,7 @@ pub mod credentials;
 pub mod domain;
 pub mod platform;
 pub mod protocol;
+pub mod security;
 pub mod supervisor;
 
 #[derive(Debug, Serialize)]
@@ -29,6 +30,7 @@ fn host_status() -> HostStatus {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
+        .plugin(security::navigation::init())
         .setup(|app| {
             use tauri::Manager;
             let paths = supervisor::SupervisorPaths::from_app(app.handle())

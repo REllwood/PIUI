@@ -20,7 +20,7 @@ fn stop_is_bounded_when_handshaken_child_never_reads_stdin() {
     fs::write(
         &node,
         r#"#!/bin/sh
-printf '{"version":1,"kind":"handshake","id":"fixture-handshake","sequence":0,"payload":{"nonce":"%s","desktopVersion":"%s","protocolVersion":1,"nodeVersion":"22.23.1","piVersion":"0.82.0","architecture":"arm64","capabilities":["cancel","status","stream","host-credentials"]}}\n' "$PIUI_HANDSHAKE_NONCE" "$PIUI_DESKTOP_VERSION"
+printf '{"version":1,"kind":"handshake","id":"fixture-handshake","sequence":0,"payload":{"nonce":"%s","desktopVersion":"%s","protocolVersion":1,"nodeVersion":"22.23.1","piVersion":"0.82.0","architecture":"arm64","capabilities":["cancel","status","stream","host-credentials","workspace-trust-v1"]}}\n' "$PIUI_HANDSHAKE_NONCE" "$PIUI_DESKTOP_VERSION"
 /bin/sleep 30
 "#,
     )
@@ -78,7 +78,7 @@ fn unexpected_leader_exit_terminates_same_group_descendant_before_status_returns
     fs::write(
         &node,
         r#"#!/bin/sh
-printf '{"version":1,"kind":"handshake","id":"fixture-handshake","sequence":0,"payload":{"nonce":"%s","desktopVersion":"%s","protocolVersion":1,"nodeVersion":"22.23.1","piVersion":"0.82.0","architecture":"arm64","capabilities":["cancel","status","stream","host-credentials"]}}\n' "$PIUI_HANDSHAKE_NONCE" "$PIUI_DESKTOP_VERSION"
+printf '{"version":1,"kind":"handshake","id":"fixture-handshake","sequence":0,"payload":{"nonce":"%s","desktopVersion":"%s","protocolVersion":1,"nodeVersion":"22.23.1","piVersion":"0.82.0","architecture":"arm64","capabilities":["cancel","status","stream","host-credentials","workspace-trust-v1"]}}\n' "$PIUI_HANDSHAKE_NONCE" "$PIUI_DESKTOP_VERSION"
 /bin/sleep 30 &
 echo "$!" > "$1.descendant.pid"
 /bin/sleep 0.2

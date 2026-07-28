@@ -33,7 +33,7 @@ write({
     piVersion: '0.82.0',
     architecture: 'arm64',
     capabilities: [
-      'cancel', 'status', 'stream', 'host-credentials', 'AgentSession',
+      'cancel', 'status', 'stream', 'host-credentials', 'workspace-trust-v1', 'AgentSession',
       'AgentSessionRuntime', 'ModelRuntime', 'ProjectTrustStore',
       'SessionManager', 'createAgentSession'
     ]
