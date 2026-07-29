@@ -13,6 +13,7 @@ import {
   createAgentSessionFromServices,
   createAgentSessionRuntime,
   createAgentSessionServices,
+  type AgentSessionEvent,
   type AgentSessionServices,
   type CreateAgentSessionRuntimeFactory,
   type CreateModelRuntimeOptions,
@@ -26,8 +27,10 @@ import {
 export type PublicInlineExtension = InlineExtension;
 export type PublicExtensionContext = ExtensionContext;
 export type PublicAgentSession = AgentSession;
+export type PublicAgentSessionEvent = AgentSessionEvent;
 export type PublicAgentSessionRuntime = AgentSessionRuntime;
 export type PublicAgentSessionServices = AgentSessionServices;
+export type PublicModelRuntimeInstance = ModelRuntime;
 export type PublicCreateAgentSessionRuntimeFactory = CreateAgentSessionRuntimeFactory;
 export type PublicSessionEntry = SessionEntry;
 export type PublicSessionHeader = SessionHeader;
