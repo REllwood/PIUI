@@ -4,7 +4,10 @@ use super::projector::{PublicOperationClass, WebViewProjector};
 use crate::domain::approval::ApprovalRegistry;
 use crate::domain::workspace::WorkspaceRegistry;
 use crate::protocol::{Envelope, ProtocolKind, validate_envelope};
-use crate::supervisor::{RestartController, SidecarStatus, SidecarSupervisor, SupervisorPaths};
+use crate::supervisor::{
+    NODE_VERSION, PI_VERSION, PROTOCOL_VERSION, RestartController, SidecarStatus,
+    SidecarSupervisor, SupervisorPaths,
+};
 use serde_json::Value;
 use std::sync::{Arc, Mutex, mpsc::Receiver};
 use tauri::{AppHandle, State};
@@ -266,9 +269,25 @@ pub fn bridge_start_transport(state: &BridgeState) -> Result<SidecarStatus, Stri
     Ok(status)
 }
 
+const PACKAGED_AUTHENTICATED_READY: &str =
+    "PIUI_A21_AUTHENTICATED_SIDECAR_READY protocol=1 node=22.23.1 pi=0.82.0";
+
+fn packaged_readiness_line(status: &SidecarStatus) -> Option<&'static str> {
+    (status.running
+        && !status.failed
+        && status.protocol_version == Some(PROTOCOL_VERSION)
+        && status.node_version.as_deref() == Some(NODE_VERSION)
+        && status.pi_version.as_deref() == Some(PI_VERSION))
+    .then_some(PACKAGED_AUTHENTICATED_READY)
+}
+
 #[tauri::command]
 pub fn sidecar_start(state: State<'_, BridgeState>) -> Result<SidecarStatus, String> {
-    bridge_start_transport(state.inner())
+    let status = bridge_start_transport(state.inner())?;
+    if let Some(line) = packaged_readiness_line(&status) {
+        eprintln!("{line}");
+    }
+    Ok(status)
 }
 
 pub fn bridge_status_transport(state: &BridgeState) -> Result<SidecarStatus, String> {
@@ -422,9 +441,12 @@ pub fn sidecar_stop(state: State<'_, BridgeState>) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{BridgeState, rewrite_snapshot_after_sequence, validate_snapshot_request};
+    use super::{
+        BridgeState, packaged_readiness_line, rewrite_snapshot_after_sequence,
+        validate_snapshot_request,
+    };
     use crate::protocol::Envelope;
-    use crate::supervisor::SupervisorPaths;
+    use crate::supervisor::{SidecarStatus, SupervisorPaths};
     use serde_json::json;
     use std::path::PathBuf;
 
@@ -445,6 +467,27 @@ mod tests {
             "payload": {"method": "snapshot", "afterSequence": after_sequence}
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn packaged_readiness_requires_the_exact_authenticated_pins() {
+        let ready = SidecarStatus {
+            running: true,
+            failed: false,
+            failure: None,
+            generation: Some(1),
+            pid: Some(2),
+            protocol_version: Some(1),
+            node_version: Some("22.23.1".into()),
+            pi_version: Some("0.82.0".into()),
+        };
+        assert_eq!(
+            packaged_readiness_line(&ready),
+            Some("PIUI_A21_AUTHENTICATED_SIDECAR_READY protocol=1 node=22.23.1 pi=0.82.0")
+        );
+        let mut stale = ready;
+        stale.pi_version = Some("0.81.0".into());
+        assert_eq!(packaged_readiness_line(&stale), None);
     }
 
     #[test]
