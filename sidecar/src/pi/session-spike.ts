@@ -20,6 +20,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { createApprovalGate, type ApprovalHost } from './approval-hook.js';
+import { runFixedDeterministicTurn } from './deterministic-turn.js';
 import {
   PUBLIC_SESSION_VERSION,
   PublicModelRuntime,
@@ -232,8 +233,23 @@ export type SessionSpikeObservedEvidence = Readonly<{
   approvalHostCalls: number;
 }>;
 
+export type DeterministicTurnEvidence = Readonly<{
+  providerCalls: 1;
+  providerAbortObserved: true;
+  messageStarts: 1;
+  textDeltas: number;
+  abortedTerminals: 1;
+  completeTerminals: 0;
+  postTerminalEvents: 0;
+  forbiddenFinalChunkAbsent: true;
+  partialBytes: number;
+  partialSha256: string;
+  cancellationLatencyMilliseconds: number;
+}>;
+
 export type SessionSpikeLease = SessionSpikeProof & Readonly<{
   inspect(reference: string): SessionCapabilityView;
+  runDeterministicTurn(): Promise<DeterministicTurnEvidence>;
   dispose(): Promise<void>;
   [SESSION_SPIKE_TEST_OBSERVER](): SessionSpikeObservedEvidence;
 }>;
@@ -1120,6 +1136,32 @@ export async function proveSessionResumeAndFork(
       });
     };
 
+    let turnStarted = false;
+    const runDeterministicTurn = async (): Promise<DeterministicTurnEvidence> => {
+      assertLive();
+      if (turnStarted || runtime!.session !== forkSession) reject('session-operation-rejected');
+      turnStarted = true;
+      let evidence: DeterministicTurnEvidence;
+      try {
+        evidence = await runFixedDeterministicTurn({
+          session: forkSession,
+          modelRuntime,
+          credentialWrites: () => credentialCounters.writes,
+          approvalHostCalls: () => approvalHostCalls,
+        });
+      } catch {
+        return reject('session-operation-rejected');
+      }
+      const sourceAfterTurn = witnessFile(sourcePath);
+      if (!sameIdentity(workingOne, assertRegularSingleLink(sourcePath, true))
+        || sourceAfterTurn.hash !== workingOne.hash
+        || sourceAfterTurn.size !== workingOne.size) {
+        reject('session-recovery-required');
+      }
+      assertRepositoryUnchanged(options.fixturePath, repository.witness);
+      return evidence;
+    };
+
     const observeForTest = (): SessionSpikeObservedEvidence => {
       assertLive();
       const sourceRecord = capabilities.get(sourceReference);
@@ -1263,6 +1305,7 @@ export async function proveSessionResumeAndFork(
         productionSessionAuthorityClaimed: false as const,
       }),
       inspect,
+      runDeterministicTurn,
       dispose,
       [SESSION_SPIKE_TEST_OBSERVER]: observeForTest,
     });
