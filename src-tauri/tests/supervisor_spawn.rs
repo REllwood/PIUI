@@ -1,3 +1,5 @@
+#![cfg(debug_assertions)]
+
 use piui_lib::supervisor::{SidecarSupervisor, SupervisorPaths};
 use std::process::Command;
 

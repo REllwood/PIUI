@@ -5,6 +5,7 @@ use piui_lib::platform::{CredentialSheetRequest, CredentialSheetResult};
 #[test]
 fn credential_sheet_contract_rejects_unknown_request_fields() {
     let rejected = serde_json::from_value::<CredentialSheetRequest>(serde_json::json!({
+        "providerId": "example-provider",
         "providerLabel": "Example provider",
         "accountLabel": "Work account",
         "unexpected": "value"

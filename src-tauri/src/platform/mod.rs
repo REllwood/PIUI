@@ -53,6 +53,7 @@ pub(crate) const fn credential_secret_validation(
 }
 
 pub struct CredentialSheetRequest {
+    pub provider_id: String,
     pub provider_label: String,
     pub account_label: String,
 }
@@ -64,7 +65,7 @@ impl<'de> Deserialize<'de> for CredentialSheetRequest {
     {
         deserializer.deserialize_struct(
             "CredentialSheetRequest",
-            &["providerLabel", "accountLabel"],
+            &["providerId", "providerLabel", "accountLabel"],
             CredentialSheetRequestVisitor,
         )
     }
@@ -84,9 +85,13 @@ impl<'de> de::Visitor<'de> for CredentialSheetRequestVisitor {
         M: de::MapAccess<'de>,
     {
         let mut provider_label = None;
+        let mut provider_id = None;
         let mut account_label = None;
         while let Some(field) = map.next_key::<CredentialSheetRequestField>()? {
             match field {
+                CredentialSheetRequestField::ProviderId if provider_id.is_none() => {
+                    provider_id = Some(map.next_value::<CredentialMetadataValue>()?.0);
+                }
                 CredentialSheetRequestField::ProviderLabel if provider_label.is_none() => {
                     provider_label = Some(map.next_value::<CredentialMetadataValue>()?.0);
                 }
@@ -96,11 +101,14 @@ impl<'de> de::Visitor<'de> for CredentialSheetRequestVisitor {
                 _ => return Err(de::Error::custom(INVALID_CREDENTIAL_INPUT)),
             }
         }
-        match (provider_label, account_label) {
-            (Some(provider_label), Some(account_label)) => Ok(CredentialSheetRequest {
-                provider_label,
-                account_label,
-            }),
+        match (provider_id, provider_label, account_label) {
+            (Some(provider_id), Some(provider_label), Some(account_label)) => {
+                Ok(CredentialSheetRequest {
+                    provider_id,
+                    provider_label,
+                    account_label,
+                })
+            }
             _ => Err(de::Error::custom(INVALID_CREDENTIAL_INPUT)),
         }
     }
@@ -191,6 +199,7 @@ impl<'de> de::Visitor<'de> for CredentialMetadataValueVisitor {
 }
 
 enum CredentialSheetRequestField {
+    ProviderId,
     ProviderLabel,
     AccountLabel,
 }
@@ -218,6 +227,7 @@ impl de::Visitor<'_> for CredentialSheetRequestFieldVisitor {
         E: de::Error,
     {
         match value {
+            "providerId" => Ok(CredentialSheetRequestField::ProviderId),
             "providerLabel" => Ok(CredentialSheetRequestField::ProviderLabel),
             "accountLabel" => Ok(CredentialSheetRequestField::AccountLabel),
             _ => Err(E::custom(INVALID_CREDENTIAL_INPUT)),
@@ -296,7 +306,7 @@ impl NativeCredentialSheetError {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(feature = "a23-credential-test")))]
 pub(crate) async fn present_native_credential_sheet(
     window: WebviewWindow,
     provider_label: String,
@@ -304,10 +314,28 @@ pub(crate) async fn present_native_credential_sheet(
     macos::credential_sheet::present(window, provider_label).await
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(target_os = "macos", feature = "a23-credential-test"))]
+pub(crate) async fn present_native_credential_sheet(
+    window: WebviewWindow,
+    provider_label: String,
+    test_secret: SecretMaterial,
+) -> Result<CredentialSheetDecision, NativeCredentialSheetError> {
+    macos::credential_sheet::present(window, provider_label, test_secret).await
+}
+
+#[cfg(all(not(target_os = "macos"), not(feature = "a23-credential-test")))]
 pub(crate) async fn present_native_credential_sheet(
     _window: WebviewWindow,
     _provider_label: String,
+) -> Result<CredentialSheetDecision, NativeCredentialSheetError> {
+    Err(NativeCredentialSheetError::unsupported())
+}
+
+#[cfg(all(not(target_os = "macos"), feature = "a23-credential-test"))]
+pub(crate) async fn present_native_credential_sheet(
+    _window: WebviewWindow,
+    _provider_label: String,
+    _test_secret: SecretMaterial,
 ) -> Result<CredentialSheetDecision, NativeCredentialSheetError> {
     Err(NativeCredentialSheetError::unsupported())
 }
@@ -335,22 +363,28 @@ mod tests {
     use crate::credentials::SecretMaterial;
 
     #[test]
-    fn credential_sheet_request_accepts_only_two_safe_fields() {
+    fn credential_sheet_request_accepts_only_three_safe_fields() {
         let request: CredentialSheetRequest = serde_json::from_value(serde_json::json!({
+            "providerId": "example-provider",
             "providerLabel": "Example provider",
             "accountLabel": "Work account"
         }))
         .unwrap();
+        assert_eq!(request.provider_id, "example-provider");
         assert_eq!(request.provider_label, "Example provider");
         assert_eq!(request.account_label, "Work account");
 
         for rejected in [
             serde_json::json!({
+                "providerId": "example-provider",
                 "providerLabel": "Example provider",
                 "accountLabel": "Work account",
                 "unexpected": "value"
             }),
-            serde_json::json!({"providerLabel": "Example provider"}),
+            serde_json::json!({
+                "providerId": "example-provider",
+                "providerLabel": "Example provider"
+            }),
         ] {
             let error = match serde_json::from_value::<CredentialSheetRequest>(rejected) {
                 Ok(_) => panic!("credential sheet request was unexpectedly accepted"),
@@ -363,7 +397,7 @@ mod tests {
         }
 
         let duplicate = serde_json::from_str::<CredentialSheetRequest>(
-            r#"{"providerLabel":"First","providerLabel":"Second","accountLabel":"Work"}"#,
+            r#"{"providerId":"provider","providerLabel":"First","providerLabel":"Second","accountLabel":"Work"}"#,
         );
         let error = match duplicate {
             Ok(_) => panic!("duplicate credential sheet field was unexpectedly accepted"),
@@ -374,7 +408,7 @@ mod tests {
 
     #[test]
     fn credential_sheet_request_rejects_malformed_known_values_with_exact_stable_code() {
-        for field in ["providerLabel", "accountLabel"] {
+        for field in ["providerId", "providerLabel", "accountLabel"] {
             for malformed in [
                 serde_json::json!(42),
                 serde_json::json!(true),
@@ -383,6 +417,7 @@ mod tests {
                 serde_json::json!({"not": "metadata"}),
             ] {
                 let mut request = serde_json::json!({
+                    "providerId": "example-provider",
                     "providerLabel": "Example provider",
                     "accountLabel": "Work account"
                 });

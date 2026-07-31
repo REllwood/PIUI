@@ -38,8 +38,10 @@ pub(crate) fn private_zeroised_bytes_for_test() -> usize {
 
 fn zeroise_string(value: &mut String) {
     #[cfg(test)]
-    PRIVATE_ZEROISED_BYTES.fetch_add(value.len(), Ordering::Relaxed);
+    let byte_count = value.len();
     value.zeroize();
+    #[cfg(test)]
+    PRIVATE_ZEROISED_BYTES.fetch_add(byte_count, Ordering::Relaxed);
 }
 
 #[derive(Clone)]
@@ -56,6 +58,50 @@ impl CredentialProxy {
         Self {
             inner: Arc::new(Mutex::new(Box::new(repository))),
         }
+    }
+
+    /// Stores an API key received by the native credential sheet through the
+    /// same serialised repository/index authority used by sidecar SDK calls.
+    /// The secret remains Rust-owned and this method returns only the opaque
+    /// Keychain reference needed by the safe WebView result.
+    pub(crate) fn store_native_api_key(
+        &self,
+        provider_id: &str,
+        account_label: &str,
+        secret: SecretMaterial,
+    ) -> Result<String, &'static str> {
+        validate_provider_id(provider_id).map_err(|_| "invalid-credential-input")?;
+        let key = std::str::from_utf8(secret.expose()).map_err(|_| "invalid-credential-input")?;
+        #[derive(Serialize)]
+        struct ApiKeyCredential<'a> {
+            #[serde(rename = "type")]
+            credential_type: &'static str,
+            key: &'a str,
+        }
+        let encoded = Zeroizing::new(
+            serde_json::to_vec(&ApiKeyCredential {
+                credential_type: "api_key",
+                key,
+            })
+            .map_err(|_| "invalid-credential-input")?,
+        );
+        let material =
+            SecretMaterial::new(encoded.to_vec()).map_err(|_| "invalid-credential-input")?;
+        drop(secret);
+
+        let mut repository = self
+            .inner
+            .lock()
+            .map_err(|_| "credential-store-unavailable")?;
+        set_credential(
+            repository.as_mut(),
+            provider_id.to_owned(),
+            CredentialType::ApiKey,
+            material,
+            account_label,
+            Some(account_label),
+        )
+        .map_err(operation_error_code)
     }
 
     /// Executes a decoded private request without reserving wire coordinates.
@@ -457,6 +503,7 @@ trait CredentialRepository: Send + Sync {
         credential_id: &str,
         secret: &SecretMaterial,
     ) -> Result<(), CredentialError>;
+    fn account_label(&mut self, credential_id: &str) -> Result<String, CredentialError>;
     fn pair_status(&mut self, credential_id: &str)
     -> Result<CredentialPairStatus, CredentialError>;
     fn read(&mut self, credential_id: &str) -> Result<SecretMaterial, CredentialError>;
@@ -509,6 +556,7 @@ impl DispatcherTestGate {
 #[derive(Default)]
 struct DispatcherMemoryRepository {
     credentials: std::collections::HashMap<String, Vec<u8>>,
+    labels: std::collections::HashMap<String, String>,
     index: Option<Vec<u8>>,
     gate: Option<DispatcherTestGate>,
 }
@@ -518,7 +566,7 @@ impl CredentialRepository for DispatcherMemoryRepository {
     fn create_at_reference(
         &mut self,
         credential_id: &str,
-        _account_label: &str,
+        account_label: &str,
         secret: SecretMaterial,
     ) -> Result<(), CredentialError> {
         if self.credentials.contains_key(credential_id) {
@@ -529,6 +577,8 @@ impl CredentialRepository for DispatcherMemoryRepository {
         }
         self.credentials
             .insert(credential_id.to_string(), secret.expose().to_vec());
+        self.labels
+            .insert(credential_id.to_string(), account_label.to_string());
         Ok(())
     }
 
@@ -545,11 +595,18 @@ impl CredentialRepository for DispatcherMemoryRepository {
         Ok(())
     }
 
+    fn account_label(&mut self, credential_id: &str) -> Result<String, CredentialError> {
+        self.labels
+            .get(credential_id)
+            .cloned()
+            .ok_or_else(CredentialError::not_found)
+    }
+
     fn pair_status(
         &mut self,
         credential_id: &str,
     ) -> Result<CredentialPairStatus, CredentialError> {
-        if self.credentials.contains_key(credential_id) {
+        if self.credentials.contains_key(credential_id) && self.labels.contains_key(credential_id) {
             Ok(CredentialPairStatus::Complete)
         } else {
             Err(CredentialError::not_found())
@@ -567,6 +624,7 @@ impl CredentialRepository for DispatcherMemoryRepository {
 
     fn reconcile_delete(&mut self, credential_id: &str) -> Result<(), CredentialError> {
         self.credentials.remove(credential_id);
+        self.labels.remove(credential_id);
         Ok(())
     }
 
@@ -596,6 +654,10 @@ impl CredentialRepository for KeychainRepository {
         secret: &SecretMaterial,
     ) -> Result<(), CredentialError> {
         KeychainRepository::overwrite(self, credential_id, secret)
+    }
+
+    fn account_label(&mut self, credential_id: &str) -> Result<String, CredentialError> {
+        KeychainRepository::metadata(self, credential_id).map(|metadata| metadata.account_label)
     }
 
     fn pair_status(
@@ -710,7 +772,14 @@ fn execute_with_repository(
         } => {
             let (credential_type, material) =
                 validate_and_serialise_credential(credential.value())?;
-            set_credential(repository, provider_id, credential_type, material)?;
+            let _credential_id = set_credential(
+                repository,
+                provider_id,
+                credential_type,
+                material,
+                ACCOUNT_LABEL,
+                None,
+            )?;
             Ok(OperationOutcome::Set)
         }
         Operation::Remove(provider_id) => {
@@ -738,6 +807,15 @@ enum OperationError {
     Unavailable,
     Cancelled,
     Internal,
+}
+
+fn operation_error_code(error: OperationError) -> &'static str {
+    match error {
+        OperationError::InvalidRequest => "invalid-credential-input",
+        OperationError::Unavailable => "credential-store-unavailable",
+        OperationError::Cancelled => "credential-request-cancelled",
+        OperationError::Internal => "credential-operation-failed",
+    }
 }
 
 fn parse_operation(envelope: &mut Envelope) -> Result<Operation, OperationError> {
@@ -816,6 +894,12 @@ fn validate_provider_id(provider_id: &str) -> Result<(), OperationError> {
     } else {
         Ok(())
     }
+}
+
+pub(crate) fn normalise_provider_id(provider_id: &str) -> Result<String, String> {
+    validate_provider_id(provider_id)
+        .map(|()| provider_id.to_owned())
+        .map_err(|_| "invalid-credential-input".to_string())
 }
 
 fn validate_credential(credential: &Value) -> Result<CredentialType, OperationError> {
@@ -1054,7 +1138,8 @@ fn create_new_credential(
     provider_id: String,
     credential_type: CredentialType,
     material: SecretMaterial,
-) -> Result<(), OperationError> {
+    account_label: &str,
+) -> Result<String, OperationError> {
     let pending_creates = index
         .pending
         .iter()
@@ -1078,7 +1163,7 @@ fn create_new_credential(
     });
     persist_index(repository, index)?;
     repository
-        .create_at_reference(&credential_id, ACCOUNT_LABEL, material)
+        .create_at_reference(&credential_id, account_label, material)
         .map_err(map_repository_error)?;
 
     // Promotion is one exact, ambiguously reconciled index state change. A
@@ -1095,10 +1180,11 @@ fn create_new_credential(
     index.pending.remove(pending_position);
     index.entries.push(IndexEntry {
         provider_id,
-        credential_id,
+        credential_id: credential_id.clone(),
         credential_type,
     });
-    persist_index(repository, index)
+    persist_index(repository, index)?;
+    Ok(credential_id)
 }
 
 fn material_credential_type(material: &SecretMaterial) -> Option<CredentialType> {
@@ -1242,7 +1328,9 @@ fn set_credential(
     provider_id: String,
     credential_type: CredentialType,
     material: SecretMaterial,
-) -> Result<(), OperationError> {
+    account_label: &str,
+    required_existing_label: Option<&str>,
+) -> Result<String, OperationError> {
     let mut index = load_index(repository)?;
     reconcile_pending_provider(repository, &mut index, &provider_id)?;
     if let Some(position) = index
@@ -1256,6 +1344,14 @@ fn set_credential(
             .map_err(map_repository_error)?
         {
             CredentialPairStatus::Complete => {
+                if let Some(required_label) = required_existing_label
+                    && repository
+                        .account_label(&credential_id)
+                        .map_err(map_repository_error)?
+                        != required_label
+                {
+                    return Err(OperationError::InvalidRequest);
+                }
                 let type_changes = index.entries[position].credential_type != credential_type;
                 if type_changes {
                     if index.pending.len() >= MAX_PENDING_INDEX_ENTRIES {
@@ -1281,7 +1377,7 @@ fn set_credential(
                             });
                             persist_index(repository, &mut index)?;
                         }
-                        return Ok(());
+                        return Ok(credential_id);
                     }
                     Err(error) if error.code() != CredentialError::not_found().code() => {
                         // An unavailable overwrite is ambiguous and must never
@@ -1306,6 +1402,7 @@ fn set_credential(
             provider_id,
             credential_type,
             material,
+            account_label,
         );
     }
 
@@ -1315,6 +1412,7 @@ fn set_credential(
         provider_id,
         credential_type,
         material,
+        account_label,
     )
 }
 

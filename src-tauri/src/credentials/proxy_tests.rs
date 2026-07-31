@@ -11,18 +11,83 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum FakeZeroisationReason {
+        Overwrite,
+        Remove,
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct FakeZeroisationEvent {
+        reason: FakeZeroisationReason,
+        byte_count: usize,
+        verified_zero_bytes: usize,
+    }
+
+    struct FakeSecret {
+        bytes: Box<[u8]>,
+        zeroisation_events: Arc<StdMutex<Vec<FakeZeroisationEvent>>>,
+        reason: Option<FakeZeroisationReason>,
+    }
+
+    impl FakeSecret {
+        fn new(
+            bytes: Vec<u8>,
+            zeroisation_events: Arc<StdMutex<Vec<FakeZeroisationEvent>>>,
+        ) -> Self {
+            Self {
+                bytes: bytes.into_boxed_slice(),
+                zeroisation_events,
+                reason: None,
+            }
+        }
+
+        fn expose(&self) -> &[u8] {
+            &self.bytes
+        }
+
+        fn mark_zeroisation(&mut self, reason: FakeZeroisationReason) {
+            self.reason = Some(reason);
+        }
+    }
+
+    impl Drop for FakeSecret {
+        fn drop(&mut self) {
+            let byte_count = self.bytes.len();
+            self.bytes.as_mut().zeroize();
+            let verified_zero_bytes = self.bytes.iter().filter(|byte| **byte == 0).count();
+            if byte_count > 0
+                && verified_zero_bytes == byte_count
+                && let Some(reason) = self.reason
+            {
+                self.zeroisation_events
+                    .lock()
+                    .unwrap()
+                    .push(FakeZeroisationEvent {
+                        reason,
+                        byte_count,
+                        verified_zero_bytes,
+                    });
+            }
+        }
+    }
+
     #[derive(Default)]
     struct FakeVault {
         index: Option<Vec<u8>>,
-        secrets: HashMap<String, Vec<u8>>,
-        labels: HashSet<String>,
+        secrets: HashMap<String, FakeSecret>,
+        zeroisation_events: Arc<StdMutex<Vec<FakeZeroisationEvent>>>,
+        labels: HashMap<String, String>,
+        account_label_read_failures: usize,
         secret_reads: usize,
         pair_checks: usize,
         overwrite_calls: usize,
         create_at_calls: usize,
         reconcile_calls: usize,
         index_reads: usize,
+        index_read_failures: usize,
         index_writes: usize,
+        arm_index_read_failure_after_write: Option<usize>,
         index_write_failures_before: usize,
         index_write_failures_after: usize,
         index_write_failure_before_on_call: Option<usize>,
@@ -48,25 +113,37 @@ mod tests {
         fn state(&self) -> MutexGuard<'_, FakeVault> {
             self.vault.lock().unwrap()
         }
+
+        fn insert_raw_secret_for_test(&self, credential_id: String, bytes: Vec<u8>) {
+            let mut vault = self.vault.lock().unwrap();
+            let events = Arc::clone(&vault.zeroisation_events);
+            vault
+                .secrets
+                .insert(credential_id, FakeSecret::new(bytes, events));
+        }
     }
 
     impl CredentialRepository for FakeRepository {
         fn create_at_reference(
             &mut self,
             credential_id: &str,
-            _account_label: &str,
+            account_label: &str,
             secret: SecretMaterial,
         ) -> Result<(), CredentialError> {
             let mut vault = self.vault.lock().unwrap();
             vault.create_at_calls += 1;
-            vault.labels.insert(credential_id.into());
+            vault
+                .labels
+                .insert(credential_id.into(), account_label.into());
             if vault.create_failures_before_secret > 0 {
                 vault.create_failures_before_secret -= 1;
                 return Err(CredentialError::unavailable());
             }
-            vault
-                .secrets
-                .insert(credential_id.into(), secret.expose().to_vec());
+            let events = Arc::clone(&vault.zeroisation_events);
+            vault.secrets.insert(
+                credential_id.into(),
+                FakeSecret::new(secret.expose().to_vec(), events),
+            );
             Ok(())
         }
 
@@ -83,14 +160,32 @@ mod tests {
             }
             // Match Keychain `set_secret` upsert semantics deliberately. The
             // proxy must prevent this call for an incomplete pair.
-            vault
-                .secrets
-                .insert(credential_id.into(), secret.expose().to_vec());
+            if let Some(previous) = vault.secrets.get_mut(credential_id) {
+                previous.mark_zeroisation(FakeZeroisationReason::Overwrite);
+            }
+            let events = Arc::clone(&vault.zeroisation_events);
+            vault.secrets.insert(
+                credential_id.into(),
+                FakeSecret::new(secret.expose().to_vec(), events),
+            );
             if vault.overwrite_failures_after > 0 {
                 vault.overwrite_failures_after -= 1;
                 return Err(CredentialError::unavailable());
             }
             Ok(())
+        }
+
+        fn account_label(&mut self, credential_id: &str) -> Result<String, CredentialError> {
+            let mut vault = self.vault.lock().unwrap();
+            if vault.account_label_read_failures > 0 {
+                vault.account_label_read_failures -= 1;
+                return Err(CredentialError::unavailable());
+            }
+            vault
+                .labels
+                .get(credential_id)
+                .cloned()
+                .ok_or_else(CredentialError::not_found)
         }
 
         fn pair_status(
@@ -99,7 +194,9 @@ mod tests {
         ) -> Result<CredentialPairStatus, CredentialError> {
             let mut vault = self.vault.lock().unwrap();
             vault.pair_checks += 1;
-            if vault.secrets.contains_key(credential_id) && vault.labels.contains(credential_id) {
+            if vault.secrets.contains_key(credential_id)
+                && vault.labels.contains_key(credential_id)
+            {
                 Ok(CredentialPairStatus::Complete)
             } else {
                 Ok(CredentialPairStatus::Incomplete)
@@ -112,7 +209,7 @@ mod tests {
             let bytes = vault
                 .secrets
                 .get(credential_id)
-                .cloned()
+                .map(|secret| secret.expose().to_vec())
                 .ok_or_else(CredentialError::not_found)?;
             SecretMaterial::new(bytes)
         }
@@ -121,7 +218,7 @@ mod tests {
             let mut vault = self.vault.lock().unwrap();
             vault.reconcile_calls += 1;
             let mut secret_pending = vault.secrets.contains_key(credential_id);
-            let mut label_pending = vault.labels.contains(credential_id);
+            let mut label_pending = vault.labels.contains_key(credential_id);
             for _ in 0..3 {
                 if secret_pending {
                     if vault.persistent_secret_cleanup_failure {
@@ -129,6 +226,9 @@ mod tests {
                     } else if vault.secret_cleanup_failures > 0 {
                         vault.secret_cleanup_failures -= 1;
                     } else {
+                        if let Some(secret) = vault.secrets.get_mut(credential_id) {
+                            secret.mark_zeroisation(FakeZeroisationReason::Remove);
+                        }
                         vault.secrets.remove(credential_id);
                         secret_pending = false;
                     }
@@ -153,6 +253,10 @@ mod tests {
         fn read_index(&mut self) -> Result<Option<IndexMaterial>, CredentialError> {
             let mut vault = self.vault.lock().unwrap();
             vault.index_reads += 1;
+            if vault.index_read_failures > 0 {
+                vault.index_read_failures -= 1;
+                return Err(CredentialError::unavailable());
+            }
             vault.index.clone().map(IndexMaterial::new).transpose()
         }
 
@@ -168,6 +272,10 @@ mod tests {
                 return Err(CredentialError::unavailable());
             }
             vault.index = Some(index.expose().to_vec());
+            if vault.arm_index_read_failure_after_write == Some(vault.index_writes) {
+                vault.arm_index_read_failure_after_write = None;
+                vault.index_read_failures += 1;
+            }
             if vault.index_write_failures_after > 0 {
                 vault.index_write_failures_after -= 1;
                 return Err(CredentialError::unavailable());
@@ -680,6 +788,154 @@ mod tests {
     }
 
     #[test]
+    fn native_resave_requires_the_persisted_account_label_before_secret_overwrite() {
+        let repository = FakeRepository::new();
+        let proxy = CredentialProxy::with_repository(repository.clone());
+        let provider_id = "native.fixture-provider";
+        let account_label = "Original account";
+
+        let reference = proxy
+            .store_native_api_key(
+                provider_id,
+                account_label,
+                SecretMaterial::new(b"first-native-key".to_vec()).unwrap(),
+            )
+            .expect("first native save");
+        {
+            let state = repository.state();
+            assert_eq!(state.labels.get(&reference).map(String::as_str), Some(account_label));
+            assert_eq!(state.overwrite_calls, 0);
+        }
+
+        repository.state().account_label_read_failures = 1;
+        assert_eq!(
+            proxy.store_native_api_key(
+                provider_id,
+                account_label,
+                SecretMaterial::new(b"uncertain-native-key".to_vec()).unwrap(),
+            ),
+            Err("credential-store-unavailable")
+        );
+        assert_eq!(repository.state().overwrite_calls, 0);
+
+        assert_eq!(
+            proxy.store_native_api_key(
+                provider_id,
+                "Different account",
+                SecretMaterial::new(b"rejected-native-key".to_vec()).unwrap(),
+            ),
+            Err("invalid-credential-input")
+        );
+        {
+            let state = repository.state();
+            assert_eq!(state.labels.get(&reference).map(String::as_str), Some(account_label));
+            assert_eq!(state.overwrite_calls, 0);
+            let stored: Value = serde_json::from_slice(state.secrets[&reference].expose()).unwrap();
+            assert_eq!(stored["key"].as_str(), Some("first-native-key"));
+        }
+
+        let refreshed_reference = proxy
+            .store_native_api_key(
+                provider_id,
+                account_label,
+                SecretMaterial::new(b"second-native-key".to_vec()).unwrap(),
+            )
+            .expect("same-label native refresh");
+        assert_eq!(refreshed_reference, reference);
+        let state = repository.state();
+        assert_eq!(state.labels.get(&reference).map(String::as_str), Some(account_label));
+        assert_eq!(state.overwrite_calls, 1);
+        let stored: Value = serde_json::from_slice(state.secrets[&reference].expose()).unwrap();
+        assert_eq!(stored["key"].as_str(), Some("second-native-key"));
+    }
+
+    #[test]
+    fn native_create_returns_its_committed_reference_without_a_post_commit_index_read() {
+        let repository = FakeRepository::new();
+        repository.state().arm_index_read_failure_after_write = Some(2);
+        let proxy = CredentialProxy::with_repository(repository.clone());
+
+        let reference = proxy
+            .store_native_api_key(
+                "native.committed-provider",
+                "Committed account",
+                SecretMaterial::new(b"committed-native-key".to_vec()).unwrap(),
+            )
+            .expect("committed transaction returns its reserved reference");
+
+        let state = repository.state();
+        assert_eq!(state.index_reads, 1);
+        assert_eq!(state.index_writes, 2);
+        assert_eq!(state.index_read_failures, 1);
+        assert!(state.secrets.contains_key(&reference));
+        assert_eq!(
+            state.labels.get(&reference).map(String::as_str),
+            Some("Committed account")
+        );
+    }
+
+    #[test]
+    fn credential_proxy_in_memory_get_refresh_logout_delete_lifecycle() {
+        let repository = FakeRepository::new();
+        let proxy = CredentialProxy::with_repository(repository.clone());
+        let canary = format!("a23-lifecycle-{}", Uuid::new_v4().simple());
+        let provider_id = "a23.lifecycle-provider";
+        let fake_zeroisation_events = Arc::clone(&repository.state().zeroisation_events);
+
+        assert_success(&set(
+            &proxy,
+            provider_id,
+            json!({"type": "oauth", "access": canary, "refresh": "", "expires": 1}),
+        ));
+        let fetched = get(&proxy, provider_id);
+        assert!(
+            response_envelope(&fetched).payload["credential"]["access"]
+                .as_str()
+                .is_some_and(|value| value.as_bytes() == canary.as_bytes()),
+            "credential lifecycle retrieval failed"
+        );
+        assert!(!format!("{fetched:?}").contains(&canary));
+        drop(fetched);
+        assert_success(&set(
+            &proxy,
+            provider_id,
+            json!({"type": "oauth", "access": canary, "refresh": "", "expires": 2}),
+        ));
+        {
+            let events = fake_zeroisation_events.lock().unwrap();
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].reason, FakeZeroisationReason::Overwrite);
+            assert!(events[0].byte_count > 0);
+            assert_eq!(events[0].verified_zero_bytes, events[0].byte_count);
+        }
+        assert_success(&remove(&proxy, provider_id));
+        {
+            let events = fake_zeroisation_events.lock().unwrap();
+            assert_eq!(events.len(), 2);
+            assert_eq!(events[1].reason, FakeZeroisationReason::Remove);
+            assert!(events[1].byte_count > 0);
+            assert_eq!(events[1].verified_zero_bytes, events[1].byte_count);
+        }
+        assert_eq!(
+            response_envelope(&get(&proxy, provider_id))
+                .payload
+                .get("found"),
+            Some(&Value::Bool(false))
+        );
+
+        let state = repository.state();
+        assert_eq!(state.secret_reads, 1);
+        assert_eq!(state.overwrite_calls, 1);
+        assert_eq!(state.reconcile_calls, 1);
+        assert!(state.secrets.is_empty());
+        assert!(state.labels.is_empty());
+        drop(state);
+        let index = index_from_fake(&repository);
+        assert!(index.entries.is_empty());
+        assert!(index.pending.is_empty());
+    }
+
+    #[test]
     fn credential_proxy_reserves_index_before_create_and_reconciles_ambiguous_index_writes() {
         let failed_repository = FakeRepository::new();
         failed_repository.state().index_write_failures_before = 1;
@@ -741,7 +997,7 @@ mod tests {
         {
             let state = dangling_repository.state();
             assert!(state.secrets.is_empty());
-            assert!(state.labels.contains(&failed_reference));
+            assert!(state.labels.contains_key(&failed_reference));
         }
 
         let recreated_proxy = CredentialProxy::with_repository(dangling_repository.clone());
@@ -769,8 +1025,8 @@ mod tests {
             .clone();
         assert_ne!(failed_reference, recovered_reference);
         let state = dangling_repository.state();
-        assert!(!state.labels.contains(&failed_reference));
-        assert!(state.labels.contains(&recovered_reference));
+        assert!(!state.labels.contains_key(&failed_reference));
+        assert!(state.labels.contains_key(&recovered_reference));
         assert!(state.secrets.contains_key(&recovered_reference));
         drop(state);
 
@@ -1099,7 +1355,7 @@ mod tests {
         let credential_id = index_from_fake(&repository).entries[0]
             .credential_id
             .clone();
-        repository.state().secrets.insert(
+        repository.insert_raw_secret_for_test(
             credential_id,
             serde_json::to_vec(&json!({"type": "api_key", "key": canary, "bad": true})).unwrap(),
         );
@@ -1411,6 +1667,10 @@ mod tests {
             _credential_id: &str,
             _secret: &SecretMaterial,
         ) -> Result<(), CredentialError> {
+            unreachable!()
+        }
+
+        fn account_label(&mut self, _credential_id: &str) -> Result<String, CredentialError> {
             unreachable!()
         }
 

@@ -183,14 +183,16 @@ impl ProtocolDecoder {
             if contains_secret_key(&Value::Object(envelope.payload.clone())) {
                 return Err(ProtocolError("secret-shaped diagnostic field"));
             }
-            if !matches!(
+            let known_event = matches!(
                 event_type,
                 "sidecar.status"
                     | "stream.delta"
                     | "stream.complete"
                     | "stream.cancelled"
                     | "tool.activity"
-            ) {
+            ) || cfg!(feature = "a25-approval-test")
+                && event_type == "approval-matrix.complete";
+            if !known_event {
                 let keys = envelope
                     .payload
                     .keys()
@@ -792,5 +794,24 @@ mod tests {
             decoder.decode(recent).unwrap_err().to_string(),
             "duplicate envelope ID"
         );
+    }
+
+    #[test]
+    fn approval_matrix_event_is_visible_only_in_the_a25_twin() {
+        let line = b"{\"version\":1,\"kind\":\"event\",\"id\":\"sidecar-a25-result\",\"sequence\":1,\"payload\":{\"schemaVersion\":1,\"eventType\":\"approval-matrix.complete\",\"generation\":1,\"turns\":8,\"delegateCalls\":6,\"fiveArgumentViolations\":0}}\n";
+        let decoded = super::ProtocolDecoder::default().decode(line).unwrap();
+        if cfg!(feature = "a25-approval-test") {
+            assert_eq!(
+                decoded.payload.get("eventType"),
+                Some(&Value::String("approval-matrix.complete".into()))
+            );
+            assert_eq!(decoded.payload.get("delegateCalls"), Some(&Value::from(6)));
+        } else {
+            assert_eq!(
+                decoded.payload.get("eventType"),
+                Some(&Value::String("unknown-event".into()))
+            );
+            assert_eq!(decoded.payload.get("redacted"), Some(&Value::Bool(true)));
+        }
     }
 }

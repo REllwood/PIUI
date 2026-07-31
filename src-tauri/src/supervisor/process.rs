@@ -32,6 +32,94 @@ use zeroize::Zeroizing;
 const MAX_JS_SAFE_SEQUENCE: u64 = 9_007_199_254_740_991;
 const MAX_WORKSPACE_WAITERS: usize = 32;
 
+#[cfg(feature = "a23-credential-test")]
+const A23_RAW_CAPTURE_MAX_BYTES: usize = 262_144;
+#[cfg(feature = "a23-credential-test")]
+const A23_RAW_CAPTURE_MAX_FRAMES: usize = 32;
+
+#[cfg(feature = "a23-credential-test")]
+#[derive(Clone)]
+struct A23RawCapture {
+    output: Arc<Mutex<A23RawCaptureOutput>>,
+}
+
+#[cfg(feature = "a23-credential-test")]
+struct A23RawCaptureOutput {
+    file: std::fs::File,
+    bytes: usize,
+    frames: usize,
+}
+
+#[cfg(feature = "a23-credential-test")]
+impl A23RawCapture {
+    fn from_environment() -> Result<Self, String> {
+        use std::fs::OpenOptions;
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let target = a23_private_target("PIUI_A23_CAPTURE_PATH")?;
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(target)
+            .map_err(|_| "A.23 raw capture unavailable".to_string())?;
+        let header = b"PIUI-A23-RAW-V1\n";
+        file.write_all(header)
+            .and_then(|()| file.sync_data())
+            .map_err(|_| "A.23 raw capture unavailable".to_string())?;
+        Ok(Self {
+            output: Arc::new(Mutex::new(A23RawCaptureOutput {
+                file,
+                bytes: header.len(),
+                frames: 0,
+            })),
+        })
+    }
+
+    fn record_sidecar_frame(&self, raw: &[u8]) -> Result<(), String> {
+        self.record(b'S', raw)
+    }
+
+    fn record_host_response(&self, raw: &[u8]) -> Result<(), String> {
+        self.record(b'H', raw)
+    }
+
+    fn record(&self, direction: u8, raw: &[u8]) -> Result<(), String> {
+        use std::io::Write;
+
+        if !matches!(direction, b'S' | b'H') || raw.is_empty() || !raw.ends_with(b"\n") {
+            return Err("A.23 raw capture rejected".into());
+        }
+        let header = format!("{} {}\n", direction as char, raw.len());
+        let mut output = self
+            .output
+            .lock()
+            .map_err(|_| "A.23 raw capture unavailable".to_string())?;
+        let next_frames = output
+            .frames
+            .checked_add(1)
+            .filter(|frames| *frames <= A23_RAW_CAPTURE_MAX_FRAMES)
+            .ok_or_else(|| "A.23 raw capture limit".to_string())?;
+        let next_bytes = output
+            .bytes
+            .checked_add(header.len())
+            .and_then(|bytes| bytes.checked_add(raw.len()))
+            .filter(|bytes| *bytes <= A23_RAW_CAPTURE_MAX_BYTES)
+            .ok_or_else(|| "A.23 raw capture limit".to_string())?;
+        output
+            .file
+            .write_all(header.as_bytes())
+            .and_then(|()| output.file.write_all(raw))
+            .and_then(|()| output.file.sync_data())
+            .map_err(|_| "A.23 raw capture unavailable".to_string())?;
+        output.frames = next_frames;
+        output.bytes = next_bytes;
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SupervisorPaths {
     pub node: PathBuf,
@@ -201,6 +289,8 @@ pub(super) struct GenerationWriter {
     outbound_sequence: u64,
     internal_request_counter: u64,
     control: Arc<GenerationControl>,
+    #[cfg(feature = "a23-credential-test")]
+    a23_capture: Option<A23RawCapture>,
 }
 
 impl GenerationWriter {
@@ -208,6 +298,7 @@ impl GenerationWriter {
         generation: u64,
         stdin: ChildStdin,
         control: Arc<GenerationControl>,
+        #[cfg(feature = "a23-credential-test")] a23_capture: A23RawCapture,
     ) -> Result<Self, String> {
         let sink = ChildStdinSink::new(&stdin)?;
         control.attach_stdin(stdin)?;
@@ -217,6 +308,8 @@ impl GenerationWriter {
             outbound_sequence: 0,
             internal_request_counter: 0,
             control,
+            #[cfg(feature = "a23-credential-test")]
+            a23_capture: Some(a23_capture),
         })
     }
 
@@ -232,6 +325,8 @@ impl GenerationWriter {
             outbound_sequence: 0,
             internal_request_counter: 0,
             control,
+            #[cfg(feature = "a23-credential-test")]
+            a23_capture: None,
         }
     }
 
@@ -627,7 +722,36 @@ impl GenerationWriter {
         let bytes = response
             .into_lf_json()
             .map_err(|_| "sidecar private response encoding failed".to_string())?;
-        self.write_bytes(bytes)
+        #[cfg(feature = "a23-credential-test")]
+        let capture_bytes = Zeroizing::new(bytes.as_slice().to_vec());
+        self.write_bytes(bytes)?;
+        #[cfg(feature = "a23-credential-test")]
+        match self.a23_capture.as_ref() {
+            Some(capture) => capture.record_host_response(&capture_bytes)?,
+            None => {
+                // `with_sink_for_test` deliberately has no file-backed capture.
+                // Every non-test A.23 writer is constructed with one and must
+                // continue to fail closed if that invariant is ever broken.
+                #[cfg(not(test))]
+                return Err("A.23 raw capture unavailable".into());
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "a23-credential-test")]
+    pub(super) fn capture_a23_inbound_frame(&self, raw: &[u8]) -> Result<(), String> {
+        match self.a23_capture.as_ref() {
+            Some(capture) => capture.record_sidecar_frame(raw),
+            None => {
+                // This branch exists only for `with_sink_for_test`; release
+                // A.23 processes must retain their file-backed evidence sink.
+                #[cfg(test)]
+                return Ok(());
+                #[cfg(not(test))]
+                return Err("A.23 raw capture unavailable".into());
+            }
+        }
     }
 
     fn write_bytes(&mut self, bytes: Zeroizing<Vec<u8>>) -> Result<(), String> {
@@ -863,15 +987,28 @@ impl Default for SidecarSupervisor {
 }
 
 impl SidecarSupervisor {
+    #[cfg(test)]
     pub(crate) fn with_registries(
         approval_registry: Arc<ApprovalRegistry>,
         workspace_registry: Arc<WorkspaceRegistry>,
+    ) -> Self {
+        Self::with_registries_and_credentials(
+            approval_registry,
+            workspace_registry,
+            CredentialProxy::default(),
+        )
+    }
+
+    pub(crate) fn with_registries_and_credentials(
+        approval_registry: Arc<ApprovalRegistry>,
+        workspace_registry: Arc<WorkspaceRegistry>,
+        credential_proxy: CredentialProxy,
     ) -> Self {
         Self {
             running: None,
             last_failure: None,
             generation: 0,
-            credential_proxy: CredentialProxy::default(),
+            credential_proxy,
             approval_registry,
             workspace_registry,
         }
@@ -893,6 +1030,10 @@ impl SidecarSupervisor {
             .arg(&paths.entrypoint)
             .current_dir(&paths.resource_root)
             .env_clear()
+            // Keep dependency-level home discovery inside the sealed sidecar
+            // resources. Project loaders receive their own agent-root HOME.
+            .env("HOME", &paths.resource_root)
+            .env("CFFIXED_USER_HOME", &paths.resource_root)
             .env("NODE_ENV", "production")
             .env("PIUI_DESKTOP_VERSION", env!("CARGO_PKG_VERSION"))
             .env("PIUI_HANDSHAKE_NONCE", &nonce)
@@ -903,6 +1044,7 @@ impl SidecarSupervisor {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .process_group(0);
+        configure_architecture_test_sidecar(&mut command)?;
         let mut child = command
             .spawn()
             .map_err(|_| "sidecar spawn failed".to_string())?;
@@ -956,7 +1098,17 @@ impl SidecarSupervisor {
 
         self.generation = next_generation;
         let generation = next_generation;
-        let writer = match GenerationWriter::new(generation, stdin, Arc::clone(&control)) {
+        #[cfg(feature = "a23-credential-test")]
+        let a23_capture = match A23RawCapture::from_environment() {
+            Ok(capture) => capture,
+            Err(error) => return self.abort_start(child, process_group, control, error),
+        };
+        #[cfg(not(feature = "a23-credential-test"))]
+        let writer_result = GenerationWriter::new(generation, stdin, Arc::clone(&control));
+        #[cfg(feature = "a23-credential-test")]
+        let writer_result =
+            GenerationWriter::new(generation, stdin, Arc::clone(&control), a23_capture);
+        let writer = match writer_result {
             Ok(writer) => Arc::new(Mutex::new(writer)),
             Err(error) => {
                 return self.abort_start(child, process_group, control, error);
@@ -1274,6 +1426,107 @@ impl SidecarSupervisor {
             })
             .unwrap_or_default()
     }
+}
+
+#[cfg(not(any(feature = "a23-credential-test", feature = "a25-approval-test")))]
+fn configure_architecture_test_sidecar(_command: &mut Command) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(feature = "a23-credential-test")]
+fn a23_private_target(variable: &str) -> Result<PathBuf, String> {
+    use std::os::unix::fs::MetadataExt;
+
+    let target = PathBuf::from(
+        std::env::var_os(variable)
+            .ok_or_else(|| "A.23 private capture target unavailable".to_string())?,
+    );
+    if !target.is_absolute() || target.exists() {
+        return Err("A.23 private capture target invalid".into());
+    }
+    let parent = target
+        .parent()
+        .ok_or_else(|| "A.23 private capture target invalid".to_string())?;
+    let parent = fs::canonicalize(parent)
+        .map_err(|_| "A.23 private capture boundary unavailable".to_string())?;
+    if target.parent() != Some(parent.as_path()) {
+        return Err("A.23 private capture target invalid".into());
+    }
+    let metadata = fs::metadata(&parent)
+        .map_err(|_| "A.23 private capture boundary unavailable".to_string())?;
+    if !metadata.is_dir()
+        || metadata.mode() & 0o077 != 0
+        || metadata.uid() != unsafe { libc::geteuid() }
+    {
+        return Err("A.23 private capture boundary invalid".into());
+    }
+    Ok(target)
+}
+
+#[cfg(all(feature = "a23-credential-test", not(feature = "a25-approval-test")))]
+fn configure_architecture_test_sidecar(command: &mut Command) -> Result<(), String> {
+    let capture = a23_private_target("PIUI_A23_CAPTURE_PATH")?;
+    let result = a23_private_target("PIUI_A23_RESULT_PATH")?;
+    let trigger = a23_private_target("PIUI_A23_TRIGGER_PATH")?;
+    if capture == result || capture == trigger || result == trigger {
+        return Err("A.23 private targets overlap".into());
+    }
+    command
+        .env("PIUI_A23_TEST_MODE", "1")
+        .env("PIUI_A23_PROVIDER_ID", "a23.fixture-provider")
+        .env("PIUI_A23_RESULT_PATH", result)
+        .env("PIUI_A23_TRIGGER_PATH", trigger);
+    Ok(())
+}
+
+#[cfg(all(feature = "a25-approval-test", not(feature = "a23-credential-test")))]
+fn configure_architecture_test_sidecar(command: &mut Command) -> Result<(), String> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    let control_root = PathBuf::from(
+        std::env::var_os("PIUI_A25_CONTROL_ROOT")
+            .ok_or_else(|| "A.25 control root unavailable".to_string())?,
+    );
+    let workspace_id = std::env::var("PIUI_A25_WORKSPACE_ID")
+        .map_err(|_| "A.25 workspace unavailable".to_string())?;
+    let workspace_revision = std::env::var("PIUI_A25_WORKSPACE_REVISION")
+        .map_err(|_| "A.25 workspace unavailable".to_string())?;
+    let canonical =
+        fs::canonicalize(&control_root).map_err(|_| "A.25 control root unavailable".to_string())?;
+    let metadata =
+        fs::metadata(&canonical).map_err(|_| "A.25 control root unavailable".to_string())?;
+    let valid_workspace = workspace_id
+        .strip_prefix("workspace-")
+        .is_some_and(|suffix| {
+            suffix.len() == 32
+                && suffix
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        });
+    let valid_revision = workspace_revision
+        .parse::<u64>()
+        .is_ok_and(|revision| revision > 0 && revision <= 9_007_199_254_740_991);
+    if !control_root.is_absolute()
+        || control_root != canonical
+        || !metadata.is_dir()
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.permissions().mode() & 0o777 != 0o700
+        || !valid_workspace
+        || !valid_revision
+    {
+        return Err("A.25 architecture test environment rejected".into());
+    }
+    command
+        .env("PIUI_A25_TEST_MODE", "1")
+        .env("PIUI_A25_CONTROL_ROOT", canonical)
+        .env("PIUI_A25_WORKSPACE_ID", workspace_id)
+        .env("PIUI_A25_WORKSPACE_REVISION", workspace_revision);
+    Ok(())
+}
+
+#[cfg(all(feature = "a23-credential-test", feature = "a25-approval-test"))]
+fn configure_architecture_test_sidecar(_command: &mut Command) -> Result<(), String> {
+    Err("A.23 and A.25 architecture test features cannot overlap".into())
 }
 
 impl Drop for SidecarSupervisor {

@@ -1,6 +1,7 @@
 use super::ack_settlement::AckSettlement;
 use super::event_output::{EventOutputQueue, EventReceipt};
 use super::projector::{PublicOperationClass, WebViewProjector};
+use crate::credentials::CredentialProxy;
 use crate::domain::approval::ApprovalRegistry;
 use crate::domain::workspace::WorkspaceRegistry;
 use crate::protocol::{Envelope, ProtocolKind, validate_envelope};
@@ -33,17 +34,26 @@ pub struct BridgeState {
     event_output: Arc<EventOutputQueue>,
     approval_registry: Arc<ApprovalRegistry>,
     workspace_registry: Arc<WorkspaceRegistry>,
+    #[cfg(feature = "a23-credential-test")]
+    a23_evidence: Option<super::a23_native_evidence::A23NativeEvidenceState>,
 }
 
 impl BridgeState {
     pub fn new(paths: SupervisorPaths) -> Self {
+        Self::new_with_credentials(paths, CredentialProxy::default())
+    }
+
+    pub fn new_with_credentials(paths: SupervisorPaths, credential_proxy: CredentialProxy) -> Self {
         let approval_registry = Arc::new(ApprovalRegistry::default());
         let workspace_registry = Arc::new(WorkspaceRegistry::default());
         Self {
-            supervisor: Arc::new(Mutex::new(SidecarSupervisor::with_registries(
-                Arc::clone(&approval_registry),
-                Arc::clone(&workspace_registry),
-            ))),
+            supervisor: Arc::new(Mutex::new(
+                SidecarSupervisor::with_registries_and_credentials(
+                    Arc::clone(&approval_registry),
+                    Arc::clone(&workspace_registry),
+                    credential_proxy,
+                ),
+            )),
             restart: Arc::new(Mutex::new(RestartController::default())),
             paths,
             acknowledgement_settlement: AckSettlement::default(),
@@ -51,7 +61,20 @@ impl BridgeState {
             event_output: Arc::new(EventOutputQueue::default()),
             approval_registry,
             workspace_registry,
+            #[cfg(feature = "a23-credential-test")]
+            a23_evidence: None,
         }
+    }
+
+    #[cfg(feature = "a23-credential-test")]
+    pub fn new_with_credentials_and_a23(
+        paths: SupervisorPaths,
+        credential_proxy: CredentialProxy,
+        a23_evidence: super::a23_native_evidence::A23NativeEvidenceState,
+    ) -> Self {
+        let mut state = Self::new_with_credentials(paths, credential_proxy);
+        state.a23_evidence = Some(a23_evidence);
+        state
     }
 
     pub(crate) fn initialise_event_output(&self, app: AppHandle) -> Result<(), String> {
@@ -60,6 +83,11 @@ impl BridgeState {
     }
 
     pub(crate) fn enqueue_event(&self, generation: u64, envelope: &Envelope) -> Result<(), String> {
+        #[cfg(feature = "a23-credential-test")]
+        self.a23_evidence
+            .as_ref()
+            .ok_or_else(|| "a23-native-evidence-unavailable".to_string())?
+            .record_rust_event(envelope)?;
         self.event_output.enqueue(generation, envelope)
     }
 
@@ -68,6 +96,11 @@ impl BridgeState {
         generation: u64,
         envelope: &Envelope,
     ) -> Result<EventReceipt, String> {
+        #[cfg(feature = "a23-credential-test")]
+        self.a23_evidence
+            .as_ref()
+            .ok_or_else(|| "a23-native-evidence-unavailable".to_string())?
+            .record_rust_event(envelope)?;
         self.event_output.enqueue_ack_with_receipt(
             generation,
             envelope,
@@ -282,12 +315,34 @@ fn packaged_readiness_line(status: &SidecarStatus) -> Option<&'static str> {
 }
 
 #[tauri::command]
-pub fn sidecar_start(state: State<'_, BridgeState>) -> Result<SidecarStatus, String> {
-    let status = bridge_start_transport(state.inner())?;
+pub fn sidecar_start(
+    _app: AppHandle,
+    state: State<'_, BridgeState>,
+) -> Result<SidecarStatus, String> {
+    let result = bridge_start_transport(state.inner());
+    #[cfg(feature = "a23-credential-test")]
+    record_a23_command_result(&_app, "sidecar_start", &result)?;
+    let status = result?;
     if let Some(line) = packaged_readiness_line(&status) {
         eprintln!("{line}");
     }
     Ok(status)
+}
+
+#[cfg(feature = "a23-credential-test")]
+fn record_a23_command_result<T: serde::Serialize>(
+    app: &AppHandle,
+    command: &str,
+    result: &Result<T, String>,
+) -> Result<(), String> {
+    use tauri::Manager;
+    let state = app
+        .try_state::<super::a23_native_evidence::A23NativeEvidenceState>()
+        .ok_or_else(|| "a23-native-evidence-unavailable".to_string())?;
+    match result {
+        Ok(value) => state.record_invoke_result(command, value),
+        Err(_) => state.record_invoke_error(command, "command-failed"),
+    }
 }
 
 pub fn bridge_status_transport(state: &BridgeState) -> Result<SidecarStatus, String> {
