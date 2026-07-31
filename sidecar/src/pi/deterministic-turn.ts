@@ -1,11 +1,12 @@
 import { createHash } from 'node:crypto';
+import { setTimeout as sleep } from 'node:timers/promises';
 import {
   publicFauxAssistantMessage,
   publicFauxProvider,
   type PublicAiProvider,
   type PublicAssistantMessage,
 } from './ai-public-sdk.js';
-import type { DeterministicTurnEvidence } from './session-spike.js';
+import type { CredentialAccessEvidence, DeterministicTurnEvidence } from './session-spike.js';
 import type {
   PublicAgentSession,
   PublicAgentSessionEvent,
@@ -15,7 +16,7 @@ import type {
 type Options = Readonly<{
   session: PublicAgentSession;
   modelRuntime: PublicModelRuntimeInstance;
-  credentialWrites(): number;
+  credentialAccess(): CredentialAccessEvidence;
   approvalHostCalls(): number;
 }>;
 
@@ -53,13 +54,18 @@ export async function runFixedDeterministicTurn(options: Options): Promise<Deter
   let textDeltas = 0;
   let abortedTerminals = 0;
   let completeTerminals = 0;
+  let abortRequested = false;
   let terminalSeen = false;
+  let postAbortRequestUpdates = 0;
   let postTerminalEvents = 0;
   let partial = '';
   let resolveFirstDelta: (() => void) | undefined;
   const firstDelta = new Promise<void>((resolveFirst) => { resolveFirstDelta = resolveFirst; });
   const unsubscribe = options.session.subscribe((event: PublicAgentSessionEvent) => {
-    if (terminalSeen && event.type === 'message_update') postTerminalEvents += 1;
+    if (event.type === 'message_update') {
+      if (abortRequested) postAbortRequestUpdates += 1;
+      if (terminalSeen) postTerminalEvents += 1;
+    }
     if (event.type === 'message_start' && event.message.role === 'assistant') messageStarts += 1;
     if (event.type === 'message_update' && event.assistantMessageEvent.type === 'text_delta') {
       textDeltas += 1;
@@ -80,34 +86,44 @@ export async function runFixedDeterministicTurn(options: Options): Promise<Deter
   });
   await Promise.race([firstDelta, readinessTimeout]);
   const cancellationStart = performance.now();
+  abortRequested = true;
   await options.session.abort();
   await prompt;
   const cancellationLatencyMilliseconds = Math.ceil(performance.now() - cancellationStart);
+  // Keep the real SDK subscription active for a bounded idle window so a late
+  // update cannot be hidden by immediate unsubscription.
+  await sleep(50);
   unsubscribe();
-  await Promise.resolve();
 
   const finalAssistant = [...options.session.messages].reverse().find(
     (message): message is PublicAssistantMessage => message.role === 'assistant',
   );
   const partialBytes = Buffer.byteLength(partial, 'utf8');
-  if (providerCalls !== 1 || !providerAbortObserved || messageStarts !== 1 || textDeltas < 1 || textDeltas > 32
-    || abortedTerminals !== 1 || completeTerminals !== 0 || postTerminalEvents !== 0
+  const credentialAccess = options.credentialAccess();
+  if (providerCalls !== 1 || !providerAbortObserved || messageStarts !== 1 || textDeltas !== 1
+    || abortedTerminals !== 1 || completeTerminals !== 0 || postAbortRequestUpdates !== 0 || postTerminalEvents !== 0
     || finalAssistant?.stopReason !== 'aborted' || partial.includes(forbidden)
-    || partialBytes < 1 || partialBytes > 1_024 || cancellationLatencyMilliseconds > 1_000
-    || options.credentialWrites() !== 0 || options.approvalHostCalls() !== 0) {
+    || partialBytes !== 4 || cancellationLatencyMilliseconds < 0 || cancellationLatencyMilliseconds > 1_000
+    || credentialAccess.reads !== 1_400 || credentialAccess.lists !== 8
+    || credentialAccess.modifies !== 0 || credentialAccess.deletes !== 0
+    || credentialAccess.providerIds !== 39 || credentialAccess.unexpectedProviderIds !== 0
+    || options.approvalHostCalls() !== 0) {
     throw new Error('deterministic-turn-rejected');
   }
   return Object.freeze({
     providerCalls: 1 as const,
     providerAbortObserved: true as const,
     messageStarts: 1 as const,
-    textDeltas,
+    textDeltas: 1 as const,
     abortedTerminals: 1 as const,
     completeTerminals: 0 as const,
+    postAbortRequestUpdates: 0 as const,
     postTerminalEvents: 0 as const,
     forbiddenFinalChunkAbsent: true as const,
-    partialBytes,
+    partialBytes: 4 as const,
     partialSha256: createHash('sha256').update(partial, 'utf8').digest('hex'),
     cancellationLatencyMilliseconds,
+    credentialAccess,
+    approvalHostCalls: 0 as const,
   });
 }
