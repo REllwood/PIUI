@@ -1,7 +1,22 @@
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { CredentialProbe } from './architecture-gate/CredentialProbe';
+import {
+  A27_LIFECYCLE_ROUTE,
+  A27_LIFECYCLE_TEST_ACTIVE,
+  LifecycleProbe,
+} from './architecture-gate/LifecycleProbe';
+import { MarkdownProbe } from './architecture-gate/MarkdownProbe';
 import { StreamProbeRoute } from './architecture-gate/StreamProbe';
+import {
+  A26_MARKDOWN_ROUTE,
+  A26_MARKDOWN_TEST_ACTIVE,
+} from './architecture-gate/a26MarkdownPrelude';
+import {
+  A28_ACCESSIBILITY_ROUTE,
+  A28_ACCESSIBILITY_TEST_ACTIVE,
+  AccessibilityProbe,
+} from './architecture-gate/AccessibilityProbe';
 import { SafeMarkdownSpikeRoute } from './security/SafeMarkdownSpike';
 
 type HostStatus = {
@@ -24,6 +39,11 @@ export function App() {
   if (spike === 'credential') return <CredentialProbe />;
   if (spike === 'stream') return <StreamProbeRoute />;
   if (spike === 'markdown') return <SafeMarkdownSpikeRoute />;
+  if (A26_MARKDOWN_TEST_ACTIVE && spike === A26_MARKDOWN_ROUTE) return <MarkdownProbe />;
+  if (A27_LIFECYCLE_TEST_ACTIVE && spike === A27_LIFECYCLE_ROUTE) return <LifecycleProbe />;
+  if (A28_ACCESSIBILITY_TEST_ACTIVE && spike === A28_ACCESSIBILITY_ROUTE) {
+    return <AccessibilityProbe />;
+  }
   return <ArchitectureGate />;
 }
 

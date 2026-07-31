@@ -1,6 +1,7 @@
 import {
   fauxAssistantMessage,
   fauxProvider,
+  fauxToolCall,
   type AssistantMessage,
   type Provider,
   type SimpleStreamOptions,
@@ -10,6 +11,7 @@ import {
 // package root; production code must never reach into package internals.
 export const publicFauxAssistantMessage = fauxAssistantMessage;
 export const publicFauxProvider = fauxProvider;
+export const publicFauxToolCall = fauxToolCall;
 export type PublicAssistantMessage = AssistantMessage;
 export type PublicAiProvider = Provider;
 export type PublicSimpleStreamOptions = SimpleStreamOptions;

@@ -233,18 +233,30 @@ export type SessionSpikeObservedEvidence = Readonly<{
   approvalHostCalls: number;
 }>;
 
+export type CredentialAccessEvidence = Readonly<{
+  reads: number;
+  lists: number;
+  modifies: number;
+  deletes: number;
+  providerIds: number;
+  unexpectedProviderIds: number;
+}>;
+
 export type DeterministicTurnEvidence = Readonly<{
   providerCalls: 1;
   providerAbortObserved: true;
   messageStarts: 1;
-  textDeltas: number;
+  textDeltas: 1;
   abortedTerminals: 1;
   completeTerminals: 0;
+  postAbortRequestUpdates: 0;
   postTerminalEvents: 0;
   forbiddenFinalChunkAbsent: true;
-  partialBytes: number;
+  partialBytes: 4;
   partialSha256: string;
   cancellationLatencyMilliseconds: number;
+  credentialAccess: CredentialAccessEvidence;
+  approvalHostCalls: 0;
 }>;
 
 export type SessionSpikeLease = SessionSpikeProof & Readonly<{
@@ -698,23 +710,66 @@ function assertZeroToolSession(session: PublicAgentSession): void {
   }
 }
 
-function makeIsolatedCredentialStore(counters: { writes: number }): PublicCredentialStore {
+const EXPECTED_EMPTY_CREDENTIAL_PROVIDERS = new Set([
+  'a22-offline-provider', 'amazon-bedrock', 'ant-ling', 'anthropic', 'azure-openai-responses', 'cerebras',
+  'cloudflare-ai-gateway', 'cloudflare-workers-ai', 'deepseek', 'fireworks', 'github-copilot',
+  'google', 'google-vertex', 'groq', 'huggingface', 'kimi-coding', 'minimax', 'minimax-cn',
+  'mistral', 'moonshotai', 'moonshotai-cn', 'nvidia', 'openai', 'openai-codex', 'opencode',
+  'opencode-go', 'openrouter', 'qwen-token-plan', 'qwen-token-plan-cn', 'radius', 'together',
+  'vercel-ai-gateway', 'xai', 'xiaomi', 'xiaomi-token-plan-ams', 'xiaomi-token-plan-cn',
+  'xiaomi-token-plan-sgp', 'zai', 'zai-coding-cn',
+]);
+
+type CredentialCounters = {
+  reads: number;
+  lists: number;
+  modifies: number;
+  deletes: number;
+  providerIds: Set<string>;
+  unexpectedProviderIds: Set<string>;
+};
+
+function credentialAccessEvidence(counters: CredentialCounters): CredentialAccessEvidence {
   return Object.freeze({
-    async read(_providerId: string): Promise<PublicCredential | undefined> {
+    reads: counters.reads,
+    lists: counters.lists,
+    modifies: counters.modifies,
+    deletes: counters.deletes,
+    providerIds: counters.providerIds.size,
+    unexpectedProviderIds: counters.unexpectedProviderIds.size,
+  });
+}
+
+function observeCredentialProvider(counters: CredentialCounters, providerId: string): void {
+  if (!EXPECTED_EMPTY_CREDENTIAL_PROVIDERS.has(providerId)) {
+    counters.unexpectedProviderIds.add(providerId);
+    reject('session-operation-rejected');
+  }
+  counters.providerIds.add(providerId);
+}
+
+function makeIsolatedCredentialStore(counters: CredentialCounters): PublicCredentialStore {
+  return Object.freeze({
+    async read(providerId: string): Promise<PublicCredential | undefined> {
+      counters.reads += 1;
+      observeCredentialProvider(counters, providerId);
       return undefined;
     },
     async list(): Promise<readonly PublicCredentialInfo[]> {
+      counters.lists += 1;
       return [];
     },
     async modify(
-      _providerId: string,
+      providerId: string,
       _fn: (current: PublicCredential | undefined) => Promise<PublicCredential | undefined>,
     ): Promise<PublicCredential | undefined> {
-      counters.writes += 1;
+      counters.modifies += 1;
+      observeCredentialProvider(counters, providerId);
       return undefined;
     },
-    async delete(_providerId: string): Promise<void> {
-      counters.writes += 1;
+    async delete(providerId: string): Promise<void> {
+      counters.deletes += 1;
+      observeCredentialProvider(counters, providerId);
     },
   });
 }
@@ -789,7 +844,14 @@ export async function proveSessionResumeAndFork(
       SESSION_SPIKE_LIMITS.maxBranchEntries - 1,
     );
 
-    const credentialCounters = { writes: 0 };
+    const credentialCounters: CredentialCounters = {
+      reads: 0,
+      lists: 0,
+      modifies: 0,
+      deletes: 0,
+      providerIds: new Set(),
+      unexpectedProviderIds: new Set(),
+    };
     const modelRuntime = await PublicModelRuntime.create({
       credentials: makeIsolatedCredentialStore(credentialCounters),
       modelsPath: null,
@@ -1078,7 +1140,9 @@ export async function proveSessionResumeAndFork(
         || record.activeToolNames.length !== 0
         || !record.boundExactFactorySession
         || record.modelAvailable)
-      || credentialCounters.writes !== 0
+      || credentialCounters.modifies !== 0
+      || credentialCounters.deletes !== 0
+      || credentialCounters.unexpectedProviderIds.size !== 0
       || approvalHostCalls !== 0) {
       reject('session-recovery-required');
     }
@@ -1146,7 +1210,7 @@ export async function proveSessionResumeAndFork(
         evidence = await runFixedDeterministicTurn({
           session: forkSession,
           modelRuntime,
-          credentialWrites: () => credentialCounters.writes,
+          credentialAccess: () => credentialAccessEvidence(credentialCounters),
           approvalHostCalls: () => approvalHostCalls,
         });
       } catch {
@@ -1233,7 +1297,7 @@ export async function proveSessionResumeAndFork(
           )?.session,
           modelAvailable: record.modelAvailable,
         }))),
-        isolatedCredentialWrites: credentialCounters.writes,
+        isolatedCredentialWrites: credentialCounters.modifies + credentialCounters.deletes,
         approvalHostCalls,
       });
     };
