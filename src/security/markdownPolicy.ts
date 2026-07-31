@@ -11,6 +11,7 @@ export const MAX_PARSER_DEPTH = 32;
 export const MAX_DIRECT_CHILDREN = 2_000;
 export const MAX_PLAIN_PREVIEW_UTF16 = 65_536;
 export const MAX_ASSET_BYTES = 10 * 1_048_576;
+export const MAX_ASSET_TTL_MS = 5 * 60_000;
 export const MAX_ASSET_DIMENSION = 4_096;
 export const MAX_ASSET_PIXELS = 16_777_216;
 export const MAX_ASSET_ALT_UTF16 = 512;
@@ -21,6 +22,8 @@ export const MAX_RAW_AUDIT_SNIPPET_UTF16 = 256;
 export const MAX_RAW_AUDIT_TOTAL_UTF16 = 8_192;
 
 const OPAQUE_ASSET_PATTERN = /^piui-asset-[0-9a-f]{32}$/;
+const OPAQUE_RASTER_PROTOCOL = 'piui-raster:';
+const OPAQUE_RASTER_HOST = 'localhost';
 const SAFE_EXTERNAL_HOST_PATTERN = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
 const FORBIDDEN_URI_CHARACTERS = /[\u0000-\u0020\u007f-\u009f\u00a0\u1680\u2000-\u200f\u2028-\u202f\u205f-\u206f\u3000\ufeff]/u;
 const GLOBAL_UNSAFE_FORMAT_CHARACTERS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff]/u;
@@ -536,12 +539,13 @@ export function validateOpaqueAssetDescriptor(
     !isOpaqueAssetCapability(capability) ||
     !descriptor ||
     !isRasterMime(descriptor.mime) ||
-    !Number.isFinite(now) ||
+    !Number.isSafeInteger(now) ||
     !Number.isSafeInteger(descriptor.byteLength) ||
     descriptor.byteLength < 1 ||
     descriptor.byteLength > MAX_ASSET_BYTES ||
-    !Number.isFinite(descriptor.expiresAt) ||
-    descriptor.expiresAt <= now
+    !Number.isSafeInteger(descriptor.expiresAt) ||
+    descriptor.expiresAt <= now ||
+    descriptor.expiresAt - now > MAX_ASSET_TTL_MS
   ) {
     return null;
   }
@@ -554,18 +558,30 @@ export function validateOpaqueAssetDescriptor(
   } catch {
     return null;
   }
-  if (
-    !['http:', 'https:'].includes(expectedOrigin.protocol) ||
-    expectedOrigin.origin === 'null' ||
-    applicationOrigin !== expectedOrigin.origin
-  ) {
+  if (!['http:', 'https:', 'tauri:'].includes(expectedOrigin.protocol)) {
     return null;
   }
 
   const token = capability.slice('piui-asset-'.length);
   const expectedPath = `/__piui_markdown_asset__/${token}.${assetExtension(descriptor.mime)}`;
+  const nativeRasterProtocol = applicationOrigin === 'tauri://localhost'
+    && expectedOrigin.protocol === 'tauri:'
+    && expectedOrigin.hostname === 'localhost'
+    && expectedOrigin.port === ''
+    && expectedOrigin.pathname === ''
+    && expectedOrigin.search === ''
+    && expectedOrigin.hash === ''
+    && expectedOrigin.username === ''
+    && expectedOrigin.password === ''
+    && resolved.protocol === OPAQUE_RASTER_PROTOCOL
+    && resolved.hostname === OPAQUE_RASTER_HOST
+    && resolved.port === '';
+  const browserProofProtocol = ['http:', 'https:'].includes(expectedOrigin.protocol)
+    && expectedOrigin.origin !== 'null'
+    && applicationOrigin === expectedOrigin.origin
+    && resolved.origin === expectedOrigin.origin;
   if (
-    resolved.origin !== expectedOrigin.origin ||
+    (!nativeRasterProtocol && !browserProofProtocol) ||
     resolved.pathname !== expectedPath ||
     resolved.search ||
     resolved.hash ||

@@ -356,12 +356,20 @@ function SafeCode({ children, className }: { children?: ReactNode; className?: s
     reason = `Plain code: ${MAX_HIGHLIGHT_LINES.toLocaleString('en-AU')} line highlight limit reached.`;
   } else if (budgetReason) reason = budgetReason;
   else if (failed) reason = 'Plain code: syntax highlighting was unavailable.';
+  const highlighting = eligible && !highlighted && !budgetReason && !failed;
 
   return (
     <code
       data-highlight-status={highlighted ? 'tokens' : 'plain'}
       data-language={language ?? 'plain'}
+      aria-busy={highlighting}
     >
+      {highlighting ? (
+        <span className="markdown__code-loading" role="status">
+          <span className="markdown-probe__spinner" aria-hidden="true" />
+          Preparing syntax highlighting…
+        </span>
+      ) : null}
       {reason ? <span className="markdown__code-reason">{reason}</span> : null}
       {highlighted ? highlightedLines(highlighted) : text}
     </code>

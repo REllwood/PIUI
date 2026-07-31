@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   MAX_ACTIVE_DESTINATION_SCALARS,
   MAX_ASSET_BYTES,
+  MAX_ASSET_TTL_MS,
   MAX_CODE_BLOCKS,
   MAX_CODE_BLOCK_UTF16,
   MAX_CODE_TOTAL_UTF16,
@@ -39,6 +40,10 @@ const validAsset: OpaqueAssetDescriptor = {
   mime: 'image/png',
   byteLength: 68,
   expiresAt: 2_000,
+};
+const nativeAsset: OpaqueAssetDescriptor = {
+  ...validAsset,
+  url: 'piui-raster://localhost/__piui_markdown_asset__/0123456789abcdef0123456789abcdef.png',
 };
 
 describe('external HTTPS policy', () => {
@@ -159,6 +164,33 @@ describe('opaque local asset policy', () => {
     ).toBeNull();
   });
 
+  it('accepts the exact native custom-raster origin without broadening arbitrary schemes', () => {
+    expect(
+      validateOpaqueAssetDescriptor(validCapability, nativeAsset, 1_000, 'tauri://localhost'),
+    ).toEqual({
+      url: nativeAsset.url,
+      mime: 'image/png',
+      byteLength: 68,
+    });
+    expect(
+      validateOpaqueAssetDescriptor(validCapability, nativeAsset, 1_000, validOrigin),
+    ).toBeNull();
+    expect(
+      validateOpaqueAssetDescriptor(validCapability, nativeAsset, 1_000, 'tauri://localhost/path'),
+    ).toBeNull();
+    for (const url of [
+      'piui-raster://secondary/__piui_markdown_asset__/0123456789abcdef0123456789abcdef.png',
+      'piui-raster://localhost:443/__piui_markdown_asset__/0123456789abcdef0123456789abcdef.png',
+      'piui-raster://localhost/__piui_markdown_asset__/0123456789abcdef0123456789abcdef.png?replay=1',
+      'piui-asset://localhost/__piui_markdown_asset__/0123456789abcdef0123456789abcdef.png',
+      'file:///__piui_markdown_asset__/0123456789abcdef0123456789abcdef.png',
+    ]) {
+      expect(
+        validateOpaqueAssetDescriptor(validCapability, { ...nativeAsset, url }, 1_000, 'tauri://localhost'),
+      ).toBeNull();
+    }
+  });
+
   it('fails closed for runtime-forged MIME, time, origin and path data', () => {
     const forgedMime = { ...validAsset, mime: 'image/svg+xml' } as unknown as OpaqueAssetDescriptor;
     for (const [descriptor, now, origin] of [
@@ -167,6 +199,9 @@ describe('opaque local asset policy', () => {
       [{ ...validAsset, url: `${validOrigin}/synthetic/private/image.png` }, 1_000, validOrigin],
       [{ ...validAsset, url: `${validAsset.url}?substituted=1` }, 1_000, validOrigin],
       [validAsset, Number.NaN, validOrigin],
+      [validAsset, 1_000.5, validOrigin],
+      [{ ...validAsset, expiresAt: 1_000.5 }, 1_000, validOrigin],
+      [{ ...validAsset, expiresAt: 1_000 + MAX_ASSET_TTL_MS + 1 }, 1_000, validOrigin],
       [validAsset, 1_000, `${validOrigin}/not-an-origin`],
     ] as const) {
       expect(validateOpaqueAssetDescriptor(validCapability, descriptor, now, origin)).toBeNull();
