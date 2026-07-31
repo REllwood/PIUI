@@ -61,8 +61,6 @@ describe('Markdown static containment', () => {
       "script-src-attr 'none'",
       "style-src 'self'",
       "style-src-attr 'none'",
-      "img-src 'self'",
-      "font-src 'self'",
     ];
     const tail = [
       "object-src 'none'",
@@ -75,11 +73,29 @@ describe('Markdown static containment', () => {
       "form-action 'none'",
       "frame-ancestors 'none'",
     ];
-    const tauriCsp = [...common, 'connect-src ipc: http://ipc.localhost', ...tail].join('; ');
-    const viteCsp = [...common, "connect-src 'none'", ...tail].join('; ');
+    const tauriCsp = [
+      ...common,
+      "img-src 'self' piui-raster:",
+      "font-src 'self'",
+      'connect-src ipc: http://ipc.localhost',
+      ...tail,
+    ].join('; ');
+    const viteCsp = [
+      ...common,
+      "img-src 'self'",
+      "font-src 'self'",
+      "connect-src 'none'",
+      ...tail,
+    ].join('; ');
     expect(config.app.security.csp).toBe(tauriCsp);
     expect(source(viteConfigPath)).toContain(`export const MARKDOWN_SPIKE_CSP = [`);
-    for (const directive of [...common, "connect-src 'none'", ...tail]) {
+    for (const directive of [
+      ...common,
+      "img-src 'self'",
+      "font-src 'self'",
+      "connect-src 'none'",
+      ...tail,
+    ]) {
       expect(source(viteConfigPath)).toContain(JSON.stringify(directive));
     }
     for (const broadening of [
