@@ -1,3 +1,5 @@
+#![cfg(debug_assertions)]
+
 use piui_lib::commands::bridge::{
     BridgeState, bridge_abandon_snapshot_transport_for_test, bridge_restart_transport,
     bridge_send_transport, bridge_stop_transport,

@@ -1391,6 +1391,7 @@ impl ApprovalRegistry {
         let Ok(mut inner) = self.inner.lock() else {
             return;
         };
+        let mut changed = false;
         let ids: Vec<String> = inner
             .records
             .values()
@@ -1403,6 +1404,7 @@ impl ApprovalRegistry {
                     let _ = transition(record, ApprovalState::Submitting);
                 }
                 if record.phase == ApprovalState::Submitting {
+                    changed = true;
                     record.resolution = Some(Resolution {
                         choice: ApprovalChoice::Deny,
                         source: ResolutionSource::System,
@@ -1420,9 +1422,12 @@ impl ApprovalRegistry {
         {
             if !matches!(group.phase, GroupPhase::Approved | GroupPhase::Cancelled) {
                 group.phase = GroupPhase::Cancelled;
+                changed = true;
             }
         }
-        let _ = bump_change(&mut inner);
+        if changed {
+            let _ = bump_change(&mut inner);
+        }
         self.prune_locked(&mut inner);
     }
 
@@ -1740,6 +1745,7 @@ fn view(record: &Record, inner: &Inner, now: Instant) -> ApprovalView {
                 })
             });
             (group.phase == GroupPhase::Eligible
+                && group.members.len() >= 2
                 && all_ready
                 && group.members.iter().all(Option::is_some))
             .then(|| ApprovalGroupActionView {
@@ -2272,6 +2278,40 @@ mod tests {
     }
 
     #[test]
+    fn generation_invalidation_change_sequence_is_idempotent() {
+        let (registry, _) = registry();
+        registry.invalidate_generation(1);
+        let empty = registry.snapshot().unwrap();
+        assert_eq!(empty.change_sequence, 0);
+        assert!(empty.records.is_empty());
+
+        let registered = registry.register(request(1, "read"), binding()).unwrap();
+        let before = registry.snapshot().unwrap();
+        registry.invalidate_generation(1);
+        let cancelled = registry.snapshot().unwrap();
+        assert_eq!(cancelled.change_sequence, before.change_sequence + 1);
+        assert_eq!(cancelled.records.len(), 1);
+        assert_eq!(cancelled.records[0].approval_id, registered.approval_id);
+        assert_eq!(cancelled.records[0].state, ApprovalState::Cancelled);
+        assert_eq!(
+            cancelled.records[0].terminal_reason,
+            Some(ApprovalTerminalReason::GenerationLost)
+        );
+
+        registry.invalidate_generation(1);
+        registry.invalidate_generation(2);
+        let repeated = registry.snapshot().unwrap();
+        assert_eq!(repeated.change_sequence, cancelled.change_sequence);
+        assert_eq!(repeated.records.len(), 1);
+        assert_eq!(repeated.records[0].approval_id, registered.approval_id);
+        assert_eq!(repeated.records[0].state, ApprovalState::Cancelled);
+        assert_eq!(
+            repeated.records[0].terminal_reason,
+            Some(ApprovalTerminalReason::GenerationLost)
+        );
+    }
+
+    #[test]
     fn response_token_exhaustion_leaves_exposed_expiry_transaction_unchanged() {
         let clock = Arc::new(ManualClock {
             base: Instant::now(),
@@ -2567,6 +2607,19 @@ mod tests {
             ApprovalState::Cancelled
         );
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn one_member_cohort_never_exposes_a_group_action() {
+        let (registry, _) = registry();
+        let tools = ["read"];
+        let request = cohort_request(1, 0, &tools);
+        registry.register(request.clone(), binding()).unwrap();
+        mark_ready(&registry, &request, 1);
+
+        let pending = registry.pending().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert!(pending[0].group_action.is_none());
     }
 
     #[test]

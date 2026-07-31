@@ -78,6 +78,7 @@ pub struct KeychainRepository {
     service: String,
     labels: String,
     index: String,
+    test_only: bool,
 }
 
 trait KeychainEntry {
@@ -122,6 +123,7 @@ impl KeychainRepository {
             service: SERVICE_NAMESPACE.into(),
             labels: LABEL_NAMESPACE.into(),
             index: INDEX_NAMESPACE.into(),
+            test_only: false,
         }
     }
 
@@ -145,6 +147,7 @@ impl KeychainRepository {
             service: format!("{SERVICE_NAMESPACE}.test.{namespace}"),
             labels: format!("{LABEL_NAMESPACE}.test.{namespace}"),
             index: format!("{INDEX_NAMESPACE}.test.{namespace}"),
+            test_only: true,
         })
     }
 
@@ -325,12 +328,60 @@ impl KeychainRepository {
             .map_err(|_| CredentialError::unavailable())
     }
 
-    #[cfg(test)]
     pub(crate) fn delete_index(&self) -> Result<(), CredentialError> {
         match self.index_entry()?.delete_credential() {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
             Err(_) => Err(CredentialError::unavailable()),
         }
+    }
+
+    /// Removes every reference journalled by an isolated `.test.` repository
+    /// and then removes its provider index. Production repositories can never
+    /// enter this release-capable cleanup path.
+    pub fn cleanup_test_repository(&self) -> Result<(), CredentialError> {
+        if !self.test_only {
+            return Err(CredentialError::invalid_input());
+        }
+        let Some(index) = self.read_index()? else {
+            return Ok(());
+        };
+        let document: serde_json::Value =
+            serde_json::from_slice(index.expose()).map_err(|_| CredentialError::invalid_input())?;
+        let object = document
+            .as_object()
+            .ok_or_else(CredentialError::invalid_input)?;
+        if object.get("version").and_then(serde_json::Value::as_u64) != Some(1) {
+            return Err(CredentialError::invalid_input());
+        }
+        let mut references = std::collections::BTreeSet::new();
+        for key in ["entries", "pending"] {
+            let values = object
+                .get(key)
+                .and_then(serde_json::Value::as_array)
+                .ok_or_else(CredentialError::invalid_input)?;
+            if values.len() > 256 {
+                return Err(CredentialError::invalid_input());
+            }
+            for value in values {
+                let reference = value
+                    .get("credentialId")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(CredentialError::invalid_input)?;
+                validate_reference(reference)?;
+                references.insert(reference.to_owned());
+            }
+        }
+        for reference in references {
+            self.reconcile_delete(&reference)?;
+        }
+        self.delete_index()
+    }
+
+    pub fn test_repository_index_is_absent(&self) -> Result<bool, CredentialError> {
+        if !self.test_only {
+            return Err(CredentialError::invalid_input());
+        }
+        self.read_index().map(|index| index.is_none())
     }
 
     pub fn metadata(&self, credential_id: &str) -> Result<CredentialMetadata, CredentialError> {
@@ -628,6 +679,25 @@ mod tests {
         assert_ne!(isolated.service, production.service);
         assert_ne!(isolated.labels, production.labels);
         assert_ne!(isolated.index, production.index);
+    }
+
+    #[test]
+    fn release_cleanup_helper_cannot_operate_on_production_repository() {
+        let production = KeychainRepository::new();
+        assert_eq!(
+            production
+                .cleanup_test_repository()
+                .expect_err("production cleanup must be refused")
+                .code(),
+            CredentialError::invalid_input().code()
+        );
+        assert_eq!(
+            production
+                .test_repository_index_is_absent()
+                .expect_err("production inspection must be refused")
+                .code(),
+            CredentialError::invalid_input().code()
+        );
     }
 
     #[test]

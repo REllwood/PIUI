@@ -604,6 +604,14 @@ mod tests {
         );
         revoke_workspace(&state, &summary.workspace_id, 1).unwrap();
         bridge_start_transport(&state).unwrap();
+        assert!(load_trusted_workspace(&state, &summary.workspace_id, 2).is_err());
+        assert!(
+            state
+                .workspace_registry()
+                .snapshot_is_absent(&summary.workspace_id)
+                .unwrap()
+        );
+        assert!(!root.join("import-marker.log").exists());
         authorise_workspace(&state, &summary.workspace_id, 2).unwrap();
         load_trusted_workspace(&state, &summary.workspace_id, 3).unwrap();
         assert_eq!(

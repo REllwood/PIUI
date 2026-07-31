@@ -194,6 +194,16 @@ fn dispatch_loop(
                 return;
             }
         };
+        #[cfg(feature = "a23-credential-test")]
+        if writer
+            .lock()
+            .map_err(|_| "A.23 raw capture unavailable".to_string())
+            .and_then(|writer| writer.capture_a23_inbound_frame(&line))
+            .is_err()
+        {
+            fatal("A.23 raw capture unavailable", &control, &public_sender);
+            return;
+        }
         let envelope = match decoder.decode(&line) {
             Ok(envelope) => envelope,
             Err(_) => {

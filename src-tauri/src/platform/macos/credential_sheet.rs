@@ -9,10 +9,11 @@ use objc2::runtime::{NSObjectProtocol, ProtocolObject};
 use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSAccessibility, NSAlert, NSAlertFirstButtonReturn, NSButton, NSControlStateValueOff,
-    NSControlStateValueOn, NSControlTextEditingDelegate, NSModalResponse, NSPasteboard,
-    NSPasteboardTypeString, NSSecureTextField, NSTextField, NSTextFieldDelegate, NSView, NSWindow,
-    NSWindowWillCloseNotification,
+    NSControlStateValueOn, NSControlTextEditingDelegate, NSModalResponse, NSSecureTextField,
+    NSTextField, NSTextFieldDelegate, NSView, NSWindow, NSWindowWillCloseNotification,
 };
+#[cfg(not(feature = "a23-credential-test"))]
+use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString};
 use objc2_foundation::{
     MainThreadMarker, NSNotification, NSNotificationCenter, NSObject, NSPoint, NSRect, NSSize,
     NSString, NSUTF8StringEncoding,
@@ -31,7 +32,10 @@ type CompletionSender = tauri::async_runtime::Sender<CredentialSheetOutcome>;
 struct CredentialSheetControllerIvars {
     secure_field: Retained<NSSecureTextField>,
     reveal_field: Retained<NSTextField>,
+    #[cfg(not(feature = "a23-credential-test"))]
     paste_button: Retained<NSButton>,
+    #[cfg(feature = "a23-credential-test")]
+    insert_test_button: Retained<NSButton>,
     reveal_button: Retained<NSButton>,
     validation_label: Retained<NSTextField>,
     save_button: Retained<NSButton>,
@@ -39,6 +43,8 @@ struct CredentialSheetControllerIvars {
     completion_sender: RefCell<Option<CompletionSender>>,
     completed: Cell<bool>,
     observing_parent_close: Cell<bool>,
+    #[cfg(feature = "a23-credential-test")]
+    test_secret: RefCell<Option<SecretMaterial>>,
 }
 
 define_class!(
@@ -66,7 +72,9 @@ define_class!(
     unsafe impl NSTextFieldDelegate for CredentialSheetController {}
 
     impl CredentialSheetController {
-        // SAFETY: The selector is installed only on the native Paste button.
+        #[cfg(not(feature = "a23-credential-test"))]
+        // SAFETY: The selector is installed only on the normal native Paste
+        // button. The isolated A.23 twin does not compile this route.
         #[unsafe(method(pasteAPIKey:))]
         fn paste_api_key(&self, _sender: &NSButton) {
             let pasteboard = NSPasteboard::generalPasteboard();
@@ -91,6 +99,30 @@ define_class!(
                 return;
             }
 
+            if self.ivars().revealing.get() {
+                self.ivars().reveal_field.setStringValue(&value);
+            } else {
+                self.ivars().secure_field.setStringValue(&value);
+            }
+            self.update_validation();
+        }
+
+        #[cfg(feature = "a23-credential-test")]
+        // SAFETY: This selector and button exist only in the isolated A.23
+        // feature build. The one-shot secret originated at inherited FD 6.
+        #[unsafe(method(insertA23TestValue:))]
+        fn insert_a23_test_value(&self, _sender: &NSButton) {
+            let Some(secret) = self.ivars().test_secret.borrow_mut().take() else {
+                self.clear_active_field();
+                self.update_validation();
+                return;
+            };
+            let Ok(value) = std::str::from_utf8(secret.expose()) else {
+                self.clear_active_field();
+                self.update_validation();
+                return;
+            };
+            let value = NSString::from_str(value);
             if self.ivars().revealing.get() {
                 self.ivars().reveal_field.setStringValue(&value);
             } else {
@@ -156,6 +188,7 @@ impl CredentialSheetController {
         save_button: Retained<NSButton>,
         cancel_button: &NSButton,
         completion_sender: CompletionSender,
+        #[cfg(feature = "a23-credential-test")] test_secret: SecretMaterial,
     ) -> (Retained<Self>, Retained<NSView>) {
         let field_frame = NSRect::new(
             NSPoint::new(0.0, 82.0),
@@ -193,8 +226,9 @@ impl CredentialSheetController {
             NSSize::new(ACCESSORY_WIDTH, 18.0),
         ));
 
-        // SAFETY: Targets and selectors are installed after the controller is
-        // initialised and retained for the lifetime of both buttons.
+        #[cfg(not(feature = "a23-credential-test"))]
+        // SAFETY: The target and selector are installed after the controller
+        // is initialised and retained for the lifetime of this normal button.
         let paste_button = unsafe {
             NSButton::buttonWithTitle_target_action(
                 &NSString::from_str("Paste API key"),
@@ -203,12 +237,35 @@ impl CredentialSheetController {
                 mtm,
             )
         };
+        #[cfg(not(feature = "a23-credential-test"))]
         paste_button.setFrame(NSRect::new(
             NSPoint::new(0.0, 0.0),
             NSSize::new(150.0, BUTTON_HEIGHT),
         ));
+        #[cfg(not(feature = "a23-credential-test"))]
         paste_button.setAccessibilityHelp(Some(&NSString::from_str(
             "Pastes text from the clipboard into the protected API key field.",
+        )));
+
+        #[cfg(feature = "a23-credential-test")]
+        // SAFETY: Targets and selectors are installed after the controller is
+        // initialised and retained for the lifetime of this feature-only button.
+        let insert_test_button = unsafe {
+            NSButton::buttonWithTitle_target_action(
+                &NSString::from_str("Insert test value"),
+                None,
+                None,
+                mtm,
+            )
+        };
+        #[cfg(feature = "a23-credential-test")]
+        insert_test_button.setFrame(NSRect::new(
+            NSPoint::new(0.0, 0.0),
+            NSSize::new(150.0, BUTTON_HEIGHT),
+        ));
+        #[cfg(feature = "a23-credential-test")]
+        insert_test_button.setAccessibilityHelp(Some(&NSString::from_str(
+            "Inserts the isolated architecture-test value into this protected field.",
         )));
 
         // A standard checkbox exposes the Show/Hide state to accessibility.
@@ -239,14 +296,20 @@ impl CredentialSheetController {
         accessory.addSubview(&secure_field);
         accessory.addSubview(&reveal_field);
         accessory.addSubview(&validation_label);
+        #[cfg(not(feature = "a23-credential-test"))]
         accessory.addSubview(&paste_button);
+        #[cfg(feature = "a23-credential-test")]
+        accessory.addSubview(&insert_test_button);
         accessory.addSubview(&reveal_button);
 
         save_button.setEnabled(false);
         let this = Self::alloc(mtm).set_ivars(CredentialSheetControllerIvars {
             secure_field,
             reveal_field,
+            #[cfg(not(feature = "a23-credential-test"))]
             paste_button,
+            #[cfg(feature = "a23-credential-test")]
+            insert_test_button,
             reveal_button,
             validation_label,
             save_button,
@@ -254,6 +317,8 @@ impl CredentialSheetController {
             completion_sender: RefCell::new(Some(completion_sender)),
             completed: Cell::new(false),
             observing_parent_close: Cell::new(false),
+            #[cfg(feature = "a23-credential-test")]
+            test_secret: RefCell::new(Some(test_secret)),
         });
         // SAFETY: NSObject's init signature is correct for this subclass.
         let this: Retained<Self> = unsafe { msg_send![super(this), init] };
@@ -262,10 +327,20 @@ impl CredentialSheetController {
         // text fields' delegate protocols, and the controller is retained by
         // the escaping sheet completion block.
         unsafe {
-            this.ivars().paste_button.setTarget(Some(&*this));
-            this.ivars()
-                .paste_button
-                .setAction(Some(sel!(pasteAPIKey:)));
+            #[cfg(not(feature = "a23-credential-test"))]
+            {
+                this.ivars().paste_button.setTarget(Some(&*this));
+                this.ivars()
+                    .paste_button
+                    .setAction(Some(sel!(pasteAPIKey:)));
+            }
+            #[cfg(feature = "a23-credential-test")]
+            {
+                this.ivars().insert_test_button.setTarget(Some(&*this));
+                this.ivars()
+                    .insert_test_button
+                    .setAction(Some(sel!(insertA23TestValue:)));
+            }
             this.ivars().reveal_button.setTarget(Some(&*this));
             this.ivars()
                 .reveal_button
@@ -275,15 +350,30 @@ impl CredentialSheetController {
             this.ivars().secure_field.setDelegate(Some(delegate));
             this.ivars().reveal_field.setDelegate(Some(delegate));
 
-            this.ivars()
-                .secure_field
-                .setNextKeyView(Some(&this.ivars().paste_button));
-            this.ivars()
-                .reveal_field
-                .setNextKeyView(Some(&this.ivars().paste_button));
-            this.ivars()
-                .paste_button
-                .setNextKeyView(Some(&this.ivars().reveal_button));
+            #[cfg(feature = "a23-credential-test")]
+            {
+                this.ivars()
+                    .secure_field
+                    .setNextKeyView(Some(&this.ivars().insert_test_button));
+                this.ivars()
+                    .reveal_field
+                    .setNextKeyView(Some(&this.ivars().insert_test_button));
+                this.ivars()
+                    .insert_test_button
+                    .setNextKeyView(Some(&this.ivars().reveal_button));
+            }
+            #[cfg(not(feature = "a23-credential-test"))]
+            {
+                this.ivars()
+                    .secure_field
+                    .setNextKeyView(Some(&this.ivars().paste_button));
+                this.ivars()
+                    .reveal_field
+                    .setNextKeyView(Some(&this.ivars().paste_button));
+                this.ivars()
+                    .paste_button
+                    .setNextKeyView(Some(&this.ivars().reveal_button));
+            }
             this.ivars()
                 .reveal_button
                 .setNextKeyView(Some(cancel_button));
@@ -478,6 +568,7 @@ mod tests {
 pub(crate) async fn present(
     window: WebviewWindow,
     provider_label: String,
+    #[cfg(feature = "a23-credential-test")] test_secret: SecretMaterial,
 ) -> Result<CredentialSheetDecision, NativeCredentialSheetError> {
     let (sender, mut receiver) = tauri::async_runtime::channel(1);
     window
@@ -505,8 +596,17 @@ pub(crate) async fn present(
             ));
             let save_button = alert.addButtonWithTitle(&NSString::from_str("Save"));
             let cancel_button = alert.addButtonWithTitle(&NSString::from_str("Cancel"));
+            #[cfg(not(feature = "a23-credential-test"))]
             let (controller, accessory) =
                 CredentialSheetController::new(mtm, save_button, &cancel_button, sender);
+            #[cfg(feature = "a23-credential-test")]
+            let (controller, accessory) = CredentialSheetController::new(
+                mtm,
+                save_button,
+                &cancel_button,
+                sender,
+                test_secret,
+            );
             alert.setAccessoryView(Some(&accessory));
             alert.layout();
             let sheet_window = alert.window();

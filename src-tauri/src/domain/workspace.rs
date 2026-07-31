@@ -880,8 +880,10 @@ impl WorkspaceRegistry {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn snapshot_marker_lines(&self, workspace_id: &str) -> Result<usize, String> {
+    pub(crate) fn snapshot_probe_observation(
+        &self,
+        workspace_id: &str,
+    ) -> Result<SnapshotProbeObservation, String> {
         let inner = self
             .inner
             .lock()
@@ -890,14 +892,47 @@ impl WorkspaceRegistry {
             .records
             .get(workspace_id)
             .ok_or_else(|| WORKSPACE_UNAVAILABLE.to_string())?;
-        let marker = record
+        let root = &record
             .snapshot
             .as_ref()
             .ok_or_else(|| WORKSPACE_UNAVAILABLE.to_string())?
-            .project_root
-            .join("import-marker.log");
-        let content = fs::read_to_string(marker).map_err(|_| WORKSPACE_UNAVAILABLE.to_string())?;
-        Ok(content.lines().count())
+            .project_root;
+        let marker = fs::read(root.join("import-marker.log"))
+            .map_err(|_| WORKSPACE_UNAVAILABLE.to_string())?;
+        if marker.len() > 64 {
+            return Err(WORKSPACE_CONTAINMENT.into());
+        }
+        Ok(SnapshotProbeObservation {
+            marker_bytes: marker.len(),
+            marker_lines: marker
+                .split(|byte| *byte == b'\n')
+                .count()
+                .saturating_sub(1),
+            exact_marker: marker == b"imported\n",
+            skill_canary_absent: path_is_absent(&root.join("skill-marker.log"))?,
+            package_canary_absent: path_is_absent(&root.join("package-marker.log"))?,
+            settings_canary_absent: path_is_absent(&root.join(".pi/settings.json"))?,
+            package_manifest_absent: path_is_absent(&root.join("package.json"))?,
+            ancestor_canary_absent: path_is_absent(&root.join("AGENTS.md"))?,
+        })
+    }
+
+    pub(crate) fn snapshot_is_absent(&self, workspace_id: &str) -> Result<bool, String> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| WORKSPACE_UNAVAILABLE.to_string())?;
+        inner
+            .records
+            .get(workspace_id)
+            .map(|record| record.snapshot.is_none())
+            .ok_or_else(|| WORKSPACE_UNAVAILABLE.to_string())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn snapshot_marker_lines(&self, workspace_id: &str) -> Result<usize, String> {
+        self.snapshot_probe_observation(workspace_id)
+            .map(|observation| observation.marker_lines)
     }
 
     pub fn summary(&self, workspace_id: &str) -> Result<WorkspaceSummary, String> {
@@ -940,6 +975,25 @@ impl Drop for WorkspaceRegistry {
                 snapshot.remove();
             }
         }
+    }
+}
+
+pub(crate) struct SnapshotProbeObservation {
+    pub(crate) marker_bytes: usize,
+    pub(crate) marker_lines: usize,
+    pub(crate) exact_marker: bool,
+    pub(crate) skill_canary_absent: bool,
+    pub(crate) package_canary_absent: bool,
+    pub(crate) settings_canary_absent: bool,
+    pub(crate) package_manifest_absent: bool,
+    pub(crate) ancestor_canary_absent: bool,
+}
+
+fn path_is_absent(path: &Path) -> Result<bool, String> {
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
+        Err(_) => Err(WORKSPACE_UNAVAILABLE.into()),
+        Ok(_) => Ok(false),
     }
 }
 

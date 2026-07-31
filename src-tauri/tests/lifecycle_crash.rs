@@ -1,3 +1,5 @@
+#![cfg(debug_assertions)]
+
 use piui_lib::protocol::Envelope;
 use piui_lib::supervisor::{
     RESTART_HALTED_REPORT, RestartController, SidecarSupervisor, SupervisorPaths,
