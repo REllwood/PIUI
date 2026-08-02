@@ -1,5 +1,8 @@
 use serde::Serialize;
 
+#[cfg(feature = "a23-credential-test")]
+#[doc(hidden)]
+pub mod a23_credential_maintenance;
 pub mod commands;
 pub mod credentials;
 pub mod domain;
@@ -513,10 +516,7 @@ fn valid_a23_canary_descriptor(metadata: &std::fs::Metadata) -> bool {
 fn app_credential_proxy() -> Result<credentials::CredentialProxy, std::io::Error> {
     let namespace = std::env::var("PIUI_A23_TEST_NAMESPACE")
         .map_err(|_| std::io::Error::other("A.23 isolated namespace unavailable"))?;
-    if !namespace.starts_with("a23-")
-        || namespace.len() != 36
-        || !namespace[4..].bytes().all(|byte| byte.is_ascii_hexdigit())
-    {
+    if !a23_credential_maintenance::valid_a23_namespace(&namespace) {
         return Err(std::io::Error::other("A.23 isolated namespace invalid"));
     }
     let repository = credentials::KeychainRepository::for_tests(&namespace)
