@@ -7,6 +7,13 @@ edition = "2024"
 rust-version = "1.96"
 license = "MIT"
 
+[features]
+default = []
+architecture-test = ["dep:tauri-plugin-wdio-webdriver"]
+a23-credential-test = []
+a25-approval-test = []
+a27-lifecycle-test = []
+
 [lib]
 name = "piui_lib"
 crate-type = ["lib", "cdylib", "staticlib"]
@@ -14,6 +21,20 @@ crate-type = ["lib", "cdylib", "staticlib"]
 [[bin]]
 name = "piui"
 path = "src/main.rs"
+
+[[bin]]
+name = "project-trust-harness"
+path = "src/bin/project-trust-harness.rs"
+
+[[bin]]
+name = "credential-cleanup-harness"
+path = "src/bin/credential-cleanup-harness.rs"
+required-features = ["a23-credential-test"]
+
+[[bin]]
+name = "approval-matrix-harness"
+path = "src/bin/approval-matrix-harness.rs"
+required-features = ["a25-approval-test"]
 
 [build-dependencies]
 tauri-build = { version = "=2.6.3", features = [] }
@@ -32,6 +53,7 @@ tauri = { version = "=2.11.5", features = ["macos-private-api"] }
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "=0.6.2"
 objc2 = { version = "=0.6.4", default-features = false, features = ["std"] }
+tauri-plugin-wdio-webdriver = { version = "=1.2.0", optional = true }
 objc2-app-kit = { version = "=0.3.2", default-features = false, features = [
   "std",
   "block2",
