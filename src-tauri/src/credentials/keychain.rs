@@ -300,8 +300,8 @@ impl KeychainRepository {
     }
 
     /// Independently and boundedly reconciles the secret and label to proven
-    /// absence. Success means both delete operations returned either success or
-    /// `NoEntry`; failure retains the caller's indexed recovery reference.
+    /// absence. Success means both post-delete readbacks returned `NoEntry`;
+    /// failure retains the caller's indexed recovery reference.
     pub(crate) fn reconcile_delete(&self, credential_id: &str) -> Result<(), CredentialError> {
         validate_reference(credential_id)?;
         let secret = self.secret_entry(credential_id)?;
@@ -329,9 +329,23 @@ impl KeychainRepository {
     }
 
     pub(crate) fn delete_index(&self) -> Result<(), CredentialError> {
-        match self.index_entry()?.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(_) => Err(CredentialError::unavailable()),
+        self.delete_index_with_entry_factory(|service, account| {
+            Entry::new(service, account).map_err(|_| CredentialError::unavailable())
+        })
+    }
+
+    fn delete_index_with_entry_factory<E>(
+        &self,
+        mut make_entry: impl FnMut(&str, &str) -> Result<E, CredentialError>,
+    ) -> Result<(), CredentialError>
+    where
+        E: KeychainEntry,
+    {
+        let entry = make_entry(&self.index, INDEX_ACCOUNT)?;
+        if delete_and_prove_absence(&entry, EntryMaterial::Secret).absence_proven {
+            Ok(())
+        } else {
+            Err(CredentialError::unavailable())
         }
     }
 
@@ -397,22 +411,29 @@ impl KeychainRepository {
     }
 
     pub fn delete(&self, credential_id: &str) -> Result<(), CredentialError> {
+        self.delete_with_entry_factory(credential_id, |service, credential_id| {
+            Entry::new(service, credential_id).map_err(|_| CredentialError::unavailable())
+        })
+    }
+
+    fn delete_with_entry_factory<E>(
+        &self,
+        credential_id: &str,
+        mut make_entry: impl FnMut(&str, &str) -> Result<E, CredentialError>,
+    ) -> Result<(), CredentialError>
+    where
+        E: KeychainEntry,
+    {
         validate_reference(credential_id)?;
-        let secret = self.secret_entry(credential_id)?.delete_credential();
-        let label = self.label_entry(credential_id)?.delete_credential();
-        let secret_missing = secret
-            .as_ref()
-            .err()
-            .is_some_and(|error| matches!(error, keyring::Error::NoEntry));
-        let label_missing = label
-            .as_ref()
-            .err()
-            .is_some_and(|error| matches!(error, keyring::Error::NoEntry));
-        if secret_missing && label_missing {
-            return Err(CredentialError::not_found());
-        }
-        if secret.is_err() && !secret_missing || label.is_err() && !label_missing {
+        let secret_entry = make_entry(&self.service, credential_id)?;
+        let label_entry = make_entry(&self.labels, credential_id)?;
+        let secret = delete_and_prove_absence(&secret_entry, EntryMaterial::Secret);
+        let label = delete_and_prove_absence(&label_entry, EntryMaterial::Password);
+        if !secret.absence_proven || !label.absence_proven {
             return Err(CredentialError::unavailable());
+        }
+        if secret.delete_reported_missing && label.delete_reported_missing {
+            return Err(CredentialError::not_found());
         }
         Ok(())
     }
@@ -482,16 +503,55 @@ fn classify_presence<T>(result: keyring::Result<T>) -> Result<bool, CredentialEr
     }
 }
 
+#[derive(Clone, Copy)]
+enum EntryMaterial {
+    Password,
+    Secret,
+}
+
+struct DeleteAttempt {
+    absence_proven: bool,
+    delete_reported_missing: bool,
+}
+
+fn delete_and_prove_absence<E: KeychainEntry>(entry: &E, material: EntryMaterial) -> DeleteAttempt {
+    let delete_reported_missing = matches!(entry.delete_credential(), Err(keyring::Error::NoEntry));
+    let absence_proven = match material {
+        EntryMaterial::Secret => match entry.get_secret() {
+            Ok(mut bytes) => {
+                bytes.zeroize();
+                false
+            }
+            Err(keyring::Error::NoEntry) => true,
+            Err(_) => false,
+        },
+        EntryMaterial::Password => match entry.get_password() {
+            Ok(mut text) => {
+                text.zeroize();
+                false
+            }
+            Err(keyring::Error::NoEntry) => true,
+            Err(_) => false,
+        },
+    };
+    DeleteAttempt {
+        absence_proven,
+        delete_reported_missing,
+    }
+}
+
 fn reconcile_entries<E: KeychainEntry>(secret_entry: &E, label_entry: &E) -> bool {
     let mut secret_pending = true;
     let mut label_pending = true;
 
     for attempt in 0..RECONCILIATION_ATTEMPTS {
         if secret_pending {
-            secret_pending = !cleanup_succeeded(secret_entry.delete_credential());
+            secret_pending =
+                !delete_and_prove_absence(secret_entry, EntryMaterial::Secret).absence_proven;
         }
         if label_pending {
-            label_pending = !cleanup_succeeded(label_entry.delete_credential());
+            label_pending =
+                !delete_and_prove_absence(label_entry, EntryMaterial::Password).absence_proven;
         }
         if !secret_pending && !label_pending {
             return true;
@@ -501,10 +561,6 @@ fn reconcile_entries<E: KeychainEntry>(secret_entry: &E, label_entry: &E) -> boo
         }
     }
     false
-}
-
-fn cleanup_succeeded(result: keyring::Result<()>) -> bool {
-    matches!(result, Ok(()) | Err(keyring::Error::NoEntry))
 }
 
 fn validate_label(account_label: &str) -> Result<&str, CredentialError> {
@@ -550,16 +606,29 @@ mod tests {
 
     #[derive(Clone, Copy)]
     enum EntryKind {
-        Secret,
+        Index,
         Label,
+        Secret,
+    }
+
+    #[derive(Clone, Copy, Default)]
+    enum FakeDeleteMode {
+        #[default]
+        Normal,
+        RemoveAndFail,
+        RetainAndSucceed,
     }
 
     #[derive(Default)]
     struct FakeState {
         calls: Vec<&'static str>,
         credential_id: Option<String>,
+        index_stored: bool,
         label_stored: bool,
         secret_stored: bool,
+        index_delete_mode: FakeDeleteMode,
+        label_delete_mode: FakeDeleteMode,
+        secret_delete_mode: FakeDeleteMode,
         secret_cleanup_failures_remaining: usize,
     }
 
@@ -575,7 +644,7 @@ mod tests {
             match self.kind {
                 EntryKind::Label if state.label_stored => Ok("Test account".into()),
                 EntryKind::Label => Err(keyring::Error::NoEntry),
-                EntryKind::Secret => Err(keyring::Error::Invalid(
+                EntryKind::Index | EntryKind::Secret => Err(keyring::Error::Invalid(
                     "entry-kind".into(),
                     "invalid test operation".into(),
                 )),
@@ -584,8 +653,14 @@ mod tests {
 
         fn get_secret(&self) -> keyring::Result<Vec<u8>> {
             let mut state = self.state.borrow_mut();
-            state.calls.push("read-secret");
+            state.calls.push(match self.kind {
+                EntryKind::Index => "read-index",
+                EntryKind::Label => "read-invalid-secret",
+                EntryKind::Secret => "read-secret",
+            });
             match self.kind {
+                EntryKind::Index if state.index_stored => Ok(b"bounded-test-index".to_vec()),
+                EntryKind::Index => Err(keyring::Error::NoEntry),
                 EntryKind::Secret if state.secret_stored => Ok(b"bounded-test-secret".to_vec()),
                 EntryKind::Secret => Err(keyring::Error::NoEntry),
                 EntryKind::Label => Err(keyring::Error::Invalid(
@@ -603,7 +678,7 @@ mod tests {
                     state.label_stored = true;
                     Ok(())
                 }
-                EntryKind::Secret => Err(keyring::Error::Invalid(
+                EntryKind::Index | EntryKind::Secret => Err(keyring::Error::Invalid(
                     "entry-kind".into(),
                     "invalid test operation".into(),
                 )),
@@ -613,6 +688,11 @@ mod tests {
         fn set_secret(&self, _secret: &[u8]) -> keyring::Result<()> {
             let mut state = self.state.borrow_mut();
             match self.kind {
+                EntryKind::Index => {
+                    state.calls.push("write-index");
+                    state.index_stored = true;
+                    Ok(())
+                }
                 EntryKind::Secret => {
                     state.calls.push("write-secret");
                     // Model an ambiguous backend result: the secret reached
@@ -633,12 +713,15 @@ mod tests {
         fn delete_credential(&self) -> keyring::Result<()> {
             let mut state = self.state.borrow_mut();
             match self.kind {
+                EntryKind::Index => {
+                    state.calls.push("rollback-index");
+                    let mode = state.index_delete_mode;
+                    fake_delete(&mut state.index_stored, mode, "index-delete")
+                }
                 EntryKind::Label => {
                     state.calls.push("rollback-label");
-                    state.label_stored = false;
-                    // NoEntry is a successful reconciliation outcome: the
-                    // entry is absent regardless of which operation removed it.
-                    Err(keyring::Error::NoEntry)
+                    let mode = state.label_delete_mode;
+                    fake_delete(&mut state.label_stored, mode, "label-delete")
                 }
                 EntryKind::Secret => {
                     state.calls.push("rollback-secret");
@@ -649,11 +732,35 @@ mod tests {
                             FAILURE_SENTINEL.into(),
                         ))
                     } else {
-                        state.secret_stored = false;
-                        Ok(())
+                        let mode = state.secret_delete_mode;
+                        fake_delete(&mut state.secret_stored, mode, "secret-delete")
                     }
                 }
             }
+        }
+    }
+
+    fn fake_delete(
+        stored: &mut bool,
+        mode: FakeDeleteMode,
+        operation: &'static str,
+    ) -> keyring::Result<()> {
+        match mode {
+            FakeDeleteMode::Normal => {
+                if std::mem::replace(stored, false) {
+                    Ok(())
+                } else {
+                    Err(keyring::Error::NoEntry)
+                }
+            }
+            FakeDeleteMode::RemoveAndFail => {
+                *stored = false;
+                Err(keyring::Error::Invalid(
+                    operation.into(),
+                    FAILURE_SENTINEL.into(),
+                ))
+            }
+            FakeDeleteMode::RetainAndSucceed => Ok(()),
         }
     }
 
@@ -758,8 +865,11 @@ mod tests {
                 "write-label",
                 "write-secret",
                 "rollback-secret",
+                "read-secret",
                 "rollback-label",
-                "rollback-secret"
+                "read-label",
+                "rollback-secret",
+                "read-secret"
             ]
         );
         assert!(!state.label_stored);
@@ -863,5 +973,234 @@ mod tests {
             ]
         );
         assert!(!state.calls.contains(&"write-secret"));
+    }
+
+    #[test]
+    fn reconciliation_retries_successful_delete_until_readback_proves_absence() {
+        let state = Rc::new(RefCell::new(FakeState {
+            label_stored: true,
+            secret_stored: true,
+            secret_delete_mode: FakeDeleteMode::RetainAndSucceed,
+            ..FakeState::default()
+        }));
+        let secret = FakeEntry {
+            kind: EntryKind::Secret,
+            state: Rc::clone(&state),
+        };
+        let label = FakeEntry {
+            kind: EntryKind::Label,
+            state: Rc::clone(&state),
+        };
+
+        assert!(!super::reconcile_entries(&secret, &label));
+
+        let state = state.borrow();
+        assert!(state.secret_stored);
+        assert!(!state.label_stored);
+        assert_eq!(
+            state.calls,
+            [
+                "rollback-secret",
+                "read-secret",
+                "rollback-label",
+                "read-label",
+                "rollback-secret",
+                "read-secret",
+                "rollback-secret",
+                "read-secret",
+            ]
+        );
+    }
+
+    #[test]
+    fn public_delete_rejects_success_reports_when_readback_finds_both_entries() {
+        let repository = KeychainRepository::for_tests("delete-retained").unwrap();
+        let state = Rc::new(RefCell::new(FakeState {
+            label_stored: true,
+            secret_stored: true,
+            label_delete_mode: FakeDeleteMode::RetainAndSucceed,
+            secret_delete_mode: FakeDeleteMode::RetainAndSucceed,
+            ..FakeState::default()
+        }));
+        let factory_state = Rc::clone(&state);
+        let secret_service = repository.service.clone();
+        let label_service = repository.labels.clone();
+        let credential_id = "credential-00000000000000000000000000000003";
+
+        let result =
+            repository.delete_with_entry_factory(credential_id, move |service, received_id| {
+                assert_eq!(received_id, credential_id);
+                let (kind, call) = if service == secret_service {
+                    (EntryKind::Secret, "construct-secret")
+                } else if service == label_service {
+                    (EntryKind::Label, "construct-label")
+                } else {
+                    return Err(CredentialError::unavailable());
+                };
+                factory_state.borrow_mut().calls.push(call);
+                Ok(FakeEntry {
+                    kind,
+                    state: Rc::clone(&factory_state),
+                })
+            });
+
+        let error = result.expect_err("retained entries must fail deletion integrity");
+        assert_eq!(error.code(), CredentialError::unavailable().code());
+        let state = state.borrow();
+        assert!(state.secret_stored);
+        assert!(state.label_stored);
+        assert_eq!(
+            state.calls,
+            [
+                "construct-secret",
+                "construct-label",
+                "rollback-secret",
+                "read-secret",
+                "rollback-label",
+                "read-label",
+            ]
+        );
+    }
+
+    #[test]
+    fn public_delete_accepts_ambiguous_errors_only_after_proven_absence() {
+        let repository = KeychainRepository::for_tests("delete-ambiguous").unwrap();
+        let state = Rc::new(RefCell::new(FakeState {
+            label_stored: true,
+            secret_stored: true,
+            label_delete_mode: FakeDeleteMode::RemoveAndFail,
+            secret_delete_mode: FakeDeleteMode::RemoveAndFail,
+            ..FakeState::default()
+        }));
+        let factory_state = Rc::clone(&state);
+        let secret_service = repository.service.clone();
+        let label_service = repository.labels.clone();
+        let credential_id = "credential-00000000000000000000000000000004";
+
+        let result =
+            repository.delete_with_entry_factory(credential_id, move |service, received_id| {
+                assert_eq!(received_id, credential_id);
+                let (kind, call) = if service == secret_service {
+                    (EntryKind::Secret, "construct-secret")
+                } else if service == label_service {
+                    (EntryKind::Label, "construct-label")
+                } else {
+                    return Err(CredentialError::unavailable());
+                };
+                factory_state.borrow_mut().calls.push(call);
+                Ok(FakeEntry {
+                    kind,
+                    state: Rc::clone(&factory_state),
+                })
+            });
+
+        assert!(result.is_ok());
+        let state = state.borrow();
+        assert!(!state.secret_stored);
+        assert!(!state.label_stored);
+        assert_eq!(
+            state.calls,
+            [
+                "construct-secret",
+                "construct-label",
+                "rollback-secret",
+                "read-secret",
+                "rollback-label",
+                "read-label",
+            ]
+        );
+    }
+
+    #[test]
+    fn public_delete_preserves_both_missing_not_found_semantics() {
+        let repository = KeychainRepository::for_tests("delete-missing").unwrap();
+        let state = Rc::new(RefCell::new(FakeState::default()));
+        let factory_state = Rc::clone(&state);
+        let secret_service = repository.service.clone();
+        let label_service = repository.labels.clone();
+        let credential_id = "credential-00000000000000000000000000000005";
+
+        let result =
+            repository.delete_with_entry_factory(credential_id, move |service, received_id| {
+                assert_eq!(received_id, credential_id);
+                let (kind, call) = if service == secret_service {
+                    (EntryKind::Secret, "construct-secret")
+                } else if service == label_service {
+                    (EntryKind::Label, "construct-label")
+                } else {
+                    return Err(CredentialError::unavailable());
+                };
+                factory_state.borrow_mut().calls.push(call);
+                Ok(FakeEntry {
+                    kind,
+                    state: Rc::clone(&factory_state),
+                })
+            });
+
+        let error = result.expect_err("two absent entries must remain not-found");
+        assert_eq!(error.code(), CredentialError::not_found().code());
+        assert_eq!(
+            state.borrow().calls,
+            [
+                "construct-secret",
+                "construct-label",
+                "rollback-secret",
+                "read-secret",
+                "rollback-label",
+                "read-label",
+            ]
+        );
+    }
+
+    #[test]
+    fn index_delete_factory_requires_readback_and_accepts_proven_ambiguous_removal() {
+        let repository = KeychainRepository::for_tests("delete-index").unwrap();
+        let retained = Rc::new(RefCell::new(FakeState {
+            index_stored: true,
+            index_delete_mode: FakeDeleteMode::RetainAndSucceed,
+            ..FakeState::default()
+        }));
+        let retained_factory = Rc::clone(&retained);
+
+        let retained_result = repository.delete_index_with_entry_factory(|service, account| {
+            assert_eq!(service, repository.index);
+            assert_eq!(account, super::INDEX_ACCOUNT);
+            retained_factory.borrow_mut().calls.push("construct-index");
+            Ok(FakeEntry {
+                kind: EntryKind::Index,
+                state: Rc::clone(&retained_factory),
+            })
+        });
+
+        let error = retained_result.expect_err("retained index must fail deletion integrity");
+        assert_eq!(error.code(), CredentialError::unavailable().code());
+        assert!(retained.borrow().index_stored);
+        assert_eq!(
+            retained.borrow().calls,
+            ["construct-index", "rollback-index", "read-index"]
+        );
+
+        let removed = Rc::new(RefCell::new(FakeState {
+            index_stored: true,
+            index_delete_mode: FakeDeleteMode::RemoveAndFail,
+            ..FakeState::default()
+        }));
+        let removed_factory = Rc::clone(&removed);
+        let removed_result = repository.delete_index_with_entry_factory(|service, account| {
+            assert_eq!(service, repository.index);
+            assert_eq!(account, super::INDEX_ACCOUNT);
+            removed_factory.borrow_mut().calls.push("construct-index");
+            Ok(FakeEntry {
+                kind: EntryKind::Index,
+                state: Rc::clone(&removed_factory),
+            })
+        });
+
+        assert!(removed_result.is_ok());
+        assert!(!removed.borrow().index_stored);
+        assert_eq!(
+            removed.borrow().calls,
+            ["construct-index", "rollback-index", "read-index"]
+        );
     }
 }

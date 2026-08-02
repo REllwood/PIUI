@@ -239,7 +239,7 @@ mod tests {
         assert_eq!(preparation.owner_webview_label, "main");
         assert_eq!(
             preparation.hostile_fixture_sha256,
-            "ef746aa67667f64d77b347d82cf22e6869cc3653d341274f00891948b8f8b278"
+            "9c08397fe195119adb5abf548e5df287c82174918c35b758e150750da26b5ac9"
         );
         assert_eq!(
             preparation.raster_fixture_sha256,

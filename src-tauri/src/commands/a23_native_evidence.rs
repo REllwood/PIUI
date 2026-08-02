@@ -11,6 +11,8 @@ use tauri::ipc::InvokeBody;
 const MAX_EVIDENCE_BYTES: usize = 262_144;
 const MAX_RECORDS: usize = 512;
 const NATIVE_EVIDENCE_FILE: &str = "native-boundary.jsonl";
+const STREAM_EVENT: &str = "piui://stream-probe";
+const STREAM_EVENT_BOUNDARY: &str = "piui-stream-probe-native-queue-admission";
 
 struct EvidenceOutput {
     file: File,
@@ -70,7 +72,7 @@ impl A23NativeEvidenceState {
                 "coverage": {
                     "invokeInputs": "all-native-handler-entries",
                     "invokeResults": "closed-a23-command-set",
-                    "rustEvents": "webview-queue-admission",
+                    "rustEvents": STREAM_EVENT_BOUNDARY,
                     "documentDom": "not-claimed",
                     "webStorage": "not-claimed",
                     "arbitraryJavascriptHeap": "not-claimed"
@@ -117,7 +119,7 @@ impl A23NativeEvidenceState {
         }))
     }
 
-    pub fn record_rust_event(&self, envelope: &Envelope) -> Result<(), String> {
+    pub fn record_piui_stream_probe_admission(&self, envelope: &Envelope) -> Result<(), String> {
         let bytes =
             serde_json::to_vec(envelope).map_err(|_| "a23-native-evidence-rejected".to_string())?;
         let bytes_utf8 =
@@ -125,8 +127,8 @@ impl A23NativeEvidenceState {
         self.append(json!({
             "schemaVersion": 1,
             "record": "rust-event",
-            "event": "piui://stream-probe",
-            "boundary": "webview-queue-admission",
+            "event": STREAM_EVENT,
+            "boundary": STREAM_EVENT_BOUNDARY,
             "bytesUtf8": bytes_utf8
         }))
     }
@@ -198,12 +200,19 @@ fn private_target() -> Result<PathBuf, std::io::Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_EVIDENCE_BYTES, MAX_RECORDS, NATIVE_EVIDENCE_FILE};
+    use super::{
+        MAX_EVIDENCE_BYTES, MAX_RECORDS, NATIVE_EVIDENCE_FILE, STREAM_EVENT, STREAM_EVENT_BOUNDARY,
+    };
 
     #[test]
     fn native_boundary_is_bounded_and_has_a_fixed_private_target() {
         assert_eq!(MAX_EVIDENCE_BYTES, 262_144);
         assert_eq!(MAX_RECORDS, 512);
         assert_eq!(NATIVE_EVIDENCE_FILE, "native-boundary.jsonl");
+        assert_eq!(STREAM_EVENT, "piui://stream-probe");
+        assert_eq!(
+            STREAM_EVENT_BOUNDARY,
+            "piui-stream-probe-native-queue-admission"
+        );
     }
 }

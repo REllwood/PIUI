@@ -83,12 +83,13 @@ impl BridgeState {
     }
 
     pub(crate) fn enqueue_event(&self, generation: u64, envelope: &Envelope) -> Result<(), String> {
+        self.event_output.enqueue(generation, envelope)?;
         #[cfg(feature = "a23-credential-test")]
         self.a23_evidence
             .as_ref()
             .ok_or_else(|| "a23-native-evidence-unavailable".to_string())?
-            .record_rust_event(envelope)?;
-        self.event_output.enqueue(generation, envelope)
+            .record_piui_stream_probe_admission(envelope)?;
+        Ok(())
     }
 
     pub(crate) fn enqueue_ack_event(
@@ -96,16 +97,17 @@ impl BridgeState {
         generation: u64,
         envelope: &Envelope,
     ) -> Result<EventReceipt, String> {
+        let receipt = self.event_output.enqueue_ack_with_receipt(
+            generation,
+            envelope,
+            self.acknowledgement_settlement.clone(),
+        )?;
         #[cfg(feature = "a23-credential-test")]
         self.a23_evidence
             .as_ref()
             .ok_or_else(|| "a23-native-evidence-unavailable".to_string())?
-            .record_rust_event(envelope)?;
-        self.event_output.enqueue_ack_with_receipt(
-            generation,
-            envelope,
-            self.acknowledgement_settlement.clone(),
-        )
+            .record_piui_stream_probe_admission(envelope)?;
+        Ok(receipt)
     }
 
     pub(crate) fn supervisor(&self) -> Arc<Mutex<SidecarSupervisor>> {
