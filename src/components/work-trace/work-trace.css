@@ -1,0 +1,123 @@
+.work-trace {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.work-trace__item {
+  position: relative;
+  min-width: 0;
+  padding-left: 24px;
+  --trace-colour: var(--work);
+}
+
+.work-trace__item[data-state='waiting'] {
+  --trace-colour: var(--warning);
+}
+.work-trace__item[data-state='complete'] {
+  --trace-colour: var(--accent);
+}
+.work-trace__item[data-state='failed'],
+.work-trace__item[data-state='disconnected'] {
+  --trace-colour: var(--danger);
+}
+
+.work-trace__line {
+  position: absolute;
+  inset: 0 auto 0 8px;
+  width: 2px;
+  background: var(--trace-colour);
+  opacity: 0.58;
+}
+
+.work-trace__item[data-state='failed'] .work-trace__line,
+.work-trace__item[data-state='disconnected'] .work-trace__line {
+  background: repeating-linear-gradient(to bottom, var(--trace-colour) 0 4px, transparent 4px 8px);
+}
+
+.work-trace__node {
+  position: absolute;
+  z-index: 1;
+  top: 22px;
+  left: 3px;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--trace-colour);
+  border-radius: 50%;
+  background: var(--surface);
+}
+
+.work-trace__item[data-state='waiting'] .work-trace__node {
+  border-radius: 2px;
+}
+.work-trace__item[data-state='complete'] .work-trace__node {
+  background: var(--trace-colour);
+}
+.work-trace__item[data-state='failed'] .work-trace__node::before,
+.work-trace__item[data-state='failed'] .work-trace__node::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 1px;
+  width: 7px;
+  height: 2px;
+  background: var(--trace-colour);
+  transform: rotate(45deg);
+}
+.work-trace__item[data-state='failed'] .work-trace__node::after {
+  transform: rotate(-45deg);
+}
+
+.work-trace__button {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  width: 100%;
+  min-height: 60px;
+  align-items: start;
+  gap: 10px;
+  padding: 12px;
+  border: 0;
+  border-radius: var(--radius-card);
+  text-align: left;
+  color: var(--text);
+  background: transparent;
+  cursor: pointer;
+}
+
+.work-trace__button:hover {
+  background: var(--surface-highlight);
+}
+.work-trace__icon {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  color: var(--trace-colour);
+}
+.work-trace__icon svg {
+  width: 18px;
+}
+.work-trace__copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+.work-trace__copy strong {
+  font-weight: 600;
+}
+.work-trace__copy strong span {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+.work-trace__copy > span {
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 18px;
+}
+.work-trace__elapsed {
+  padding-top: 2px;
+  color: var(--text-muted);
+  font-size: 11px;
+}

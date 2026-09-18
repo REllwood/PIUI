@@ -17,6 +17,13 @@ import {
   removeDescriptorBoundTree,
 } from '../../scripts/descriptor-acl.mjs';
 import {
+  APPLE_TOOLCHAIN_PATHS,
+  appleToolchainBuildEnvironment,
+  captureAppleToolchainAuthority,
+  releaseAppleToolchainAuthority,
+  revalidateAppleToolchainAuthority,
+} from '../../scripts/apple-toolchain-trust.mjs';
+import {
   captureFixture,
   parsePackagedTrustEvidence,
   parseProjectTrustHarnessEvidence,
@@ -33,21 +40,36 @@ before(async () => {
   aclWorkspace = await mkdtemp(join(tmpdir(), 'piui-a24-acl-test-'));
   aclInspector = captureSystemDescriptorAclInspector();
   nativeAclHelper = resolve(aclWorkspace, 'native-acl-reference');
-  const compiled = spawnSync('/usr/bin/clang', [
-    '--no-default-config',
-    '-std=c11',
-    '-O2',
-    '-Wall',
-    '-Wextra',
-    '-Werror',
-    '-mmacosx-version-min=13.0',
-    resolve(root, 'scripts/inspect-descriptor-acl.c'),
-    '-o',
-    nativeAclHelper,
-  ], {
-    encoding: 'utf8',
-    env: { PATH: '/usr/bin:/bin' },
-  });
+  const authority = captureAppleToolchainAuthority();
+  let compiled;
+  try {
+    compiled = spawnSync(APPLE_TOOLCHAIN_PATHS.clang, [
+      '--no-default-config',
+      '-std=c11',
+      '-O2',
+      '-Wall',
+      '-Wextra',
+      '-Werror',
+      '-isysroot',
+      APPLE_TOOLCHAIN_PATHS.sdk,
+      '-mmacosx-version-min=13.0',
+      resolve(root, 'scripts/inspect-descriptor-acl.c'),
+      '-o',
+      nativeAclHelper,
+    ], {
+      encoding: 'utf8',
+      env: {
+        ...appleToolchainBuildEnvironment(),
+        LANG: 'C',
+        LC_ALL: 'C',
+        PATH: `${APPLE_TOOLCHAIN_PATHS.bin}:/usr/bin:/bin`,
+      },
+      timeout: 30_000,
+    });
+    revalidateAppleToolchainAuthority(authority);
+  } finally {
+    releaseAppleToolchainAuthority(authority);
+  }
   assert.equal(compiled.status, 0);
   assert.equal(compiled.signal, null);
   assert.equal(compiled.stdout, '');
@@ -323,5 +345,8 @@ test('package gate wires an exact A.24 mode into the same lease and removes both
     /\.env\("HOME", std::env::var|\.env\("HOME", std::env::var_os/,
   );
   const scripts = JSON.parse(packageJson).scripts;
-  assert.equal(scripts['spike:packaged:trust'], 'node scripts/run-packaged-trust-probe.mjs');
+  assert.equal(
+    scripts['spike:packaged:trust'],
+    '/usr/bin/env -i PATH=/usr/bin:/bin LANG=en_AU.UTF-8 LC_ALL=en_AU.UTF-8 /usr/bin/ruby --disable-gems scripts/architecture-bootstrap.rb package --authoritative-a24',
+  );
 });

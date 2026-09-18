@@ -12,12 +12,28 @@ import {
 import {
   A27_EXPECTED_EVIDENCE,
 } from '../../scripts/assert-process-cleanup.mjs';
+import {
+  APPLE_TOOLCHAIN_PATHS,
+  appleToolchainBuildEnvironment,
+  captureAppleToolchainAuthority,
+  releaseAppleToolchainAuthority,
+  revalidateAppleToolchainAuthority,
+} from '../../scripts/apple-toolchain-trust.mjs';
 
 function preCleanupEvidence() {
-  return Object.freeze(Object.fromEntries(
-    Object.entries(A27_EXPECTED_EVIDENCE)
-      .filter(([key]) => key !== 'generatedOutputsRemoved'),
-  ));
+  return Object.freeze({
+    ...Object.fromEntries(
+      Object.entries(A27_EXPECTED_EVIDENCE)
+        .filter(([key]) => key !== 'generatedOutputsRemoved'),
+    ),
+    identity: Object.freeze({
+      automationFingerprint: 'b'.repeat(64),
+      controlledDeltaSha256: 'c'.repeat(64),
+      productionFingerprint: 'a'.repeat(64),
+      sameFrozenSource: true,
+      sourceDigest: 'd'.repeat(64),
+    }),
+  });
 }
 
 test('A.27 keeps package cleanup evidence false-by-construction until finalisation', () => {
@@ -35,7 +51,7 @@ test('A.27 keeps package cleanup evidence false-by-construction until finalisati
   );
   assert.deepEqual(
     finaliseLifecycleEvidence(preCleanup),
-    A27_EXPECTED_EVIDENCE,
+    { ...A27_EXPECTED_EVIDENCE, identity: preCleanup.identity },
   );
 
   const missing = { ...preCleanup };
@@ -137,30 +153,40 @@ test('A.27 exact-PID reopen helper compiles with no broad application launch fal
   assert.doesNotMatch(A27_REOPEN_HELPER_SOURCE, /\bNSWorkspace\b/);
   assert.doesNotMatch(A27_REOPEN_HELPER_SOURCE, /\bopen\s*\(/);
 
-  const result = spawnSync(
-    '/usr/bin/clang',
-    [
-      '-std=c17',
-      '-Wall',
-      '-Wextra',
-      '-Werror',
-      '-Wno-deprecated-declarations',
-      '-fsyntax-only',
-      '-x',
-      'c',
-      '-',
-    ],
-    {
-      input: Buffer.from(A27_REOPEN_HELPER_SOURCE, 'utf8'),
-      encoding: 'utf8',
-      env: {
-        PATH: '/usr/bin:/bin',
-        LANG: 'en_AU.UTF-8',
-        LC_ALL: 'en_AU.UTF-8',
+  const authority = captureAppleToolchainAuthority();
+  let result;
+  try {
+    result = spawnSync(
+      APPLE_TOOLCHAIN_PATHS.clang,
+      [
+        '-std=c17',
+        '-Wall',
+        '-Wextra',
+        '-Werror',
+        '-Wno-deprecated-declarations',
+        '-isysroot',
+        APPLE_TOOLCHAIN_PATHS.sdk,
+        '-fsyntax-only',
+        '-x',
+        'c',
+        '-',
+      ],
+      {
+        input: Buffer.from(A27_REOPEN_HELPER_SOURCE, 'utf8'),
+        encoding: 'utf8',
+        env: {
+          ...appleToolchainBuildEnvironment(),
+          PATH: `${APPLE_TOOLCHAIN_PATHS.bin}:/usr/bin:/bin`,
+          LANG: 'en_AU.UTF-8',
+          LC_ALL: 'en_AU.UTF-8',
+        },
+        timeout: 30_000,
       },
-      timeout: 30_000,
-    },
-  );
+    );
+    revalidateAppleToolchainAuthority(authority);
+  } finally {
+    releaseAppleToolchainAuthority(authority);
+  }
   assert.equal(result.error, undefined);
   assert.equal(result.signal, null);
   assert.equal(result.status, 0, result.stderr);
@@ -184,6 +210,11 @@ test('A.27 runner uses WebDriver only for lifecycle UI and external process obse
   assert.match(source, /generatedOutputsRemoved: true/);
   assert.doesNotMatch(source, /sidecar_status/);
   assert.equal(source.includes('/usr/bin/open'), false);
+  assert.match(
+    source,
+    /async function compileReopenHelper[\s\S]*?captureAppleToolchainAuthority\(\)[\s\S]*?command: APPLE_TOOLCHAIN_PATHS\.clang[\s\S]*?APPLE_TOOLCHAIN_PATHS\.sdk[\s\S]*?revalidateAppleToolchainAuthority\(authority\)[\s\S]*?releaseAppleToolchainAuthority\(authority\)/u,
+  );
+  assert.doesNotMatch(source, /command: '\/usr\/bin\/clang'/u);
 
   const executeStart = source.indexOf('export async function executeAuthoritativeLifecycleProbe');
   const finaliseStart = source.indexOf('export function finaliseLifecycleEvidence');

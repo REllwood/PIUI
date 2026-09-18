@@ -25,10 +25,13 @@ const OPAQUE_ASSET_PATTERN = /^piui-asset-[0-9a-f]{32}$/;
 const OPAQUE_RASTER_PROTOCOL = 'piui-raster:';
 const OPAQUE_RASTER_HOST = 'localhost';
 const SAFE_EXTERNAL_HOST_PATTERN = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
-const FORBIDDEN_URI_CHARACTERS = /[\u0000-\u0020\u007f-\u009f\u00a0\u1680\u2000-\u200f\u2028-\u202f\u205f-\u206f\u3000\ufeff]/u;
-const GLOBAL_UNSAFE_FORMAT_CHARACTERS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff]/u;
+const FORBIDDEN_URI_CHARACTERS =
+  /[\u0000-\u0020\u007f-\u009f\u00a0\u1680\u2000-\u200f\u2028-\u202f\u205f-\u206f\u3000\ufeff]/u;
+const GLOBAL_UNSAFE_FORMAT_CHARACTERS =
+  /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff]/u;
 const MARKDOWN_PUNCTUATION = /[!#()*+\-<>[\]_`{|}~]/g;
-const RAW_HTML_CANDIDATE = /<!--|<!\[CDATA\[|<![A-Za-z]|<\?|<\/?[A-Za-z][A-Za-z0-9:-]*(?=[\t\n\f />])/g;
+const RAW_HTML_CANDIDATE =
+  /<!--|<!\[CDATA\[|<![A-Za-z]|<\?|<\/?[A-Za-z][A-Za-z0-9:-]*(?=[\t\n\f />])/g;
 const RAW_HTML_CONTEXT_UTF16 = 64;
 const MAX_RAW_HTML_SEGMENT_SCAN_UTF16 = 208;
 
@@ -137,19 +140,14 @@ export function extractRawHtmlAudit(source: string): RawHtmlAudit {
     candidateCount += 1;
     if (candidateIndex === undefined || excerpts.length >= MAX_RAW_AUDIT_SNIPPETS) continue;
 
-    const scan = source.slice(
-      candidateIndex,
-      candidateIndex + MAX_RAW_HTML_SEGMENT_SCAN_UTF16,
-    );
-    const terminatorText = candidate[0] === '<!--'
-      ? '-->'
-      : candidate[0] === '<![CDATA['
-        ? ']]>'
-        : '>';
+    const scan = source.slice(candidateIndex, candidateIndex + MAX_RAW_HTML_SEGMENT_SCAN_UTF16);
+    const terminatorText =
+      candidate[0] === '<!--' ? '-->' : candidate[0] === '<![CDATA[' ? ']]>' : '>';
     const terminator = scan.indexOf(terminatorText);
-    const segmentEnd = terminator >= 0
-      ? candidateIndex + terminator + terminatorText.length
-      : candidateIndex + candidate[0].length;
+    const segmentEnd =
+      terminator >= 0
+        ? candidateIndex + terminator + terminatorText.length
+        : candidateIndex + candidate[0].length;
     const excerptStart = Math.max(0, candidateIndex - RAW_HTML_CONTEXT_UTF16);
     const excerptEnd = Math.min(source.length, segmentEnd + RAW_HTML_CONTEXT_UTF16);
     const heading = `[Raw HTML candidate at UTF-16 offset ${candidateIndex}]\n`;
@@ -159,10 +157,8 @@ export function extractRawHtmlAudit(source: string): RawHtmlAudit {
       MAX_RAW_AUDIT_TOTAL_UTF16 - totalUnits - separatorUnits,
     );
     if (available <= heading.length) continue;
-    const excerpt = heading + truncateUtf16(
-      source.slice(excerptStart, excerptEnd),
-      available - heading.length,
-    );
+    const excerpt =
+      heading + truncateUtf16(source.slice(excerptStart, excerptEnd), available - heading.length);
     excerpts.push(excerpt);
     totalUnits += separatorUnits + excerpt.length;
   }
@@ -194,14 +190,17 @@ function countPotentialLinksAndImages(source: string): number {
       return '';
     },
   );
-  const bareDestinations = withoutExplicitDestinations.match(/(?:https?:\/\/|www\.)/gi)?.length ?? 0;
+  const bareDestinations =
+    withoutExplicitDestinations.match(/(?:https?:\/\/|www\.)/gi)?.length ?? 0;
   return explicitDestinations + bareDestinations;
 }
 
 function exceedsConservativeDepth(source: string): boolean {
   for (const line of source.split('\n')) {
     const quoteDepth = line.match(/^(?: {0,3}>[ \t]?)+/)?.[0].match(/>/g)?.length ?? 0;
-    const indentationDepth = Math.floor((line.match(/^[ \t]*/)?.[0].replace(/\t/g, '    ').length ?? 0) / 2);
+    const indentationDepth = Math.floor(
+      (line.match(/^[ \t]*/)?.[0].replace(/\t/g, '    ').length ?? 0) / 2,
+    );
     if (quoteDepth + indentationDepth > MAX_PARSER_DEPTH) return true;
   }
 
@@ -255,10 +254,12 @@ function normaliseCodeScannerOpeningLine(line: string): CodeScannerLine {
     const afterMarker = marker + listMarker.length;
     if (afterMarker === line.length) {
       cursor = afterMarker;
-      containers.push(Object.freeze({
-        kind: 'list',
-        continuationColumns: leadingSpaces + listMarker.length + 1,
-      }));
+      containers.push(
+        Object.freeze({
+          kind: 'list',
+          continuationColumns: leadingSpaces + listMarker.length + 1,
+        }),
+      );
       continue;
     }
 
@@ -276,10 +277,12 @@ function normaliseCodeScannerOpeningLine(line: string): CodeScannerLine {
       paddingColumns = 4 - (markerColumn % 4);
     }
     cursor = afterMarker + paddingUnits;
-    containers.push(Object.freeze({
-      kind: 'list',
-      continuationColumns: leadingSpaces + listMarker.length + paddingColumns,
-    }));
+    containers.push(
+      Object.freeze({
+        kind: 'list',
+        continuationColumns: leadingSpaces + listMarker.length + paddingColumns,
+      }),
+    );
   }
 
   const remainingContainer = /^(?: {0,3}>| {0,3}(?:[*+-]|\d{1,9}[.)])(?=[ \t]|$))/.test(
@@ -427,9 +430,7 @@ function codeBlockLimitsPass(source: string): boolean {
 
 export function prepareMarkdown(untrustedSource: string): PreparedMarkdown {
   if (untrustedSource.length > MAX_MARKDOWN_UTF16) {
-    const preview = normaliseUntrustedText(
-      truncateUtf16(untrustedSource, MAX_PLAIN_PREVIEW_UTF16),
-    );
+    const preview = normaliseUntrustedText(truncateUtf16(untrustedSource, MAX_PLAIN_PREVIEW_UTF16));
     return plainFallback(preview, extractRawHtmlAudit(preview));
   }
 
@@ -564,22 +565,24 @@ export function validateOpaqueAssetDescriptor(
 
   const token = capability.slice('piui-asset-'.length);
   const expectedPath = `/__piui_markdown_asset__/${token}.${assetExtension(descriptor.mime)}`;
-  const nativeRasterProtocol = applicationOrigin === 'tauri://localhost'
-    && expectedOrigin.protocol === 'tauri:'
-    && expectedOrigin.hostname === 'localhost'
-    && expectedOrigin.port === ''
-    && expectedOrigin.pathname === ''
-    && expectedOrigin.search === ''
-    && expectedOrigin.hash === ''
-    && expectedOrigin.username === ''
-    && expectedOrigin.password === ''
-    && resolved.protocol === OPAQUE_RASTER_PROTOCOL
-    && resolved.hostname === OPAQUE_RASTER_HOST
-    && resolved.port === '';
-  const browserProofProtocol = ['http:', 'https:'].includes(expectedOrigin.protocol)
-    && expectedOrigin.origin !== 'null'
-    && applicationOrigin === expectedOrigin.origin
-    && resolved.origin === expectedOrigin.origin;
+  const nativeRasterProtocol =
+    applicationOrigin === 'tauri://localhost' &&
+    expectedOrigin.protocol === 'tauri:' &&
+    expectedOrigin.hostname === 'localhost' &&
+    expectedOrigin.port === '' &&
+    expectedOrigin.pathname === '' &&
+    expectedOrigin.search === '' &&
+    expectedOrigin.hash === '' &&
+    expectedOrigin.username === '' &&
+    expectedOrigin.password === '' &&
+    resolved.protocol === OPAQUE_RASTER_PROTOCOL &&
+    resolved.hostname === OPAQUE_RASTER_HOST &&
+    resolved.port === '';
+  const browserProofProtocol =
+    ['http:', 'https:'].includes(expectedOrigin.protocol) &&
+    expectedOrigin.origin !== 'null' &&
+    applicationOrigin === expectedOrigin.origin &&
+    resolved.origin === expectedOrigin.origin;
   if (
     (!nativeRasterProtocol && !browserProofProtocol) ||
     resolved.pathname !== expectedPath ||
@@ -599,6 +602,8 @@ export function validateOpaqueAssetDescriptor(
 }
 
 export function boundedAltText(value: string | undefined): string {
-  const normalised = normaliseUntrustedText(value ?? '').replace(/\s+/g, ' ').trim();
+  const normalised = normaliseUntrustedText(value ?? '')
+    .replace(/\s+/g, ' ')
+    .trim();
   return truncateUtf16(normalised, MAX_ASSET_ALT_UTF16);
 }

@@ -46,3 +46,9 @@ Thumbs.db
 *.log
 npm-debug.log*
 pnpm-debug.log*
+
+# Playwright output (retained locally, never shipped)
+test-results/
+
+# Documentation and agent process notes never ship
+docs/

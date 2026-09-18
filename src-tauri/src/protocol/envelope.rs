@@ -494,10 +494,10 @@ fn validate_raw_envelope(value: &Value) -> Result<(), ProtocolError> {
         .as_object()
         .ok_or(ProtocolError("envelope must be an object"))?;
     for optional_id in ["correlationId", "decisionId"] {
-        if let Some(value) = object.get(optional_id) {
-            if !value.is_string() {
-                return Err(ProtocolError("optional ID must be a string"));
-            }
+        if let Some(value) = object.get(optional_id)
+            && !value.is_string()
+        {
+            return Err(ProtocolError("optional ID must be a string"));
         }
     }
     if let Some(error) = object.get("error") {
@@ -505,15 +505,15 @@ fn validate_raw_envelope(value: &Value) -> Result<(), ProtocolError> {
             return Err(ProtocolError("error must be an object"));
         }
         let error = error.as_object().expect("checked object");
-        if let Some(retryable) = error.get("retryable") {
-            if !retryable.is_boolean() {
-                return Err(ProtocolError("retryable must be boolean"));
-            }
+        if let Some(retryable) = error.get("retryable")
+            && !retryable.is_boolean()
+        {
+            return Err(ProtocolError("retryable must be boolean"));
         }
-        if let Some(diagnostic_id) = error.get("diagnosticId") {
-            if !diagnostic_id.is_string() {
-                return Err(ProtocolError("diagnostic ID must be a string"));
-            }
+        if let Some(diagnostic_id) = error.get("diagnosticId")
+            && !diagnostic_id.is_string()
+        {
+            return Err(ProtocolError("diagnostic ID must be a string"));
         }
     }
     Ok(())

@@ -19,7 +19,17 @@ import {
   a28NegativeRuntimeSandbox,
   a28WdioSandbox,
 } from '../../scripts/run-packaged-accessibility-probe.mjs';
-import { credentialProbeSandbox } from '../../scripts/run-packaged-credential-probe.mjs';
+import {
+  credentialKeychainPath,
+  credentialProbeSandbox,
+} from '../../scripts/run-packaged-credential-probe.mjs';
+import {
+  APPLE_TOOLCHAIN_PATHS,
+  appleToolchainBuildEnvironment,
+  captureAppleToolchainAuthority,
+  releaseAppleToolchainAuthority,
+  revalidateAppleToolchainAuthority,
+} from '../../scripts/apple-toolchain-trust.mjs';
 
 const active = Object.freeze({ nonce: 'a'.repeat(64), port: 53_421 });
 const runtimeDirectoryNames = Object.freeze([
@@ -36,6 +46,7 @@ const credentialBrokerServices = Object.freeze([
   'com.apple.cfprefsd.agent',
   'com.apple.cfprefsd.daemon',
   'com.apple.securityd.xpc',
+  'com.apple.system.opendirectoryd.libinfo',
 ]);
 
 async function fixture(t) {
@@ -192,6 +203,7 @@ test('runtime profiles are deny-default and grant only exact activation loopback
     for (const service of credentialBrokerServices) {
       assert.doesNotMatch(profile, new RegExp(service.replaceAll('.', '\\.')));
     }
+    assert.doesNotMatch(profile, /Library\/Keychains\/login\.keychain-db/u);
   }
   for (const service of credentialBrokerServices) {
     assert.match(credentialProfile, new RegExp(service.replaceAll('.', '\\.')));
@@ -204,7 +216,7 @@ test('runtime profiles are deny-default and grant only exact activation loopback
   for (const profile of [profiles.a26Dormant, profiles.a28Negative]) {
     assert.doesNotMatch(profile, /\(allow network-(?:inbound|outbound)/u);
   }
-  for (const profile of [profiles.a26Active, profiles.a27, profiles.a28Wdio]) {
+  for (const profile of [profiles.a26Active, profiles.a27]) {
     assert.match(
       profile,
       new RegExp(`\\(allow network-inbound \\(local tcp "localhost:${active.port}"\\)\\)`, 'u'),
@@ -215,6 +227,76 @@ test('runtime profiles are deny-default and grant only exact activation loopback
     );
     assert.doesNotMatch(profile, /\(allow network-(?:inbound|outbound)[^\n]*\*/u);
   }
+  assert.match(
+    profiles.a28Wdio,
+    new RegExp(`\\(allow network-inbound \\(local tcp4 "localhost:${active.port}"\\)\\)`, 'u'),
+  );
+  assert.match(
+    profiles.a28Wdio,
+    new RegExp(`\\(allow network-outbound \\(remote tcp4 "localhost:${active.port}"\\)\\)`, 'u'),
+  );
+  assert.doesNotMatch(profiles.a28Wdio, /\(allow network-(?:inbound|outbound)[^\n]*\*/u);
+});
+
+test('credential Keychain reads are confined to the exact host process', {
+  skip: platform() !== 'darwin',
+}, async (t) => {
+  const { paths } = await fixture(t);
+  const keychainPath = credentialKeychainPath();
+  const hostBundle = Object.freeze({
+    appPath: paths.app,
+    hostPath: '/usr/bin/head',
+    nodePath: '/usr/bin/true',
+  });
+  const hostProfile = credentialProbeSandbox(
+    credentialRuntime(paths.run),
+    hostBundle,
+  );
+  // BSD head rejects a zero byte count, so discard one authorised byte at the
+  // process boundary rather than exposing any Keychain contents to test output.
+  const hostRead = spawnSync('/usr/bin/sandbox-exec', [
+    '-p', hostProfile, '/usr/bin/head', '-c', '1', keychainPath,
+  ], {
+    cwd: paths.run,
+    encoding: 'utf8',
+    env: { HOME: paths.home, PATH: '/usr/bin:/bin' },
+    stdio: ['ignore', 'ignore', 'pipe'],
+    timeout: 5_000,
+  });
+  assert.equal(hostRead.status, 0, hostRead.stderr);
+  assert.equal(hostRead.stdout, null);
+  assert.equal(hostRead.stderr, '');
+
+  const childBundle = Object.freeze({
+    appPath: paths.app,
+    hostPath: '/usr/bin/env',
+    nodePath: '/usr/bin/head',
+  });
+  const childProfile = credentialProbeSandbox(
+    credentialRuntime(paths.run),
+    childBundle,
+  );
+  const deniedChildRead = spawnSync('/usr/bin/sandbox-exec', [
+    '-p', childProfile, '/usr/bin/env', '-i', '/usr/bin/head', '-c', '1', keychainPath,
+  ], {
+    cwd: paths.run,
+    encoding: 'utf8',
+    env: { HOME: paths.home, PATH: '/usr/bin:/bin' },
+    timeout: 5_000,
+  });
+  assert.notEqual(deniedChildRead.status, 0);
+  assert.equal(deniedChildRead.stdout, '');
+
+  const nonCredentialProfile = credentialProbeSandbox(
+    credentialRuntime(paths.run),
+    childBundle,
+    { allowCredentialBrokers: false },
+  );
+  assert.doesNotMatch(
+    nonCredentialProfile,
+    /com\.apple\.system\.opendirectoryd\.libinfo/u,
+  );
+  assert.doesNotMatch(nonCredentialProfile, /Library\/Keychains\/login\.keychain-db/u);
 });
 
 test('non-credential runtimes deny Keychain and preferences broker lookup', {
@@ -222,20 +304,31 @@ test('non-credential runtimes deny Keychain and preferences broker lookup', {
 }, async (t) => {
   const { paths } = await fixture(t);
   const helperPath = resolve(paths.app, 'mach-lookup-probe');
-  const compilation = spawnSync('/usr/bin/clang', [
-    '-std=c17',
-    '-Wall',
-    '-Wextra',
-    '-Werror',
-    '-x',
-    'c',
-    '-',
-    '-o',
-    helperPath,
-  ], {
-    encoding: 'utf8',
-    env: { PATH: '/usr/bin:/bin' },
-    input: `
+  const authority = captureAppleToolchainAuthority();
+  let compilation;
+  try {
+    compilation = spawnSync(APPLE_TOOLCHAIN_PATHS.clang, [
+      '--no-default-config',
+      '-std=c17',
+      '-Wall',
+      '-Wextra',
+      '-Werror',
+      '-isysroot',
+      APPLE_TOOLCHAIN_PATHS.sdk,
+      '-x',
+      'c',
+      '-',
+      '-o',
+      helperPath,
+    ], {
+      encoding: 'utf8',
+      env: {
+        ...appleToolchainBuildEnvironment(),
+        LANG: 'C',
+        LC_ALL: 'C',
+        PATH: `${APPLE_TOOLCHAIN_PATHS.bin}:/usr/bin:/bin`,
+      },
+      input: `
 #include <stdio.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -249,7 +342,12 @@ int main(int argc, char **argv) {
   return status == 0 ? 0 : 77;
 }
 `,
-  });
+      timeout: 30_000,
+    });
+    revalidateAppleToolchainAuthority(authority);
+  } finally {
+    releaseAppleToolchainAuthority(authority);
+  }
   assert.equal(compilation.status, 0, compilation.stderr);
   assert.equal(compilation.stdout, '');
   assert.equal(compilation.stderr, '');
@@ -508,7 +606,10 @@ test('all owned packaged launch sites invoke sandbox-exec and strip evidence pat
     assert.match(source, /allowCredentialBrokers: false/u);
   }
   assert.doesNotMatch(packageSpike, /const runtimeSandbox = .*allow default/u);
-  assert.match(a28, /command: '\/usr\/bin\/sandbox-exec'/u);
+  assert.match(a28, /authoriseAuthenticatedNodeSandboxProfile\(\{/u);
+  assert.match(a28, /kind: 'a28-loopback'/u);
+  assert.match(a28, /command: process\.execPath/u);
+  assert.match(a28, /sandboxProfile: sandbox/u);
   for (const name of [
     'PIUI_A28_APP_BINARY',
     'PIUI_A28_RUN_ROOT',

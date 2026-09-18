@@ -1,10 +1,7 @@
 import { createRequire, syncBuiltinESMExports } from 'node:module';
 import processDefault, * as processNamed from 'node:process';
 import v8Default, * as v8Named from 'node:v8';
-import {
-  MessagePort,
-  workerData,
-} from 'node:worker_threads';
+import { MessagePort, workerData } from 'node:worker_threads';
 
 const terminateThread = process.exit.bind(process);
 const safeDefine = Object.defineProperty;
@@ -16,7 +13,9 @@ const SafeError = Error;
 
 function lockReflectionHooks(): void {
   const emptyHandles = () => safeFreeze([] as unknown[]);
-  const unavailableBinding = () => { throw new SafeError('project-reflection-hook-disabled'); };
+  const unavailableBinding = () => {
+    throw new SafeError('project-reflection-hook-disabled');
+  };
   const emptyQuery = () => safeFreeze([] as unknown[]);
   safeFreeze(emptyHandles);
   safeFreeze(unavailableBinding);
@@ -57,11 +56,11 @@ function lockReflectionHooks(): void {
     const [name, replacement] = replacements[index];
     const descriptor = safeOwnDescriptor(processDefault, name);
     if (
-      !descriptor
-      || descriptor.value !== replacement
-      || descriptor.configurable
-      || descriptor.writable
-      || requiredProcessExports[name] !== replacement
+      !descriptor ||
+      descriptor.value !== replacement ||
+      descriptor.configurable ||
+      descriptor.writable ||
+      requiredProcessExports[name] !== replacement
     ) {
       throw new SafeError('project-reflection-hardening-failed');
     }
@@ -72,16 +71,16 @@ function lockReflectionHooks(): void {
   const globalProcess = safeOwnDescriptor(globalThis, 'process');
   const queryDescriptor = safeOwnDescriptor(v8Default, 'queryObjects');
   if (
-    cjsProcess !== processDefault
-    || globalProcess?.value !== processDefault
-    || globalProcess.configurable
-    || globalProcess.writable
-    || !queryDescriptor
-    || queryDescriptor.value !== emptyQuery
-    || queryDescriptor.configurable
-    || queryDescriptor.writable
-    || (v8Named.queryObjects as unknown) !== emptyQuery
-    || cjsV8.queryObjects !== emptyQuery
+    cjsProcess !== processDefault ||
+    globalProcess?.value !== processDefault ||
+    globalProcess.configurable ||
+    globalProcess.writable ||
+    !queryDescriptor ||
+    queryDescriptor.value !== emptyQuery ||
+    queryDescriptor.configurable ||
+    queryDescriptor.writable ||
+    (v8Named.queryObjects as unknown) !== emptyQuery ||
+    cjsV8.queryObjects !== emptyQuery
   ) {
     throw new SafeError('project-reflection-hardening-failed');
   }
@@ -107,12 +106,11 @@ function lockIntrinsicBindings(): void {
   ];
   for (let index = 0; index < bindings.length; index += 1) {
     const [name, original] = bindings[index];
-    if ((typeof original !== 'function' && (typeof original !== 'object' || original === null))) {
+    if (typeof original !== 'function' && (typeof original !== 'object' || original === null)) {
       throw new Error('project-intrinsic-hardening-failed');
     }
-    const prototype = typeof original === 'function'
-      ? (original as { prototype?: unknown }).prototype
-      : undefined;
+    const prototype =
+      typeof original === 'function' ? (original as { prototype?: unknown }).prototype : undefined;
     if (prototype && typeof prototype === 'object') {
       safeFreeze(prototype);
       if (!safeIsFrozen(prototype)) throw new Error('project-intrinsic-hardening-failed');
@@ -126,7 +124,12 @@ function lockIntrinsicBindings(): void {
       writable: false,
     });
     const descriptor = safeOwnDescriptor(globalThis, name);
-    if (!descriptor || descriptor.value !== original || descriptor.configurable || descriptor.writable) {
+    if (
+      !descriptor ||
+      descriptor.value !== original ||
+      descriptor.configurable ||
+      descriptor.writable
+    ) {
       throw new Error('project-intrinsic-hardening-failed');
     }
   }
@@ -140,9 +143,9 @@ const candidate = data.completionPort;
 const snapshotRoot = data.snapshotRoot;
 const agentRoot = data.agentRoot;
 if (
-  !(candidate instanceof MessagePort)
-  || typeof snapshotRoot !== 'string'
-  || typeof agentRoot !== 'string'
+  !(candidate instanceof MessagePort) ||
+  typeof snapshotRoot !== 'string' ||
+  typeof agentRoot !== 'string'
 ) {
   terminateThread(64);
 } else {
@@ -169,7 +172,11 @@ if (
     privateClose();
     terminateThread(0);
   } catch {
-    try { privateClose(); } catch { /* already closed */ }
+    try {
+      privateClose();
+    } catch {
+      /* already closed */
+    }
     terminateThread(70);
   }
 }

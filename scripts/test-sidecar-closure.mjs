@@ -13,6 +13,7 @@ const required = [
   'dist/pi/trust-loader-worker.js',
   'dist/pi/trust-loader-executor.js',
   'dist/pi/trust-loader-project-thread.js',
+  'fixture/active-branch-v3.jsonl',
   'node_modules/@piui/protocol/dist/codec.js',
   'node_modules/@piui/protocol/schema/envelope.schema.json',
   'node_modules/@earendil-works/pi-coding-agent/dist/index.js',
@@ -73,12 +74,12 @@ async function assertNoFinderMetadata(path) {
 }
 await assertNoFinderMetadata(sidecar);
 const rootEntries = (await readdir(sidecar)).sort();
-if (rootEntries.join(',') !== 'dist,manifest.json,node_modules,package.json') {
+if (rootEntries.join(',') !== 'dist,fixture,manifest.json,node_modules,package.json') {
   throw new Error(`Unexpected closure roots: ${rootEntries.join(', ')}`);
 }
 const packageJson = JSON.parse(await readFile(resolve(sidecar, 'package.json'), 'utf8'));
 const dependencyNames = Object.keys(packageJson.dependencies ?? {}).sort();
-if (dependencyNames.join(',') !== '@earendil-works/pi-coding-agent,@piui/protocol,ajv') {
+if (dependencyNames.join(',') !== '@earendil-works/pi-ai,@earendil-works/pi-coding-agent,@piui/protocol,ajv') {
   throw new Error(`Unexpected importer dependencies: ${dependencyNames.join(', ')}`);
 }
 

@@ -44,7 +44,10 @@ fn lifecycle_crash_restarts_with_new_generations_then_halts_and_allows_user_reco
 
     let user_recovered = restart
         .user_restart(&mut supervisor, &paths)
-        .expect("user restart resets the cut-off");
+        .unwrap_or_else(|error| {
+            let cause = supervisor.status().failure;
+            panic!("user restart resets the cut-off: {error}; supervisor cause: {cause:?}")
+        });
     assert!(!restart.is_halted());
     assert_eq!(restart.attempt_count(), 0);
     let user_generation = user_recovered.generation.expect("user generation");

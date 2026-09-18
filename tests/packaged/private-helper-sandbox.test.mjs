@@ -26,11 +26,19 @@ import {
   capturePrivateExecutable,
 } from '../../scripts/private-executable-lease.mjs';
 import {
+  captureCredentialCleanupHarness,
   credentialCleanupSandbox,
 } from '../../scripts/run-packaged-credential-probe.mjs';
 import {
   canaryScannerSandbox,
 } from '../../scripts/scan-secret-canary.mjs';
+import {
+  APPLE_TOOLCHAIN_PATHS,
+  appleToolchainBuildEnvironment,
+  captureAppleToolchainAuthority,
+  releaseAppleToolchainAuthority,
+  revalidateAppleToolchainAuthority,
+} from '../../scripts/apple-toolchain-trust.mjs';
 
 async function fixture(t, prefix) {
   const requested = await mkdtemp(resolve(tmpdir(), prefix));
@@ -89,20 +97,31 @@ test('private helper sandboxes grant only their named broker authority', {
 }, async (t) => {
   const root = await fixture(t, 'piui-private-helper-sandbox-');
   const helper = resolve(root, 'authority-probe');
-  const compilation = spawnSync('/usr/bin/clang', [
-    '-std=c17',
-    '-Wall',
-    '-Wextra',
-    '-Werror',
-    '-x',
-    'c',
-    '-',
-    '-o',
-    helper,
-  ], {
-    encoding: 'utf8',
-    env: { PATH: '/usr/bin:/bin' },
-    input: String.raw`
+  const authority = captureAppleToolchainAuthority();
+  let compilation;
+  try {
+    compilation = spawnSync(APPLE_TOOLCHAIN_PATHS.clang, [
+      '--no-default-config',
+      '-std=c17',
+      '-Wall',
+      '-Wextra',
+      '-Werror',
+      '-isysroot',
+      APPLE_TOOLCHAIN_PATHS.sdk,
+      '-x',
+      'c',
+      '-',
+      '-o',
+      helper,
+    ], {
+      encoding: 'utf8',
+      env: {
+        ...appleToolchainBuildEnvironment(),
+        LANG: 'C',
+        LC_ALL: 'C',
+        PATH: `${APPLE_TOOLCHAIN_PATHS.bin}:/usr/bin:/bin`,
+      },
+      input: String.raw`
 #include <stdio.h>
 #include <spawn.h>
 #include <sys/types.h>
@@ -139,7 +158,12 @@ int main(int argc, char **argv) {
   return 0;
 }
 `,
-  });
+      timeout: 30_000,
+    });
+    revalidateAppleToolchainAuthority(authority);
+  } finally {
+    releaseAppleToolchainAuthority(authority);
+  }
   assert.equal(compilation.status, 0, compilation.stderr);
   assert.equal(compilation.stdout, '');
   assert.equal(compilation.stderr, '');
@@ -200,4 +224,187 @@ int main(int argc, char **argv) {
     assert.equal(observed.processExec, 1);
   }
   assert.equal((await readFile(helper)).length > 0, true);
+});
+
+test('credential cleanup sandbox can perform a non-mutating Keychain lookup', {
+  skip: platform() !== 'darwin',
+}, async (t) => {
+  const root = await fixture(t, 'piui-credential-keychain-sandbox-');
+  const helper = resolve(root, 'keychain-lookup-probe');
+  const authority = captureAppleToolchainAuthority();
+  let compilation;
+  try {
+    compilation = spawnSync(APPLE_TOOLCHAIN_PATHS.clang, [
+      '--no-default-config',
+      '-std=c17',
+      '-Wall',
+      '-Wextra',
+      '-Werror',
+      '-Wno-deprecated-declarations',
+      '-isysroot',
+      APPLE_TOOLCHAIN_PATHS.sdk,
+      '-framework',
+      'CoreFoundation',
+      '-framework',
+      'Security',
+      '-x',
+      'c',
+      '-',
+      '-o',
+      helper,
+    ], {
+      encoding: 'utf8',
+      env: {
+        ...appleToolchainBuildEnvironment(),
+        LANG: 'C',
+        LC_ALL: 'C',
+        PATH: `${APPLE_TOOLCHAIN_PATHS.bin}:/usr/bin:/bin`,
+      },
+      input: String.raw`
+#include <CoreFoundation/CoreFoundation.h>
+#include <Security/Security.h>
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+
+int main(int argc, char **argv) {
+  if (argc != 3) return 64;
+  if (sysconf(_SC_PAGESIZE) <= 0) return 67;
+  SecKeychainRef keychain = NULL;
+  OSStatus status = SecKeychainCopyDomainDefault(kSecPreferencesDomainUser, &keychain);
+  if (status != errSecSuccess || keychain == NULL) {
+    printf("%d\n", (int)status);
+    return 65;
+  }
+  UInt32 password_length = 0;
+  void *password_data = NULL;
+  SecKeychainItemRef item = NULL;
+  status = SecKeychainFindGenericPassword(
+    keychain,
+    (UInt32)strlen(argv[1]),
+    argv[1],
+    (UInt32)strlen(argv[2]),
+    argv[2],
+    &password_length,
+    &password_data,
+    &item
+  );
+  if (password_data != NULL) SecKeychainItemFreeContent(NULL, password_data);
+  if (item != NULL) CFRelease(item);
+  CFRelease(keychain);
+  printf("%d\n", (int)status);
+  return status == errSecItemNotFound ? 0 : 66;
+}
+`,
+      timeout: 30_000,
+    });
+    revalidateAppleToolchainAuthority(authority);
+  } finally {
+    releaseAppleToolchainAuthority(authority);
+  }
+  assert.equal(compilation.status, 0, compilation.stderr);
+  assert.equal(compilation.stdout, '');
+  assert.equal(compilation.stderr, '');
+  await chmod(helper, 0o500);
+
+  const service = `au.com.piui.desktop.credential-index.test.profile-${process.pid}-${Date.now()}`;
+  const baseline = spawnSync(helper, [service, 'provider-index-v1'], {
+    cwd: root,
+    encoding: 'utf8',
+    env: { LANG: 'C', LC_ALL: 'C', PATH: '/usr/bin:/bin' },
+    timeout: 30_000,
+  });
+  assert.equal(baseline.status, 0, JSON.stringify({
+    signal: baseline.signal,
+    stderr: baseline.stderr,
+    stdout: baseline.stdout,
+  }));
+  assert.equal(baseline.signal, null);
+  assert.equal(baseline.stderr, '');
+  assert.equal(baseline.stdout, '-25300\n');
+
+  const capturedHelper = await capturePrivateExecutable({
+    controlRoot: resolve(root, 'control'),
+    executableName: 'keychain-lookup-probe',
+    sourcePath: helper,
+  });
+  assert.equal(await assertPrivateExecutableLease(capturedHelper), true);
+  const profile = credentialCleanupSandbox(capturedHelper.path);
+  assert.match(
+    profile,
+    /\(allow sysctl-read\s+\(sysctl-name "hw\.pagesize_compat"\)\s+\(sysctl-name "security\.mac\.sandbox\.sentinel"\)\)/u,
+  );
+  assert.doesNotMatch(profile, /\(allow sysctl-read\)\s/u);
+  assert.match(profile, /com\.apple\.system\.opendirectoryd\.libinfo/u);
+  assert.match(profile, /Library\/Keychains\/login\.keychain-db/u);
+  const result = spawnSync('/usr/bin/sandbox-exec', [
+    '-p',
+    profile,
+    capturedHelper.path,
+    service,
+    'provider-index-v1',
+  ], {
+    cwd: root,
+    encoding: 'utf8',
+    env: { LANG: 'C', LC_ALL: 'C', PATH: '/usr/bin:/bin' },
+    timeout: 30_000,
+  });
+  assert.equal(result.status, 0, JSON.stringify({
+    signal: result.signal,
+    stderr: result.stderr,
+    stdout: result.stdout,
+  }));
+  assert.equal(result.signal, null);
+  assert.equal(result.stderr, '');
+  assert.equal(result.stdout, '-25300\n');
+  assert.equal(await assertPrivateExecutableLease(capturedHelper), true);
+});
+
+test('captured credential cleanup harness can clear a fresh namespace in its sandbox', {
+  skip: platform() !== 'darwin',
+}, async (t) => {
+  const projectRoot = resolve(import.meta.dirname, '../..');
+  const source = resolve(
+    projectRoot,
+    'src-tauri/target/aarch64-apple-darwin/release/credential-cleanup-harness',
+  );
+  try {
+    await lstat(source);
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+    t.skip('release credential cleanup harness is not built');
+    return;
+  }
+
+  const root = await fixture(t, 'piui-captured-credential-cleanup-');
+  const capturedHelper = await captureCredentialCleanupHarness(
+    projectRoot,
+    resolve(root, 'control'),
+  );
+  const namespace = `a23-${Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toString('hex')}`;
+  const result = spawnSync('/usr/bin/sandbox-exec', [
+    '-p',
+    credentialCleanupSandbox(capturedHelper.path),
+    capturedHelper.path,
+  ], {
+    cwd: '/',
+    encoding: 'utf8',
+    env: { LANG: 'en_AU.UTF-8', PATH: '/usr/bin:/bin:/usr/sbin:/sbin' },
+    input: `${namespace}\n`,
+    timeout: 30_000,
+  });
+  assert.deepEqual({
+    error: result.error?.code,
+    signal: result.signal,
+    status: result.status,
+    stderr: result.stderr,
+    stdout: result.stdout,
+  }, {
+    error: undefined,
+    signal: null,
+    status: 0,
+    stderr: '',
+    stdout: '{"schemaVersion":1,"cleanupSucceeded":true,"indexAbsent":true}\n',
+  });
+  assert.equal(await assertPrivateExecutableLease(capturedHelper), true);
 });

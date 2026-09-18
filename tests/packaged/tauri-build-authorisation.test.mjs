@@ -3,8 +3,10 @@ import { spawnSync } from 'node:child_process';
 import {
   chmod,
   cp,
+  lstat,
   mkdir,
   mkdtemp,
+  readdir,
   realpath,
   rename,
   rm,
@@ -21,10 +23,89 @@ import {
   revalidateTauriBuildAuthorisation,
   validateTauriBuildAuthorisation,
 } from '../../scripts/tauri-build-authorisation.mjs';
+import {
+  canonicalArchitectureJson,
+  sha256Bytes,
+} from '../../scripts/architecture-gate-schema.mjs';
 import { snapshotArchitectureSource } from '../../scripts/architecture-source-snapshot.mjs';
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const sha = (character) => character.repeat(64);
+
+async function captureToolchainClosureWitness(root) {
+  const inventory = [];
+  async function visit(path, pathLabel) {
+    const state = await lstat(path);
+    if (state.isDirectory() && !state.isSymbolicLink()) {
+      inventory.push({ kind: 'directory', path: pathLabel });
+      const entries = await readdir(path, { withFileTypes: true });
+      entries.sort((left, right) => Buffer.from(left.name).compare(Buffer.from(right.name)));
+      for (const entry of entries) {
+        await visit(
+          join(path, entry.name),
+          pathLabel === '.' ? entry.name : `${pathLabel}/${entry.name}`,
+        );
+      }
+      return;
+    }
+    assert.equal(state.isFile() && !state.isSymbolicLink(), true);
+    const bytes = await readFile(path);
+    inventory.push({
+      executable: (state.mode & 0o111) !== 0,
+      path: pathLabel,
+      sha256: sha256Bytes(bytes),
+      size: bytes.length,
+    });
+  }
+  await visit(root, '.');
+  const inventoryBytes = Buffer.from(`${canonicalArchitectureJson(inventory)}\n`, 'utf8');
+  return Object.freeze({
+    entries: inventory.length,
+    inventoryBytes,
+    inventorySha256: sha256Bytes(inventoryBytes),
+    root,
+  });
+}
+
+function withInventoryEntries(witness, addedEntries) {
+  const inventory = JSON.parse(
+    witness.inventoryBytes.subarray(0, -1).toString('utf8'),
+  );
+  inventory.push(...addedEntries);
+  const inventoryBytes = Buffer.from(
+    `${canonicalArchitectureJson(inventory)}\n`,
+    'utf8',
+  );
+  return Object.freeze({
+    entries: inventory.length,
+    inventoryBytes,
+    inventorySha256: sha256Bytes(inventoryBytes),
+    root: witness.root,
+  });
+}
+
+async function createPrivateBuildToolsFixture(t, prefix) {
+  const canonicalTemporaryRoot = await realpath(tmpdir());
+  const root = await mkdtemp(join(canonicalTemporaryRoot, prefix));
+  t.after(async () => rm(root, { force: true, recursive: true }));
+  const buildIsolate = join(root, 'build');
+  const pnpmRoot = join(root, 'pnpm', '9.15.0');
+  await mkdir(buildIsolate, { mode: 0o700 });
+  await mkdir(join(pnpmRoot, 'bin'), { mode: 0o700, recursive: true });
+  await mkdir(join(pnpmRoot, 'dist'), { mode: 0o700 });
+  const pnpmEntry = join(pnpmRoot, 'bin', 'pnpm.cjs');
+  const pnpmNode = join(root, 'source-node');
+  await writeFile(pnpmEntry, 'require("../dist/pnpm.cjs");\n', { mode: 0o700 });
+  await writeFile(join(pnpmRoot, 'dist', 'pnpm.cjs'), 'module.exports = {};\n', { mode: 0o600 });
+  await writeFile(pnpmNode, '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+  const authenticatedToolchainWitness = await captureToolchainClosureWitness(root);
+  return {
+    authenticatedToolchainWitness,
+    buildIsolate,
+    pnpmEntry,
+    pnpmNode,
+  };
+}
 
 async function createFixture(t) {
   const canonicalTemporaryRoot = await realpath(tmpdir());
@@ -158,8 +239,10 @@ test('copies the Node and complete pnpm package into the private build isolate',
   await writeFile(pnpmEntry, 'require("../dist/pnpm.cjs");\n', { mode: 0o700 });
   await writeFile(join(pnpmRoot, 'dist', 'pnpm.cjs'), 'module.exports = {};\n', { mode: 0o600 });
   await writeFile(pnpmNode, '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+  const authenticatedToolchainWitness = await captureToolchainClosureWitness(root);
 
   const copied = await preparePrivateTauriBuildTools({
+    authenticatedToolchainWitness,
     buildIsolate,
     pnpmEntry,
     pnpmNode,
@@ -173,18 +256,125 @@ test('copies the Node and complete pnpm package into the private build isolate',
   );
 });
 
-test('the real private Node and pnpm copies execute the pinned package manager', async (t) => {
-  const canonicalTemporaryRoot = await realpath(tmpdir());
-  const buildIsolate = await mkdtemp(join(canonicalTemporaryRoot, 'piui-real-private-tools.'));
-  t.after(async () => rm(buildIsolate, { force: true, recursive: true }));
-  const pnpmEntry = await realpath(join(
-    homedir(),
-    '.cache/node/corepack/v1/pnpm/9.15.0/bin/pnpm.cjs',
-  ));
+test('toolchain witness permits the pinned Rust driver without broadening copied-tool bounds', async (t) => {
+  const source = await readFile(
+    resolve(repositoryRoot, 'scripts/tauri-build-authorisation.mjs'),
+    'utf8',
+  );
+  assert.match(source, /const MAX_TOOL_BYTES = 128 \* 1_048_576;/u);
+  assert.match(source, /const MAX_TOOLCHAIN_ENTRY_BYTES = 256 \* 1_048_576;/u);
+  assert.match(source, /entry\.size > MAX_TOOLCHAIN_ENTRY_BYTES/u);
+  assert.match(source, /before\.size > BigInt\(MAX_TOOL_BYTES\)/u);
+  assert.ok(204_378_184 < 256 * 1_048_576);
+  assert.ok(204_378_184 > 128 * 1_048_576);
+
+  const fixture = await createPrivateBuildToolsFixture(
+    t,
+    'piui-large-toolchain-witness-entry.',
+  );
+  const authenticatedToolchainWitness = withInventoryEntries(
+    fixture.authenticatedToolchainWitness,
+    [
+      { kind: 'directory', path: 'rust-toolchain' },
+      { kind: 'directory', path: 'rust-toolchain/lib' },
+      {
+        executable: false,
+        path: 'rust-toolchain/lib/librustc_driver-test.dylib',
+        sha256: sha('a'),
+        size: 204_378_184,
+      },
+    ],
+  );
   const copied = await preparePrivateTauriBuildTools({
+    ...fixture,
+    authenticatedToolchainWitness,
+  });
+  assert.equal(await readFile(copied.pnpmNode, 'utf8'), '#!/bin/sh\nexit 0\n');
+});
+
+test('toolchain witness rejects an individual entry above 256 MiB', async (t) => {
+  const fixture = await createPrivateBuildToolsFixture(
+    t,
+    'piui-oversized-toolchain-witness-entry.',
+  );
+  const authenticatedToolchainWitness = withInventoryEntries(
+    fixture.authenticatedToolchainWitness,
+    [{
+      executable: false,
+      path: 'rust-toolchain/lib/oversized.dylib',
+      sha256: sha('b'),
+      size: (256 * 1_048_576) + 1,
+    }],
+  );
+  await assert.rejects(preparePrivateTauriBuildTools({
+    ...fixture,
+    authenticatedToolchainWitness,
+  }), /Authenticated toolchain closure witness is invalid/u);
+});
+
+test('rejects a replacement pnpm ancestor that is absent from the authenticated witness', async (t) => {
+  const canonicalTemporaryRoot = await realpath(tmpdir());
+  const root = await mkdtemp(join(canonicalTemporaryRoot, 'piui-private-tools-ancestor.'));
+  t.after(async () => rm(root, { force: true, recursive: true }));
+  const buildIsolate = join(root, 'build');
+  const closureRoot = join(root, 'authenticated-toolchain');
+  const originalRoot = join(root, 'authenticated-toolchain.original');
+  const replacementRoot = join(root, 'authenticated-toolchain.replacement');
+  const pnpmEntry = join(closureRoot, 'pnpm-tool', 'bin', 'pnpm.cjs');
+  const pnpmNode = join(closureRoot, 'node-tool', 'bin', 'node');
+  await mkdir(buildIsolate, { mode: 0o700 });
+  await mkdir(dirname(pnpmEntry), { mode: 0o700, recursive: true });
+  await mkdir(join(closureRoot, 'pnpm-tool', 'dist'), { mode: 0o700 });
+  await mkdir(dirname(pnpmNode), { mode: 0o700, recursive: true });
+  await writeFile(pnpmEntry, 'require("../dist/pnpm.cjs");\n', { mode: 0o700 });
+  await writeFile(
+    join(closureRoot, 'pnpm-tool', 'dist', 'pnpm.cjs'),
+    'module.exports = { trusted: true };\n',
+    { mode: 0o600 },
+  );
+  await writeFile(pnpmNode, '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+  const authenticatedToolchainWitness = await captureToolchainClosureWitness(closureRoot);
+
+  await cp(closureRoot, replacementRoot, { preserveTimestamps: true, recursive: true });
+  await writeFile(
+    join(replacementRoot, 'pnpm-tool', 'dist', 'pnpm.cjs'),
+    'module.exports = { trusted: false };\n',
+    { mode: 0o600 },
+  );
+  await rename(closureRoot, originalRoot);
+  await rename(replacementRoot, closureRoot);
+
+  await assert.rejects(preparePrivateTauriBuildTools({
+    authenticatedToolchainWitness,
     buildIsolate,
     pnpmEntry,
-    pnpmNode: process.execPath,
+    pnpmNode,
+  }), /does not match the authenticated toolchain closure witness/u);
+});
+
+test('the real private Node and pnpm copies execute the pinned package manager', async (t) => {
+  const canonicalTemporaryRoot = await realpath(tmpdir());
+  const root = await mkdtemp(join(canonicalTemporaryRoot, 'piui-real-private-tools.'));
+  t.after(async () => rm(root, { force: true, recursive: true }));
+  const buildIsolate = join(root, 'build');
+  const closureRoot = join(root, 'authenticated-toolchain');
+  const pnpmRoot = join(closureRoot, 'pnpm-tool');
+  const pnpmNode = join(closureRoot, 'node-tool', 'bin', 'node');
+  await mkdir(buildIsolate, { mode: 0o700 });
+  await mkdir(dirname(pnpmNode), { mode: 0o700, recursive: true });
+  const realPnpmRoot = await realpath(join(
+    homedir(),
+    '.cache/node/corepack/v1/pnpm/9.15.0',
+  ));
+  await cp(realPnpmRoot, pnpmRoot, { recursive: true });
+  await cp(process.execPath, pnpmNode);
+  const pnpmEntry = join(pnpmRoot, 'bin', 'pnpm.cjs');
+  const authenticatedToolchainWitness = await captureToolchainClosureWitness(closureRoot);
+  const copied = await preparePrivateTauriBuildTools({
+    authenticatedToolchainWitness,
+    buildIsolate,
+    pnpmEntry,
+    pnpmNode,
   });
   const version = spawnSync(copied.pnpmNode, [copied.pnpmEntry, '--version'], {
     encoding: 'utf8',

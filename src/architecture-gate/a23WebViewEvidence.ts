@@ -4,6 +4,9 @@ import { invoke } from '@tauri-apps/api/core';
  * Retained for historical comparison only. This WebView-authored recorder is
  * deliberately not imported by the A.23 probe and is not acceptance evidence.
  * The formal gate records the native Tauri invoke/event boundary in Rust.
+ * The native `credential_webview_snapshot` command this recorder once targeted
+ * has been retired from the Rust handler, so `capture()` now fails closed
+ * rather than invoking it.
  */
 
 export const A23_OBSERVED_TAURI_EVENTS = ['piui://stream-probe'] as const;
@@ -30,11 +33,6 @@ type AppEventObservation = {
   sequence: number;
   event: typeof A23_OBSERVED_TAURI_EVENTS[number];
   payload: JsonValue;
-};
-
-type SnapshotReceipt = {
-  schemaVersion: 1;
-  state: 'captured';
 };
 
 function snapshotValue(value: unknown): JsonValue {
@@ -165,9 +163,6 @@ export class A23WebViewEvidenceRecorder {
       throw new Error('a23-webview-snapshot-overflow');
     }
     encoded.fill(0);
-    const receipt = await invoke<SnapshotReceipt>('credential_webview_snapshot', { snapshot });
-    if (receipt.schemaVersion !== 1 || receipt.state !== 'captured') {
-      throw new Error('a23-webview-snapshot-rejected');
-    }
+    throw new Error('a23-webview-snapshot-retired');
   }
 }

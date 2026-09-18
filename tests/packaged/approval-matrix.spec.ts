@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 import {
@@ -8,6 +9,7 @@ import {
 } from '../fixtures/tools/approval-probes.js';
 import {
   APPROVAL_MATRIX_EXPECTED_EVIDENCE,
+  approvalMatrixSandbox,
   parseApprovalMatrixHarnessEvidence,
   parsePackagedApprovalMatrixEvidence,
 } from '../../scripts/run-packaged-approval-probe.mjs';
@@ -32,6 +34,37 @@ function line(value: unknown): Buffer {
 }
 
 describe('A.25 fixed packaged approval matrix', () => {
+  it.skipIf(process.platform !== 'darwin')(
+    'boots the native harness through the deny-default dyld profile',
+    () => {
+      const profile = approvalMatrixSandbox({
+        appPath: '/usr/bin',
+        harnessPath: '/usr/bin/true',
+        isolatePath: '/private/tmp',
+        nodePath: '/bin/sh',
+      });
+      expect(profile).toContain('(deny default)');
+      expect(profile).toContain('(import "dyld-support.sb")');
+      expect(profile).not.toContain('(import "system.sb")');
+      expect(profile).not.toContain('(allow default)');
+
+      const result = spawnSync(
+        '/usr/bin/sandbox-exec',
+        ['-p', profile, '--', '/usr/bin/true'],
+        {
+          cwd: '/',
+          encoding: 'utf8',
+          env: { LANG: 'C', LC_ALL: 'C', PATH: '/usr/bin:/bin' },
+          timeout: 30_000,
+        },
+      );
+      expect(result.status).toBe(0);
+      expect(result.signal).toBeNull();
+      expect(result.stdout).toBe('');
+      expect(result.stderr).toBe('');
+    },
+  );
+
   it('pins five generations, twelve three-call public SDK turns and the exact risk cases', () => {
     expect(APPROVAL_PROBE_MANIFEST).toEqual({
       schemaVersion: 1,

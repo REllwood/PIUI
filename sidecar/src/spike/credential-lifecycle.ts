@@ -36,10 +36,14 @@ type SafeLifecycleFailure = Readonly<{
   status: 'fail';
 }>;
 
-function isApiKey(credential: PublicCredential | undefined): credential is Extract<PublicCredential, { type: 'api_key' }> {
-  return credential?.type === 'api_key'
-    && typeof credential.key === 'string'
-    && credential.key.length > 0;
+function isApiKey(
+  credential: PublicCredential | undefined,
+): credential is Extract<PublicCredential, { type: 'api_key' }> {
+  return (
+    credential?.type === 'api_key' &&
+    typeof credential.key === 'string' &&
+    credential.key.length > 0
+  );
 }
 
 function clearCredential(credential: PublicCredential | undefined): void {
@@ -62,10 +66,7 @@ async function attemptFailureCleanup(store: PiCredentialStore): Promise<void> {
     timer = setTimeout(resolve, FAILURE_CLEANUP_DEADLINE_MS);
   });
   try {
-    await Promise.race([
-      store.delete(PROVIDER_ID).catch(() => undefined),
-      deadline,
-    ]);
+    await Promise.race([store.delete(PROVIDER_ID).catch(() => undefined), deadline]);
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
@@ -200,8 +201,7 @@ export function createA23CredentialLifecycleFromEnvironment(): A23CredentialLife
   }
   const resultPath = process.env.PIUI_A23_RESULT_PATH;
   const triggerPath = process.env.PIUI_A23_TRIGGER_PATH;
-  if (!resultPath?.startsWith('/') || !triggerPath?.startsWith('/')
-    || resultPath === triggerPath) {
+  if (!resultPath?.startsWith('/') || !triggerPath?.startsWith('/') || resultPath === triggerPath) {
     throw new Error('credential-lifecycle-rejected');
   }
   return new A23CredentialLifecycle(resultPath, triggerPath);

@@ -773,7 +773,7 @@ mod tests {
             .windows(canary.len())
             .any(|window| window == canary.as_bytes()));
         let panic = catch_unwind(AssertUnwindSafe(|| {
-            assert!(canary.as_bytes().is_empty(), "credential predicate failed")
+            assert!(canary.is_empty(), "credential predicate failed")
         }))
         .expect_err("generated canary assertion intentionally failed");
         let panic_text = panic

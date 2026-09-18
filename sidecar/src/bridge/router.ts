@@ -36,7 +36,12 @@ export class SidecarRouter {
   #seen = new Map<string, ProtocolEnvelope>();
   #streams = new Map<string, StreamSnapshot>();
 
-  next(kind: ProtocolEnvelope['kind'], _suggestedId: string, payload: Record<string, unknown>, correlationId?: string): ProtocolEnvelope {
+  next(
+    kind: ProtocolEnvelope['kind'],
+    _suggestedId: string,
+    payload: Record<string, unknown>,
+    correlationId?: string,
+  ): ProtocolEnvelope {
     const sequence = this.#sequence++;
     if (kind === 'event' && correlationId) this.#recordStreamEvent(correlationId, payload);
     return {

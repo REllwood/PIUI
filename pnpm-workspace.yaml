@@ -4,3 +4,6 @@ packages:
 
 onlyBuiltDependencies:
   - esbuild
+
+# A repository regression test exercises every installed brace-expansion
+# line's output bound in addition to the zero-advisory dependency audit.

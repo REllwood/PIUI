@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises';
 import { describe, expect, it, vi } from 'vitest';
 import { MAX_HIGHLIGHT_BYTES } from './markdownPolicy';
 import {
@@ -28,28 +29,34 @@ describe('bounded token-only highlighting', () => {
     const hostile = '</span><script>window.hostile=true</script>';
     const loader: FixedHighlighterLoader = async () => ({
       codeToTokens: () => ({
-        tokens: [[
-          {
-            content: 'const',
-            explanation: [{ content: 'const', scopes: [{ scopeName: 'keyword.control.ts' }] }],
-          },
-          { content: ` value = ${hostile}` },
-        ]],
+        tokens: [
+          [
+            {
+              content: 'const',
+              explanation: [{ content: 'const', scopes: [{ scopeName: 'keyword.control.ts' }] }],
+            },
+            { content: ` value = ${hostile}` },
+          ],
+        ],
       }),
     });
     const result = await highlightCode(`const value = ${hostile}`, 'ts', loader);
     expect(result).toEqual({
       language: 'typescript',
-      lines: [[
-        { content: 'const', className: 'tok-keyword' },
-        { content: ` value = ${hostile}`, className: null },
-      ]],
+      lines: [
+        [
+          { content: 'const', className: 'tok-keyword' },
+          { content: ` value = ${hostile}`, className: null },
+        ],
+      ],
     });
     expect(JSON.stringify(result)).not.toContain('style=');
   });
 
   it('surfaces loader rejection to the renderer plain-text fallback without retrying here', async () => {
-    const loader = vi.fn<FixedHighlighterLoader>().mockRejectedValue(new Error('synthetic import failure'));
+    const loader = vi
+      .fn<FixedHighlighterLoader>()
+      .mockRejectedValue(new Error('synthetic import failure'));
     await expect(highlightCode('const safe = true', 'ts', loader)).rejects.toThrow(
       'synthetic import failure',
     );
@@ -67,9 +74,9 @@ describe('bounded token-only highlighting', () => {
 
   it('counts multiline newline text nodes at the exact and one-over per-block rendering budget', async () => {
     const lineCount = MAX_HIGHLIGHT_RENDER_NODES_PER_BLOCK / 2;
-    const tokensAtLimit = Array.from({ length: lineCount }, (_, index) => (
-      index === 0 ? [{ content: 'x' }] : []
-    ));
+    const tokensAtLimit = Array.from({ length: lineCount }, (_, index) =>
+      index === 0 ? [{ content: 'x' }] : [],
+    );
     const exactLoader: FixedHighlighterLoader = async () => ({
       codeToTokens: () => ({ tokens: tokensAtLimit }),
     });
@@ -78,9 +85,9 @@ describe('bounded token-only highlighting', () => {
 
     const oneOverLoader: FixedHighlighterLoader = async () => ({
       codeToTokens: () => ({
-        tokens: tokensAtLimit.map((line, index) => (
-          index === 0 ? [...line, { content: 'one-over' }] : line
-        )),
+        tokens: tokensAtLimit.map((line, index) =>
+          index === 0 ? [...line, { content: 'one-over' }] : line,
+        ),
       }),
     });
     expect(await highlightCode('bounded input', 'ts', oneOverLoader)).toBeNull();
@@ -123,27 +130,32 @@ describe('bounded token-only highlighting', () => {
     expect(tokenise).toHaveBeenCalledTimes(1);
 
     await registry.request('react-block-2', 'const safe = true', 'ts');
-    expect(tokenise, 'identical blocks share the exact tokenisation promise').toHaveBeenCalledTimes(1);
+    expect(tokenise, 'identical blocks share the exact tokenisation promise').toHaveBeenCalledTimes(
+      1,
+    );
   });
 
   it('counts multiline newline text nodes at the exact and one-over aggregate rendering budget', async () => {
     const lineCount = MAX_HIGHLIGHT_RENDER_NODES_PER_BLOCK / 2;
     const fixed: FixedHighlightResult = {
       language: 'typescript',
-      lines: Array.from({ length: lineCount }, (_, index) => (
-        index === 0 ? [{ content: 'x', className: null }] : []
-      )),
+      lines: Array.from({ length: lineCount }, (_, index) =>
+        index === 0 ? [{ content: 'x', className: null }] : [],
+      ),
     };
     const registry = createHighlightJobRegistry(async () => fixed);
     const acceptedBlocks = MAX_HIGHLIGHT_RENDER_NODES_TOTAL / MAX_HIGHLIGHT_RENDER_NODES_PER_BLOCK;
     for (let index = 0; index < acceptedBlocks; index += 1) {
-      await expect(registry.request(`owner-${index}`, `code-${index}`, 'ts'))
-        .resolves.toMatchObject({ result: fixed, reason: null });
+      await expect(
+        registry.request(`owner-${index}`, `code-${index}`, 'ts'),
+      ).resolves.toMatchObject({ result: fixed, reason: null });
     }
-    await expect(registry.request('aggregate-over', 'aggregate-over', 'ts')).resolves.toMatchObject({
-      result: null,
-      reason: 'Plain code: message highlight rendering budget reached.',
-    });
+    await expect(registry.request('aggregate-over', 'aggregate-over', 'ts')).resolves.toMatchObject(
+      {
+        result: null,
+        reason: 'Plain code: message highlight rendering budget reached.',
+      },
+    );
   });
 
   it('falls back at the fixed highlight job budget', async () => {
@@ -152,12 +164,46 @@ describe('bounded token-only highlighting', () => {
       lines: [[{ content: 'x', className: null }]],
     }));
     for (let index = 0; index < MAX_HIGHLIGHT_JOBS; index += 1) {
-      await expect(jobRegistry.request(`job-${index}`, `x${index}`, 'ts'))
-        .resolves.toMatchObject({ reason: null });
+      await expect(jobRegistry.request(`job-${index}`, `x${index}`, 'ts')).resolves.toMatchObject({
+        reason: null,
+      });
     }
     await expect(jobRegistry.request('job-over', 'over', 'ts')).resolves.toMatchObject({
       result: null,
       reason: 'Plain code: message highlight work budget reached.',
     });
   });
+
+  it('drives all three packaged fallback paths with the audited hostile fixture and real Shiki', async () => {
+    const fixture = await readFile(
+      new URL('../../tests/fixtures/markdown/hostile.md', import.meta.url),
+      'utf8',
+    );
+    const supportedBlocks = [...fixture.matchAll(/^```([^\n]*)\n([\s\S]*?)^```$/gmu)]
+      .map((match) => ({ language: match[1], code: match[2] }))
+      .filter(({ language }) => language === 'tsx' || language === 'typescript');
+    expect(supportedBlocks).toHaveLength(4);
+
+    const registry = createHighlightJobRegistry();
+    const outcomes = [];
+    for (const [index, block] of supportedBlocks.entries()) {
+      outcomes.push(await registry.request(`fixture-${index}`, block.code, block.language));
+    }
+
+    expect(outcomes[0]).toMatchObject({ reason: null });
+    expect(outcomes[0]?.result).not.toBeNull();
+    expect(supportedBlocks[1]?.code).toMatch(/^const A26_RENDER_BUDGET_START:/);
+    expect(outcomes[1]).toEqual({
+      result: null,
+      reason: 'Plain code: per-block highlight rendering budget reached.',
+    });
+    expect(supportedBlocks[2]?.code).toMatch(/^\/\/ A26_WORK_PRIMER_START /);
+    expect(outcomes[2]).toMatchObject({ reason: null });
+    expect(outcomes[2]?.result).not.toBeNull();
+    expect(supportedBlocks[3]?.code).toMatch(/^\/\/ A26_WORK_BUDGET_START /);
+    expect(outcomes[3]).toEqual({
+      result: null,
+      reason: 'Plain code: message highlight work budget reached.',
+    });
+  }, 20_000);
 });

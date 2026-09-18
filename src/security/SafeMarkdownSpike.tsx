@@ -50,6 +50,7 @@ export type SafeMarkdownSpikeProps = Readonly<{
   openExternal: (target: ValidatedExternalTarget) => void;
   complete?: boolean;
   applicationOrigin?: string;
+  embedded?: boolean;
 }>;
 
 type MarkdownAuthority = Readonly<{
@@ -280,31 +281,69 @@ function useOverflowFocus<T extends HTMLElement>() {
 
 function CodeBlock({ children }: { children?: ReactNode }) {
   const { elementRef, overflowing } = useOverflowFocus<HTMLPreElement>();
+  const [wrap, setWrap] = useState(false);
+  const [copyState, setCopyState] = useState<'idle' | 'copying' | 'copied' | 'failed'>('idle');
+  const copy = async () => {
+    if (copyState === 'copying') return;
+    setCopyState('copying');
+    try {
+      const source = elementRef.current?.cloneNode(true);
+      if (!(source instanceof HTMLElement)) throw new Error('code-copy-unavailable');
+      source
+        .querySelectorAll('.markdown__code-loading, .markdown__code-reason')
+        .forEach((element) => element.remove());
+      await navigator.clipboard.writeText(source.textContent ?? '');
+      setCopyState('copied');
+    } catch {
+      setCopyState('failed');
+    }
+  };
   return (
-    <pre
-      ref={elementRef}
-      className="markdown__code-block"
-      role={overflowing ? 'region' : undefined}
-      tabIndex={overflowing ? 0 : undefined}
-      aria-label={overflowing ? 'Scrollable code block' : undefined}
-    >
-      {children}
-    </pre>
+    <div className="markdown__code-shell" data-wrap={wrap}>
+      <div className="markdown__code-toolbar" aria-label="Code block actions">
+        <button type="button" aria-pressed={wrap} onClick={() => setWrap((current) => !current)}>
+          {wrap ? 'Wrap on' : 'Wrap off'}
+        </button>
+        <button type="button" disabled={copyState === 'copying'} onClick={() => void copy()}>
+          {copyState === 'copying' ? (
+            <>
+              <span className="markdown-probe__spinner" aria-hidden="true" />
+              Copying…
+            </>
+          ) : copyState === 'copied' ? (
+            'Copied'
+          ) : copyState === 'failed' ? (
+            'Copy failed'
+          ) : (
+            'Copy code'
+          )}
+        </button>
+      </div>
+      <pre
+        ref={elementRef}
+        className="markdown__code-block"
+        role={overflowing && !wrap ? 'region' : undefined}
+        tabIndex={overflowing && !wrap ? 0 : undefined}
+        aria-label={overflowing && !wrap ? 'Scrollable code block' : undefined}
+      >
+        {children}
+      </pre>
+    </div>
   );
 }
 
 function highlightedLines(result: FixedHighlightResult) {
   return result.lines.map((line, lineIndex) => (
     <span className="markdown__token-line" key={`line-${lineIndex}`}>
-      {line.map((token, tokenIndex) => (
+      {line.map((token, tokenIndex) =>
         token.className ? (
           <span className={token.className} key={`token-${lineIndex}-${tokenIndex}`}>
             {token.content}
           </span>
         ) : (
           token.content
-        )
-      ))}
+        ),
+      )}
       {lineIndex < result.lines.length - 1 ? '\n' : null}
     </span>
   ));
@@ -318,7 +357,9 @@ function SafeCode({ children, className }: { children?: ReactNode; className?: s
   const isBlock = typeof languageName === 'string';
   const text = isBlock && rawText?.endsWith('\n') ? rawText.slice(0, -1) : rawText;
   const language = resolveHighlightLanguage(languageName);
-  const eligible = Boolean(authority?.complete && isBlock && text !== null && language && isWithinHighlightBounds(text));
+  const eligible = Boolean(
+    authority?.complete && isBlock && text !== null && language && isWithinHighlightBounds(text),
+  );
   const highlightJobs = authority?.highlightJobs;
   const [highlighted, setHighlighted] = useState<FixedHighlightResult | null>(null);
   const [budgetReason, setBudgetReason] = useState<string | null>(null);
@@ -329,8 +370,12 @@ function SafeCode({ children, className }: { children?: ReactNode; className?: s
     setHighlighted(null);
     setBudgetReason(null);
     setFailed(false);
-    if (!eligible || text === null || !highlightJobs) return () => { active = false; };
-    void highlightJobs.request(ownerId, text, languageName)
+    if (!eligible || text === null || !highlightJobs)
+      return () => {
+        active = false;
+      };
+    void highlightJobs
+      .request(ownerId, text, languageName)
       .then((outcome) => {
         if (!active) return;
         setHighlighted(outcome.result);
@@ -507,9 +552,10 @@ function createParserOutputGuard(): AllowElement {
 
     if (element.tagName === 'pre') {
       codeBlocks += 1;
-      const codeChild = element.children.length === 1 && element.children[0].type === 'element'
-        ? element.children[0]
-        : null;
+      const codeChild =
+        element.children.length === 1 && element.children[0].type === 'element'
+          ? element.children[0]
+          : null;
       if (!codeChild || codeChild.tagName !== 'code') return false;
       let codeUnits = 0;
       for (const child of codeChild.children) {
@@ -542,16 +588,81 @@ export function SafeMarkdownSpike({
   openExternal,
   complete = true,
   applicationOrigin = window.location.origin,
+  embedded = false,
 }: SafeMarkdownSpikeProps) {
   const prepared = prepareMarkdown(markdown);
   const highlightJobs = useMemo(() => createHighlightJobRegistry(), [markdown]);
-  const authority: MarkdownAuthority = useMemo(() => Object.freeze({
-    assetRegistry,
-    openExternal,
-    complete,
-    applicationOrigin,
-    highlightJobs,
-  }), [applicationOrigin, assetRegistry, complete, highlightJobs, openExternal]);
+  const authority: MarkdownAuthority = useMemo(
+    () =>
+      Object.freeze({
+        assetRegistry,
+        openExternal,
+        complete,
+        applicationOrigin,
+        highlightJobs,
+      }),
+    [applicationOrigin, assetRegistry, complete, highlightJobs, openExternal],
+  );
+
+  const content = (
+    <>
+      {prepared.rawHtmlOmitted ? (
+        <details className="markdown__raw-audit" open>
+          <summary>
+            Raw HTML-like input preserved as inert audit excerpts ·{' '}
+            {prepared.rawHtmlAudit.candidateCount}
+          </summary>
+          <pre role="region" tabIndex={0} aria-label="Inert raw Markdown source">
+            {prepared.rawHtmlAudit.excerpts.join('\n\n')}
+          </pre>
+          {prepared.rawHtmlAudit.shortened ? (
+            <p>Additional raw HTML candidates were omitted from the bounded audit.</p>
+          ) : null}
+        </details>
+      ) : null}
+      {prepared.notice ? (
+        <p className="markdown__safety-notice" role="status">
+          {prepared.notice}
+        </p>
+      ) : null}
+      {prepared.mode === 'plain' ? (
+        <pre
+          className="markdown__plain-fallback"
+          data-testid="markdown-plain-fallback"
+          role="region"
+          aria-label="Plain text safety preview"
+          tabIndex={0}
+          onKeyDown={scrollPlainFallback}
+        >
+          {prepared.source}
+        </pre>
+      ) : (
+        <article className="markdown__prose">
+          <AuthorityContext.Provider value={authority}>
+            <ReactMarkdown
+              remarkPlugins={remarkPlugins}
+              skipHtml
+              allowedElements={allowedElements}
+              allowElement={createParserOutputGuard()}
+              unwrapDisallowed={false}
+              urlTransform={safeMarkdownUrlTransform}
+              components={safeComponents}
+            >
+              {prepared.source}
+            </ReactMarkdown>
+          </AuthorityContext.Provider>
+        </article>
+      )}
+    </>
+  );
+
+  if (embedded) {
+    return (
+      <section className="markdown-embedded" aria-label="Message content">
+        {content}
+      </section>
+    );
+  }
 
   return (
     <main className="markdown-spike" aria-labelledby="markdown-spike-title">
@@ -559,56 +670,12 @@ export function SafeMarkdownSpike({
         <p className="markdown-spike__eyebrow">Containment proof</p>
         <h1 id="markdown-spike-title">Safe Markdown architecture spike</h1>
         <p>
-          Untrusted prose can present text, but it receives no navigation, network or native command authority.
+          Untrusted prose can present text, but it receives no navigation, network or native command
+          authority.
         </p>
       </header>
       <section className="markdown-spike__surface" aria-label="Contained Markdown message">
-        {prepared.rawHtmlOmitted ? (
-          <details className="markdown__raw-audit" open>
-            <summary>
-              Raw HTML-like input preserved as inert audit excerpts · {prepared.rawHtmlAudit.candidateCount}
-            </summary>
-            <pre role="region" tabIndex={0} aria-label="Inert raw Markdown source">
-              {prepared.rawHtmlAudit.excerpts.join('\n\n')}
-            </pre>
-            {prepared.rawHtmlAudit.shortened ? (
-              <p>Additional raw HTML candidates were omitted from the bounded audit.</p>
-            ) : null}
-          </details>
-        ) : null}
-        {prepared.notice ? (
-          <p className="markdown__safety-notice" role="status">
-            {prepared.notice}
-          </p>
-        ) : null}
-        {prepared.mode === 'plain' ? (
-          <pre
-            className="markdown__plain-fallback"
-            data-testid="markdown-plain-fallback"
-            role="region"
-            aria-label="Plain text safety preview"
-            tabIndex={0}
-            onKeyDown={scrollPlainFallback}
-          >
-            {prepared.source}
-          </pre>
-        ) : (
-          <article className="markdown__prose">
-            <AuthorityContext.Provider value={authority}>
-              <ReactMarkdown
-                remarkPlugins={remarkPlugins}
-                skipHtml
-                allowedElements={allowedElements}
-                allowElement={createParserOutputGuard()}
-                unwrapDisallowed={false}
-                urlTransform={safeMarkdownUrlTransform}
-                components={safeComponents}
-              >
-                {prepared.source}
-              </ReactMarkdown>
-            </AuthorityContext.Provider>
-          </article>
-        )}
+        {content}
       </section>
       <footer className="markdown-spike__footer">
         Browser containment evidence only · packaged WKWebView proof remains A.26

@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main-capability",
-  "description": "Minimum permissions for the PIUI architecture gate window",
+  "description": "Narrow permissions for the PIUI production main window",
   "windows": ["main"],
   "permissions": ["core:default"]
 }

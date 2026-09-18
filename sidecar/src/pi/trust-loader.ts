@@ -17,11 +17,23 @@ async function terminateWorkerGroup(child: ChildProcess): Promise<void> {
   const pid = child.pid;
   if (!pid) return;
   if (process.platform !== 'win32') {
-    try { process.kill(-pid, 'SIGTERM'); } catch { /* already absent */ }
+    try {
+      process.kill(-pid, 'SIGTERM');
+    } catch {
+      /* already absent */
+    }
     await new Promise((resolve) => setTimeout(resolve, 50));
-    try { process.kill(-pid, 'SIGKILL'); } catch { /* already absent */ }
+    try {
+      process.kill(-pid, 'SIGKILL');
+    } catch {
+      /* already absent */
+    }
   } else {
-    try { child.kill('SIGKILL'); } catch { /* already absent */ }
+    try {
+      child.kill('SIGKILL');
+    } catch {
+      /* already absent */
+    }
   }
 }
 
@@ -54,17 +66,21 @@ export class TrustLoaderSupervisor {
     }
     let child: ChildProcess;
     try {
-      child = spawn(process.execPath, [this.#workerEntrypoint, snapshotRoot, agentRoot, String(process.pid)], {
-        cwd: snapshotRoot,
-        detached: process.platform !== 'win32',
-        env: {
-          HOME: agentRoot,
-          NODE_ENV: 'production',
-          PI_CODING_AGENT_DIR: agentRoot,
-          PI_OFFLINE: '1',
+      child = spawn(
+        process.execPath,
+        [this.#workerEntrypoint, snapshotRoot, agentRoot, String(process.pid)],
+        {
+          cwd: snapshotRoot,
+          detached: process.platform !== 'win32',
+          env: {
+            HOME: agentRoot,
+            NODE_ENV: 'production',
+            PI_CODING_AGENT_DIR: agentRoot,
+            PI_OFFLINE: '1',
+          },
+          stdio: 'ignore',
         },
-        stdio: 'ignore',
-      });
+      );
     } catch {
       return Promise.reject(new TrustLoaderError(false));
     }
@@ -84,14 +100,16 @@ export class TrustLoaderSupervisor {
           // challenge-authenticated ready/completion transcript. Ordinary
           // executor exit 0, extra bytes or an incomplete transcript are fatal.
           // Counts remain unknown because same-user code could forge a file.
-          resolve(Object.freeze({
-            extensions: 0,
-            skills: 0,
-            prompts: 0,
-            themes: 0,
-            packages: 0,
-            truncated: true,
-          }));
+          resolve(
+            Object.freeze({
+              extensions: 0,
+              skills: 0,
+              prompts: 0,
+              themes: 0,
+              packages: 0,
+              truncated: true,
+            }),
+          );
         } else {
           reject(new TrustLoaderError(launched));
         }
@@ -100,11 +118,15 @@ export class TrustLoaderSupervisor {
         launched = true;
         if (child.pid) this.#workers.set(child.pid, child);
       });
-      child.once('error', () => { void settle(false); });
+      child.once('error', () => {
+        void settle(false);
+      });
       child.once('exit', (code, signal) => {
         void settle(signal === null && code === 0);
       });
-      timer = setTimeout(() => { void settle(false); }, this.#timeoutMs);
+      timer = setTimeout(() => {
+        void settle(false);
+      }, this.#timeoutMs);
       timer.unref?.();
     });
   }
@@ -115,9 +137,17 @@ export class TrustLoaderSupervisor {
     for (const worker of this.#workers.values()) {
       const pid = worker.pid;
       if (pid && process.platform !== 'win32') {
-        try { process.kill(-pid, 'SIGKILL'); } catch { /* already absent */ }
+        try {
+          process.kill(-pid, 'SIGKILL');
+        } catch {
+          /* already absent */
+        }
       } else {
-        try { worker.kill('SIGKILL'); } catch { /* already absent */ }
+        try {
+          worker.kill('SIGKILL');
+        } catch {
+          /* already absent */
+        }
       }
     }
     this.#workers.clear();

@@ -1,15 +1,8 @@
-import {
-  lstat,
-  readdir,
-  realpath,
-} from 'node:fs/promises';
+import { lstat, readdir, realpath } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { ProtocolEnvelope } from '@piui/protocol';
 import type { TrustedResourceCounts } from './public-sdk.js';
-import {
-  TrustLoaderError,
-  TrustLoaderSupervisor,
-} from './trust-loader.js';
+import { TrustLoaderError, TrustLoaderSupervisor } from './trust-loader.js';
 
 const SCHEMA_VERSION = 1;
 const MAX_WORKSPACES = 32;
@@ -97,31 +90,33 @@ function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): 
 }
 
 function isBoundedInteger(value: unknown): value is number {
-  return Number.isSafeInteger(value)
-    && (value as number) >= 0
-    && (value as number) <= MAX_JS_SAFE_INTEGER;
+  return (
+    Number.isSafeInteger(value) &&
+    (value as number) >= 0 &&
+    (value as number) <= MAX_JS_SAFE_INTEGER
+  );
 }
 
 function isPrivatePath(value: unknown): value is string {
-  return typeof value === 'string'
-    && isAbsolute(value)
-    && value.length > 0
-    && Buffer.byteLength(value, 'utf8') <= MAX_PATH_BYTES
-    && !CONTROL_CHARACTER.test(value);
+  return (
+    typeof value === 'string' &&
+    isAbsolute(value) &&
+    value.length > 0 &&
+    Buffer.byteLength(value, 'utf8') <= MAX_PATH_BYTES &&
+    !CONTROL_CHARACTER.test(value)
+  );
 }
 
-export function assertWorkspaceRequestEnvelope(
-  value: unknown,
-): asserts value is ProtocolEnvelope {
+export function assertWorkspaceRequestEnvelope(value: unknown): asserts value is ProtocolEnvelope {
   if (!isRecord(value)) throw new WorkspaceGateError('workspace-request-rejected');
   if (
-    !hasExactKeys(value, ['version', 'kind', 'id', 'sequence', 'payload'])
-    || value.version !== 1
-    || value.kind !== 'request'
-    || typeof value.id !== 'string'
-    || !INTERNAL_REQUEST_ID.test(value.id)
-    || !isBoundedInteger(value.sequence)
-    || !isRecord(value.payload)
+    !hasExactKeys(value, ['version', 'kind', 'id', 'sequence', 'payload']) ||
+    value.version !== 1 ||
+    value.kind !== 'request' ||
+    typeof value.id !== 'string' ||
+    !INTERNAL_REQUEST_ID.test(value.id) ||
+    !isBoundedInteger(value.sequence) ||
+    !isRecord(value.payload)
   ) {
     throw new WorkspaceGateError('workspace-request-rejected');
   }
@@ -130,43 +125,61 @@ export function assertWorkspaceRequestEnvelope(
 
 export function assertWorkspaceRequest(value: unknown): asserts value is WorkspaceRequest {
   if (!isRecord(value)) throw new WorkspaceGateError('workspace-request-rejected');
-  const common = value.schemaVersion === SCHEMA_VERSION
-    && typeof value.workspaceId === 'string'
-    && WORKSPACE_ID.test(value.workspaceId)
-    && isBoundedInteger(value.generation)
-    && isBoundedInteger(value.revision);
+  const common =
+    value.schemaVersion === SCHEMA_VERSION &&
+    typeof value.workspaceId === 'string' &&
+    WORKSPACE_ID.test(value.workspaceId) &&
+    isBoundedInteger(value.generation) &&
+    isBoundedInteger(value.revision);
   if (!common) throw new WorkspaceGateError('workspace-request-rejected');
 
   switch (value.method) {
     case 'workspace.sync': {
       const state = value.trustState;
-      const keys = state === 'trusted'
-        ? ['method', 'schemaVersion', 'workspaceId', 'generation', 'revision', 'trustState', 'leaseId']
-        : ['method', 'schemaVersion', 'workspaceId', 'generation', 'revision', 'trustState'];
+      const keys =
+        state === 'trusted'
+          ? [
+              'method',
+              'schemaVersion',
+              'workspaceId',
+              'generation',
+              'revision',
+              'trustState',
+              'leaseId',
+            ]
+          : ['method', 'schemaVersion', 'workspaceId', 'generation', 'revision', 'trustState'];
       if (
-        !hasExactKeys(value, keys)
-        || !['untrusted', 'trusted', 'revoked'].includes(state as string)
-        || (state === 'trusted' && (typeof value.leaseId !== 'string' || !LEASE_ID.test(value.leaseId)))
+        !hasExactKeys(value, keys) ||
+        !['untrusted', 'trusted', 'revoked'].includes(state as string) ||
+        (state === 'trusted' &&
+          (typeof value.leaseId !== 'string' || !LEASE_ID.test(value.leaseId)))
       ) {
         throw new WorkspaceGateError('workspace-request-rejected');
       }
       return;
     }
     case 'workspace.openUntrusted':
-      if (!hasExactKeys(value, ['method', 'schemaVersion', 'workspaceId', 'generation', 'revision'])) {
+      if (
+        !hasExactKeys(value, ['method', 'schemaVersion', 'workspaceId', 'generation', 'revision'])
+      ) {
         throw new WorkspaceGateError('workspace-request-rejected');
       }
       return;
     case 'workspace.authorise':
       if (
         !hasExactKeys(value, [
-          'method', 'schemaVersion', 'workspaceId', 'generation', 'expectedRevision',
-          'revision', 'leaseId',
-        ])
-        || !isBoundedInteger(value.expectedRevision)
-        || value.revision !== (value.expectedRevision as number) + 1
-        || typeof value.leaseId !== 'string'
-        || !LEASE_ID.test(value.leaseId)
+          'method',
+          'schemaVersion',
+          'workspaceId',
+          'generation',
+          'expectedRevision',
+          'revision',
+          'leaseId',
+        ]) ||
+        !isBoundedInteger(value.expectedRevision) ||
+        value.revision !== (value.expectedRevision as number) + 1 ||
+        typeof value.leaseId !== 'string' ||
+        !LEASE_ID.test(value.leaseId)
       ) {
         throw new WorkspaceGateError('workspace-request-rejected');
       }
@@ -174,13 +187,19 @@ export function assertWorkspaceRequest(value: unknown): asserts value is Workspa
     case 'workspace.loadTrusted':
       if (
         !hasExactKeys(value, [
-          'method', 'schemaVersion', 'workspaceId', 'generation', 'revision',
-          'leaseId', 'snapshotRoot', 'agentRoot',
-        ])
-        || typeof value.leaseId !== 'string'
-        || !LEASE_ID.test(value.leaseId)
-        || !isPrivatePath(value.snapshotRoot)
-        || !isPrivatePath(value.agentRoot)
+          'method',
+          'schemaVersion',
+          'workspaceId',
+          'generation',
+          'revision',
+          'leaseId',
+          'snapshotRoot',
+          'agentRoot',
+        ]) ||
+        typeof value.leaseId !== 'string' ||
+        !LEASE_ID.test(value.leaseId) ||
+        !isPrivatePath(value.snapshotRoot) ||
+        !isPrivatePath(value.agentRoot)
       ) {
         throw new WorkspaceGateError('workspace-request-rejected');
       }
@@ -188,13 +207,18 @@ export function assertWorkspaceRequest(value: unknown): asserts value is Workspa
     case 'workspace.revoke':
       if (
         !hasExactKeys(value, [
-          'method', 'schemaVersion', 'workspaceId', 'generation', 'expectedRevision',
-          'revision', 'leaseId',
-        ])
-        || !isBoundedInteger(value.expectedRevision)
-        || value.revision !== (value.expectedRevision as number) + 1
-        || typeof value.leaseId !== 'string'
-        || !LEASE_ID.test(value.leaseId)
+          'method',
+          'schemaVersion',
+          'workspaceId',
+          'generation',
+          'expectedRevision',
+          'revision',
+          'leaseId',
+        ]) ||
+        !isBoundedInteger(value.expectedRevision) ||
+        value.revision !== (value.expectedRevision as number) + 1 ||
+        typeof value.leaseId !== 'string' ||
+        !LEASE_ID.test(value.leaseId)
       ) {
         throw new WorkspaceGateError('workspace-request-rejected');
       }
@@ -205,48 +229,79 @@ export function assertWorkspaceRequest(value: unknown): asserts value is Workspa
 }
 
 export function assertWorkspaceReply(value: unknown): asserts value is WorkspaceGateReply {
-  if (!isRecord(value) || value.schemaVersion !== SCHEMA_VERSION || !isBoundedInteger(value.revision)) {
+  if (
+    !isRecord(value) ||
+    value.schemaVersion !== SCHEMA_VERSION ||
+    !isBoundedInteger(value.revision)
+  ) {
     throw new WorkspaceGateError('workspace-request-rejected');
   }
   if ('synced' in value) {
-    if (!hasExactKeys(value, [
-      'schemaVersion', 'revision', 'trustState', 'resourceState', 'synced',
-    ]) || value.synced !== true) {
+    if (
+      !hasExactKeys(value, [
+        'schemaVersion',
+        'revision',
+        'trustState',
+        'resourceState',
+        'synced',
+      ]) ||
+      value.synced !== true
+    ) {
       throw new WorkspaceGateError('workspace-request-rejected');
     }
-    const compatible = value.trustState === 'untrusted'
-      ? value.resourceState === 'open'
-      : value.trustState === 'revoked'
-        ? value.resourceState === 'revoked'
-        : value.trustState === 'trusted'
-          && ['trusted', 'loading', 'loaded', 'failed'].includes(value.resourceState as string);
+    const compatible =
+      value.trustState === 'untrusted'
+        ? value.resourceState === 'open'
+        : value.trustState === 'revoked'
+          ? value.resourceState === 'revoked'
+          : value.trustState === 'trusted' &&
+            ['trusted', 'loading', 'loaded', 'failed'].includes(value.resourceState as string);
     if (!compatible) throw new WorkspaceGateError('workspace-request-rejected');
     return;
   }
   if ('counts' in value || 'cached' in value) {
     const counts = value.counts;
-    if (!hasExactKeys(value, [
-      'schemaVersion', 'revision', 'resourceState', 'counts', 'cached',
-    ]) || value.resourceState !== 'loaded' || typeof value.cached !== 'boolean' || !isRecord(counts)
-      || !hasExactKeys(counts, [
-        'extensions', 'skills', 'prompts', 'themes', 'packages', 'truncated',
-      ]) || !['extensions', 'skills', 'prompts', 'themes', 'packages'].every((key) => (
-        isBoundedInteger(counts[key]) && (counts[key] as number) <= 64
-      )) || typeof counts.truncated !== 'boolean') {
+    if (
+      !hasExactKeys(value, ['schemaVersion', 'revision', 'resourceState', 'counts', 'cached']) ||
+      value.resourceState !== 'loaded' ||
+      typeof value.cached !== 'boolean' ||
+      !isRecord(counts) ||
+      !hasExactKeys(counts, [
+        'extensions',
+        'skills',
+        'prompts',
+        'themes',
+        'packages',
+        'truncated',
+      ]) ||
+      !['extensions', 'skills', 'prompts', 'themes', 'packages'].every(
+        (key) => isBoundedInteger(counts[key]) && (counts[key] as number) <= 64,
+      ) ||
+      typeof counts.truncated !== 'boolean'
+    ) {
       throw new WorkspaceGateError('workspace-request-rejected');
     }
     return;
   }
   if ('requiresGenerationStop' in value) {
-    if (!hasExactKeys(value, [
-      'schemaVersion', 'revision', 'resourceState', 'requiresGenerationStop',
-    ]) || value.resourceState !== 'revoked' || typeof value.requiresGenerationStop !== 'boolean') {
+    if (
+      !hasExactKeys(value, [
+        'schemaVersion',
+        'revision',
+        'resourceState',
+        'requiresGenerationStop',
+      ]) ||
+      value.resourceState !== 'revoked' ||
+      typeof value.requiresGenerationStop !== 'boolean'
+    ) {
       throw new WorkspaceGateError('workspace-request-rejected');
     }
     return;
   }
-  if (!hasExactKeys(value, ['schemaVersion', 'revision', 'resourceState'])
-    || !['open', 'trusted'].includes(value.resourceState as string)) {
+  if (
+    !hasExactKeys(value, ['schemaVersion', 'revision', 'resourceState']) ||
+    !['open', 'trusted'].includes(value.resourceState as string)
+  ) {
     throw new WorkspaceGateError('workspace-request-rejected');
   }
 }
@@ -284,12 +339,22 @@ function contained(root: string, candidate: string): boolean {
 async function validateSnapshotTree(snapshotRoot: string, agentRoot: string): Promise<void> {
   const rootStat = await lstat(snapshotRoot).catch(() => undefined);
   const agentStat = await lstat(agentRoot).catch(() => undefined);
-  if (!rootStat?.isDirectory() || rootStat.isSymbolicLink() || !agentStat?.isDirectory() || agentStat.isSymbolicLink()) {
+  if (
+    !rootStat?.isDirectory() ||
+    rootStat.isSymbolicLink() ||
+    !agentStat?.isDirectory() ||
+    agentStat.isSymbolicLink()
+  ) {
     throw new WorkspaceGateError('workspace-containment');
   }
   const canonicalRoot = await realpath(snapshotRoot).catch(() => '');
   const canonicalAgent = await realpath(agentRoot).catch(() => '');
-  if (!canonicalRoot || !canonicalAgent || canonicalRoot === canonicalAgent || contained(canonicalRoot, canonicalAgent)) {
+  if (
+    !canonicalRoot ||
+    !canonicalAgent ||
+    canonicalRoot === canonicalAgent ||
+    contained(canonicalRoot, canonicalAgent)
+  ) {
     throw new WorkspaceGateError('workspace-containment');
   }
   if ((await readdir(canonicalAgent)).length !== 0) {
@@ -311,10 +376,10 @@ async function validateSnapshotTree(snapshotRoot: string, agentRoot: string): Pr
       const names = await readdir(path);
       for (const name of names) {
         if (
-          name === '.'
-          || name === '..'
-          || Buffer.byteLength(name, 'utf8') > 255
-          || CONTROL_CHARACTER.test(name)
+          name === '.' ||
+          name === '..' ||
+          Buffer.byteLength(name, 'utf8') > 255 ||
+          CONTROL_CHARACTER.test(name)
         ) {
           throw new WorkspaceGateError('workspace-containment');
         }
@@ -329,17 +394,11 @@ async function validateSnapshotTree(snapshotRoot: string, agentRoot: string): Pr
 
   // Fixed-entry roots only. Parent context and arbitrary root names are never
   // enumerated or passed to Pi.
-  for (const relativePath of [
-    '.pi/extensions',
-    '.pi/skills',
-    '.pi/prompts',
-    '.pi/themes',
-  ]) {
+  for (const relativePath of ['.pi/extensions', '.pi/skills', '.pi/prompts', '.pi/themes']) {
     const path = resolve(canonicalRoot, relativePath);
     const stat = await lstat(path).catch(() => undefined);
     if (stat) await visit(path);
   }
-
 }
 
 export class TrustGate {
@@ -351,10 +410,7 @@ export class TrustGate {
   #pending = 0;
   #disconnected = false;
 
-  constructor(
-    generation: number,
-    loader: TrustLoaderSupervisor = new TrustLoaderSupervisor(),
-  ) {
+  constructor(generation: number, loader: TrustLoaderSupervisor = new TrustLoaderSupervisor()) {
     if (!isBoundedInteger(generation) || generation === 0) {
       throw new WorkspaceGateError('workspace-request-rejected');
     }
@@ -380,7 +436,10 @@ export class TrustGate {
     this.#queuedByWorkspace.set(request.workspaceId, queued + 1);
     const prior = this.#tails.get(request.workspaceId) ?? Promise.resolve();
     const operation = prior.catch(() => undefined).then(() => this.#execute(request));
-    const tail = operation.then(() => undefined, () => undefined);
+    const tail = operation.then(
+      () => undefined,
+      () => undefined,
+    );
     this.#tails.set(request.workspaceId, tail);
     return operation.finally(() => {
       this.#pending -= 1;
@@ -431,12 +490,16 @@ export class TrustGate {
     if (!existing && this.#workspaces.size >= MAX_WORKSPACES) {
       throw new WorkspaceGateError('workspace-capacity');
     }
-    const phase = request.trustState === 'trusted'
-      ? 'trusted'
-      : request.trustState === 'revoked' ? 'revoked' : 'open';
+    const phase =
+      request.trustState === 'trusted'
+        ? 'trusted'
+        : request.trustState === 'revoked'
+          ? 'revoked'
+          : 'open';
     if (existing && request.revision === existing.revision) {
-      const compatible = existing.phase === phase
-        || (phase === 'trusted' && ['loading', 'loaded', 'failed'].includes(existing.phase));
+      const compatible =
+        existing.phase === phase ||
+        (phase === 'trusted' && ['loading', 'loaded', 'failed'].includes(existing.phase));
       if (!compatible || (phase === 'trusted' && existing.leaseId !== request.leaseId)) {
         throw new WorkspaceGateError('workspace-conflict');
       }
@@ -457,10 +520,11 @@ export class TrustGate {
     const existing = this.#workspaces.get(request.workspaceId);
     if (existing) {
       if (
-        existing.generation === request.generation
-        && existing.revision === request.revision
-        && existing.phase === 'open'
-      ) return safeReply(existing);
+        existing.generation === request.generation &&
+        existing.revision === request.revision &&
+        existing.phase === 'open'
+      )
+        return safeReply(existing);
       throw new WorkspaceGateError('workspace-conflict');
     }
     if (this.#workspaces.size >= MAX_WORKSPACES) {
@@ -479,10 +543,10 @@ export class TrustGate {
   #authorise(request: WorkspaceRequest): WorkspaceGateReply {
     const workspace = this.#require(request.workspaceId);
     if (
-      !['open', 'revoked'].includes(workspace.phase)
-      || workspace.revision !== request.expectedRevision
-      || request.revision !== workspace.revision + 1
-      || !request.leaseId
+      !['open', 'revoked'].includes(workspace.phase) ||
+      workspace.revision !== request.expectedRevision ||
+      request.revision !== workspace.revision + 1 ||
+      !request.leaseId
     ) {
       throw new WorkspaceGateError('workspace-conflict');
     }
@@ -501,9 +565,9 @@ export class TrustGate {
       throw new WorkspaceGateError('workspace-not-trusted');
     }
     if (
-      workspace.generation !== request.generation
-      || workspace.revision !== request.revision
-      || workspace.leaseId !== request.leaseId
+      workspace.generation !== request.generation ||
+      workspace.revision !== request.revision ||
+      workspace.leaseId !== request.leaseId
     ) {
       throw new WorkspaceGateError('workspace-conflict');
     }
@@ -532,11 +596,12 @@ export class TrustGate {
       return safeReply(workspace, { counts: result, cached: false });
     } catch (error) {
       workspace.phase = 'failed';
-      workspace.failure = error instanceof WorkspaceGateError
-        ? error.code
-        : error instanceof TrustLoaderError && error.launched
-          ? 'workspace-execution-uncertain'
-          : 'workspace-load-failed';
+      workspace.failure =
+        error instanceof WorkspaceGateError
+          ? error.code
+          : error instanceof TrustLoaderError && error.launched
+            ? 'workspace-execution-uncertain'
+            : 'workspace-load-failed';
       delete workspace.result;
       throw new WorkspaceGateError(workspace.failure);
     }
@@ -545,16 +610,15 @@ export class TrustGate {
   #revoke(request: WorkspaceRequest): WorkspaceGateReply {
     const workspace = this.#require(request.workspaceId);
     if (
-      workspace.revision !== request.expectedRevision
-      || request.revision !== workspace.revision + 1
-      || workspace.leaseId !== request.leaseId
-      || workspace.phase === 'revoked'
+      workspace.revision !== request.expectedRevision ||
+      request.revision !== workspace.revision + 1 ||
+      workspace.leaseId !== request.leaseId ||
+      workspace.phase === 'revoked'
     ) {
       throw new WorkspaceGateError('workspace-conflict');
     }
-    const requiresGenerationStop = workspace.phase === 'loaded'
-      || workspace.phase === 'loading'
-      || workspace.phase === 'failed';
+    const requiresGenerationStop =
+      workspace.phase === 'loaded' || workspace.phase === 'loading' || workspace.phase === 'failed';
     workspace.revision = request.revision;
     workspace.phase = 'revoked';
     workspace.loadAttempted = true;

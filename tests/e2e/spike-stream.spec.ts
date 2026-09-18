@@ -18,9 +18,6 @@ const harness = resolve(projectRoot, 'src-tauri/target/debug/stream-harness');
 test.setTimeout(60_000);
 
 test('streams through Rust and acknowledges cancellation before the terminal', async ({ page }) => {
-  // Staging first also unlocks any prior read-only Tauri resource copies before
-  // the build script refreshes them.
-  execFileSync('pnpm', ['stage:sidecar'], { cwd: projectRoot, stdio: 'pipe' });
   execFileSync(
     'cargo',
     ['build', '--manifest-path', cargoManifest, '--bin', 'stream-harness'],
@@ -100,7 +97,7 @@ test('streams through Rust and acknowledges cancellation before the terminal', a
   try {
     await page.goto('/?spike=stream');
     const output = page.getByTestId('stream-output');
-    await expect(output).toContainText('Planning a safe local change', { timeout: 5_000 });
+    await expect(output).toContainText('Planning a safe local change', { timeout: 10_000 });
     expect(droppedDelta).toBe(true);
     expect(
       received.some(

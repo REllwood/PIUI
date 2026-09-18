@@ -45,24 +45,26 @@ export async function runPackagedSdkProbe(): Promise<PackagedSdkProbeEvidence> {
       const afterTurn = lease[SESSION_SPIKE_TEST_OBSERVER]();
       const source = lease.inspect(lease.references.source);
       const fork = lease.inspect(lease.references.fork);
-      if (source.availableTools !== 0
-        || fork.availableTools !== 0
-        || source.toolExecutionAvailable
-        || fork.toolExecutionAvailable
-        || !fork.active
-        || !fork.writable
-        || lease.counts.selectedBranchEntries !== 4
-        || lease.counts.forkEntries !== 4
-        || source.entries !== 9
-        || source.entries !== lease.counts.sourceEntriesAfterAcknowledgement
+      if (
+        source.availableTools !== 0 ||
+        fork.availableTools !== 0 ||
+        source.toolExecutionAvailable ||
+        fork.toolExecutionAvailable ||
+        !fork.active ||
+        !fork.writable ||
+        lease.counts.selectedBranchEntries !== 4 ||
+        lease.counts.forkEntries !== 4 ||
+        source.entries !== 9 ||
+        source.entries !== lease.counts.sourceEntriesAfterAcknowledgement ||
         // Public setModel appends one model-change entry, then the cancelled
         // prompt appends exactly one user and one aborted assistant message.
-        || fork.entries !== 7
-        || fork.entries !== lease.counts.forkEntries + 3
-        || beforeTurn.hashes.repositoryBefore !== beforeTurn.hashes.repositoryCurrent
-        || afterTurn.hashes.repositoryBefore !== afterTurn.hashes.repositoryCurrent
-        || beforeTurn.hashes.repositoryBefore !== afterTurn.hashes.repositoryBefore
-        || beforeTurn.hashes.workingTwo !== afterTurn.hashes.workingTwo) {
+        fork.entries !== 7 ||
+        fork.entries !== lease.counts.forkEntries + 3 ||
+        beforeTurn.hashes.repositoryBefore !== beforeTurn.hashes.repositoryCurrent ||
+        afterTurn.hashes.repositoryBefore !== afterTurn.hashes.repositoryCurrent ||
+        beforeTurn.hashes.repositoryBefore !== afterTurn.hashes.repositoryBefore ||
+        beforeTurn.hashes.workingTwo !== afterTurn.hashes.workingTwo
+      ) {
         throw new Error('packaged-sdk-probe-rejected');
       }
       return Object.freeze({

@@ -40,10 +40,7 @@ export class BridgeClient {
     this.#now = options.now ?? Date.now;
   }
 
-  createRequest(
-    method: string,
-    payload: Readonly<Record<string, unknown>> = {},
-  ): ProtocolEnvelope {
+  createRequest(method: string, payload: Readonly<Record<string, unknown>> = {}): ProtocolEnvelope {
     if (this.#inFlight.size >= this.#maxInFlight) throw new Error('bridge-capacity-exceeded');
     const id = `${this.#idPrefix}-${++this.#requestCounter}`;
     const request: ProtocolEnvelope = {
@@ -78,9 +75,7 @@ export class BridgeClient {
     return cancellation;
   }
 
-  receive(
-    envelope: ProtocolEnvelope,
-  ): 'accepted' | 'duplicate' | 'stale' | 'gap' | 'rejected' {
+  receive(envelope: ProtocolEnvelope): 'accepted' | 'duplicate' | 'stale' | 'gap' | 'rejected' {
     if (isPrivateHostEnvelope(envelope)) return 'rejected';
 
     if (envelope.sequence <= this.#incomingSequence) {

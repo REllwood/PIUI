@@ -1,23 +1,44 @@
-import { useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { CredentialProbe } from './architecture-gate/CredentialProbe';
 import {
   A27_LIFECYCLE_ROUTE,
   A27_LIFECYCLE_TEST_ACTIVE,
-  LifecycleProbe,
-} from './architecture-gate/LifecycleProbe';
-import { MarkdownProbe } from './architecture-gate/MarkdownProbe';
-import { StreamProbeRoute } from './architecture-gate/StreamProbe';
+  A28_ACCESSIBILITY_ROUTE,
+  A28_ACCESSIBILITY_TEST_ACTIVE,
+} from './architecture-gate/routeActivation';
 import {
   A26_MARKDOWN_ROUTE,
   A26_MARKDOWN_TEST_ACTIVE,
 } from './architecture-gate/a26MarkdownPrelude';
-import {
-  A28_ACCESSIBILITY_ROUTE,
-  A28_ACCESSIBILITY_TEST_ACTIVE,
-  AccessibilityProbe,
-} from './architecture-gate/AccessibilityProbe';
-import { SafeMarkdownSpikeRoute } from './security/SafeMarkdownSpike';
+import { LoadingLabel } from './components/primitives/LoadingLabel';
+
+const CredentialProbe = lazy(() =>
+  import('./architecture-gate/CredentialProbe').then((module) => ({ default: module.CredentialProbe })),
+);
+const LifecycleProbe = lazy(() =>
+  import('./architecture-gate/LifecycleProbe').then((module) => ({ default: module.LifecycleProbe })),
+);
+const MarkdownProbe = lazy(() =>
+  import('./architecture-gate/MarkdownProbe').then((module) => ({ default: module.MarkdownProbe })),
+);
+const StreamProbeRoute = lazy(() =>
+  import('./architecture-gate/StreamProbe').then((module) => ({ default: module.StreamProbeRoute })),
+);
+const AccessibilityProbe = lazy(() =>
+  import('./architecture-gate/AccessibilityProbe').then((module) => ({ default: module.AccessibilityProbe })),
+);
+const SafeMarkdownSpikeRoute = lazy(() =>
+  import('./security/SafeMarkdownSpike').then((module) => ({ default: module.SafeMarkdownSpikeRoute })),
+);
+const ProductionApp = lazy(() =>
+  import('./app/ProductionApp').then((module) => ({ default: module.ProductionApp })),
+);
+const FixtureProductionApp = import.meta.env.DEV
+  ? lazy(() => import('./testing/FixtureProductionApp'))
+  : null;
+const FixtureOnboardingApp = import.meta.env.DEV
+  ? lazy(() => import('./testing/FixtureOnboardingApp'))
+  : null;
 
 type HostStatus = {
   status: 'ready';
@@ -35,16 +56,68 @@ type SidecarStatus = {
 };
 
 export function App() {
-  const spike = new URLSearchParams(window.location.search).get('spike');
-  if (spike === 'credential') return <CredentialProbe />;
-  if (spike === 'stream') return <StreamProbeRoute />;
-  if (spike === 'markdown') return <SafeMarkdownSpikeRoute />;
-  if (A26_MARKDOWN_TEST_ACTIVE && spike === A26_MARKDOWN_ROUTE) return <MarkdownProbe />;
-  if (A27_LIFECYCLE_TEST_ACTIVE && spike === A27_LIFECYCLE_ROUTE) return <LifecycleProbe />;
-  if (A28_ACCESSIBILITY_TEST_ACTIVE && spike === A28_ACCESSIBILITY_ROUTE) {
-    return <AccessibilityProbe />;
+  const fixture = new URLSearchParams(window.location.search).get('fixture');
+  if (import.meta.env.DEV && fixture === 'product' && FixtureProductionApp) {
+    return (
+      <Suspense
+        fallback={
+          <main className="startup-status" role="status">
+            <LoadingLabel>Loading test fixture…</LoadingLabel>
+          </main>
+        }
+      >
+        <FixtureProductionApp />
+      </Suspense>
+    );
   }
-  return <ArchitectureGate />;
+  if (import.meta.env.DEV && fixture === 'onboarding' && FixtureOnboardingApp) {
+    return (
+      <Suspense
+        fallback={
+          <main className="startup-status" role="status">
+            <LoadingLabel>Loading onboarding fixture…</LoadingLabel>
+          </main>
+        }
+      >
+        <FixtureOnboardingApp />
+      </Suspense>
+    );
+  }
+  const spike = new URLSearchParams(window.location.search).get('spike');
+  if (spike === 'credential') return <DeferredRoute><CredentialProbe /></DeferredRoute>;
+  if (spike === 'stream') return <DeferredRoute><StreamProbeRoute /></DeferredRoute>;
+  if (spike === 'markdown') return <DeferredRoute><SafeMarkdownSpikeRoute /></DeferredRoute>;
+  if (A26_MARKDOWN_TEST_ACTIVE && spike === A26_MARKDOWN_ROUTE) return <DeferredRoute><MarkdownProbe /></DeferredRoute>;
+  if (A27_LIFECYCLE_TEST_ACTIVE && spike === A27_LIFECYCLE_ROUTE) return <DeferredRoute><LifecycleProbe /></DeferredRoute>;
+  if (A28_ACCESSIBILITY_TEST_ACTIVE && spike === A28_ACCESSIBILITY_ROUTE) {
+    return <DeferredRoute><AccessibilityProbe /></DeferredRoute>;
+  }
+  if (spike === 'architecture-gate') return <ArchitectureGate />;
+  return (
+    <Suspense
+      fallback={
+        <main className="startup-status" role="status">
+          <LoadingLabel>Loading PIUI…</LoadingLabel>
+        </main>
+      }
+    >
+      <ProductionApp />
+    </Suspense>
+  );
+}
+
+function DeferredRoute({ children }: Readonly<{ children: React.ReactNode }>) {
+  return (
+    <Suspense
+      fallback={
+        <main className="startup-status" role="status">
+          <LoadingLabel>Loading local view…</LoadingLabel>
+        </main>
+      }
+    >
+      {children}
+    </Suspense>
+  );
 }
 
 function ArchitectureGate() {
@@ -54,10 +127,7 @@ function ArchitectureGate() {
 
   useEffect(() => {
     let active = true;
-    void Promise.all([
-      invoke<HostStatus>('host_status'),
-      invoke<SidecarStatus>('sidecar_start'),
-    ])
+    void Promise.all([invoke<HostStatus>('host_status'), invoke<SidecarStatus>('sidecar_start')])
       .then(([hostStatus, sidecarStatus]) => {
         if (!active) return;
         setHost(hostStatus);

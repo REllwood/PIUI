@@ -5,15 +5,12 @@ import { HostRequestClient, HostRequestError } from './bridge/host-requests.js';
 import { createZeroingProtocolWriter } from './bridge/protocol-writer.js';
 import { SidecarRouter } from './bridge/router.js';
 import { assertPublicSdk, publicSdkMetadata } from './pi/public-sdk.js';
-import {
-  assertWorkspaceRequestEnvelope,
-  TrustGate,
-  WorkspaceGateError,
-} from './pi/trust-gate.js';
+import { assertWorkspaceRequestEnvelope, TrustGate, WorkspaceGateError } from './pi/trust-gate.js';
 import { crashFixture } from './spike/crash.js';
 import { streamFixture } from './spike/stream.js';
 import { installParentPipeLifecycle } from './lifecycle.js';
 import { createA23CredentialLifecycleFromEnvironment } from './spike/credential-lifecycle.js';
+import { ProductRuntime } from './pi/product-router.js';
 
 export type SidecarPrivateFixtureContext = Readonly<{
   hostRequests: HostRequestClient;
@@ -29,7 +26,7 @@ export function runSidecar(privateFixture?: SidecarPrivateFixture): void {
   const decoder = new ProtocolDecoder();
   const router = new SidecarRouter();
   const streams = new Map<string, AbortController>();
-  const completedStreams = new Map<string, 'complete' | 'cancelled'>();
+  const completedStreams = new Map<string, 'complete' | 'cancelled' | 'failed'>();
   let input = Buffer.alloc(0);
   let outputFailed = false;
   let terminalExitCode: number | undefined;
@@ -49,6 +46,17 @@ export function runSidecar(privateFixture?: SidecarPrivateFixture): void {
     input = Buffer.alloc(0);
   }
 
+  function rememberTerminal(id: string, terminal: 'complete' | 'cancelled' | 'failed'): void {
+    // Re-insert so the newest terminal is last, then evict oldest-first to bound the map.
+    completedStreams.delete(id);
+    completedStreams.set(id, terminal);
+    while (completedStreams.size > 512) {
+      const oldest = completedStreams.keys().next().value;
+      if (oldest === undefined) break;
+      completedStreams.delete(oldest);
+    }
+  }
+
   function failOutputGeneration(): void {
     if (outputFailed) return;
     outputFailed = true;
@@ -65,13 +73,14 @@ export function runSidecar(privateFixture?: SidecarPrivateFixture): void {
   const a23Lifecycle = createA23CredentialLifecycleFromEnvironment();
   const hostRequests = new HostRequestClient({ router, write });
   const parsedGeneration = Number(process.env.PIUI_SUPERVISOR_GENERATION ?? '1');
-  const generation = Number.isSafeInteger(parsedGeneration) && parsedGeneration > 0
-    ? parsedGeneration
-    : 1;
+  const generation =
+    Number.isSafeInteger(parsedGeneration) && parsedGeneration > 0 ? parsedGeneration : 1;
   const trustGate = new TrustGate(generation);
+  const productRuntime = new ProductRuntime(hostRequests, generation);
   disconnectPrivateWork = () => {
     hostRequests.disconnect();
     trustGate.disconnect();
+    void productRuntime.close();
   };
 
   function fail(request: ProtocolEnvelope): ProtocolEnvelope {
@@ -88,15 +97,17 @@ export function runSidecar(privateFixture?: SidecarPrivateFixture): void {
   assertPublicSdk();
   const sdk = publicSdkMetadata();
   try {
-    write(createHandshake({
-      nonce: process.env.PIUI_HANDSHAKE_NONCE ?? 'sidecar-startup-0000',
-      desktopVersion: process.env.PIUI_DESKTOP_VERSION ?? '0.1.0',
-      protocolVersion: 1,
-      nodeVersion: sdk.nodeVersion,
-      piVersion: sdk.piVersion,
-      architecture: sdk.architecture,
-      capabilities: [...REQUIRED_CAPABILITIES, ...sdk.capabilities],
-    }));
+    write(
+      createHandshake({
+        nonce: process.env.PIUI_HANDSHAKE_NONCE ?? 'sidecar-startup-0000',
+        desktopVersion: process.env.PIUI_DESKTOP_VERSION ?? '0.1.0',
+        protocolVersion: 1,
+        nodeVersion: sdk.nodeVersion,
+        piVersion: sdk.piVersion,
+        architecture: sdk.architecture,
+        capabilities: [...REQUIRED_CAPABILITIES, ...sdk.capabilities],
+      }),
+    );
   } catch {
     failOutputGeneration();
   }
@@ -107,23 +118,33 @@ export function runSidecar(privateFixture?: SidecarPrivateFixture): void {
 
     const method = 'method' in incoming.payload ? incoming.payload.method : undefined;
     if (incoming.kind === 'request' && method === 'status') {
-      write(router.idempotent(
-        incoming,
-        () => router.next(
-          'response',
-          `response-${incoming.id}`,
-          { status: 'ready', ...sdk },
-          incoming.id,
+      write(
+        router.idempotent(incoming, () =>
+          router.next(
+            'response',
+            `response-${incoming.id}`,
+            { status: 'ready', ...sdk },
+            incoming.id,
+          ),
         ),
-      ));
+      );
     } else if (incoming.kind === 'request' && method === 'snapshot') {
-      write(router.idempotent(incoming, () => router.next('response', `response-${incoming.id}`, {
-        snapshot: { sequence: router.currentSequence, state: router.currentState },
-      }, incoming.id)));
+      write(
+        router.idempotent(incoming, () =>
+          router.next(
+            'response',
+            `response-${incoming.id}`,
+            {
+              snapshot: { sequence: router.currentSequence, state: router.currentState },
+            },
+            incoming.id,
+          ),
+        ),
+      );
     } else if (
-      incoming.kind === 'request'
-      && typeof method === 'string'
-      && method.startsWith('workspace.')
+      incoming.kind === 'request' &&
+      typeof method === 'string' &&
+      method.startsWith('workspace.')
     ) {
       try {
         assertWorkspaceRequestEnvelope(incoming);
@@ -132,9 +153,10 @@ export function runSidecar(privateFixture?: SidecarPrivateFixture): void {
         write(router.next('response', `response-${incoming.id}`, payload, incoming.id));
       } catch (error) {
         if (outputFailed) return;
-        const rejected = error instanceof WorkspaceGateError
-          ? error
-          : new WorkspaceGateError('workspace-request-rejected');
+        const rejected =
+          error instanceof WorkspaceGateError
+            ? error
+            : new WorkspaceGateError('workspace-request-rejected');
         write({
           ...router.next('response', `error-${incoming.id}`, {}, incoming.id),
           error: {
@@ -144,41 +166,245 @@ export function runSidecar(privateFixture?: SidecarPrivateFixture): void {
           },
         });
       }
-    } else if (incoming.kind === 'request' && method === 'spike.crash') {
-      crashFixture();
-    } else if (incoming.kind === 'request' && method === 'stream.fixture') {
+    } else if (
+      incoming.kind === 'request' &&
+      typeof method === 'string' &&
+      method.startsWith('product.') &&
+      method !== 'product.turn.start' &&
+      method !== 'product.auth.start'
+    ) {
+      try {
+        const payload = await productRuntime.handle(incoming);
+        if (outputFailed) return;
+        write(router.next('response', `response-${incoming.id}`, payload, incoming.id));
+      } catch {
+        if (outputFailed) return;
+        write({
+          ...router.next('response', `error-${incoming.id}`, {}, incoming.id),
+          error: {
+            category: 'unavailable',
+            message: 'Product operation failed',
+            retryable: true,
+          },
+        });
+      }
+    } else if (incoming.kind === 'request' && method === 'product.auth.start') {
       const completed = completedStreams.get(incoming.id);
       if (completed) {
-        write(router.next('event', `${incoming.id}-replay-terminal`, {
-          eventType: completed === 'cancelled' ? 'stream.cancelled' : 'stream.complete',
-          terminal: completed,
-        }, incoming.id));
+        write(
+          router.next(
+            'event',
+            `${incoming.id}-replay-terminal`,
+            {
+              eventType: completed === 'failed' ? 'stream.failed' : 'stream.complete',
+              terminal: completed === 'failed' ? 'failed' : 'complete',
+              ...(completed === 'failed' ? { code: 'provider-auth-failed' } : {}),
+            },
+            incoming.id,
+          ),
+        );
         return;
       }
       if (streams.has(incoming.id)) return;
       const controller = new AbortController();
       streams.set(incoming.id, controller);
-      const terminal = await streamFixture(incoming, router, write, controller.signal)
-        .finally(() => streams.delete(incoming.id));
-      if (outputFailed) return;
-      completedStreams.delete(incoming.id);
-      completedStreams.set(incoming.id, terminal);
-      if (completedStreams.size > 512) {
-        const oldest = completedStreams.keys().next().value;
-        if (oldest !== undefined) completedStreams.delete(oldest);
+      let failed = false;
+      try {
+        for await (const notice of productRuntime.authenticate(incoming, controller.signal)) {
+          if (outputFailed) break;
+          write(
+            router.next(
+              'event',
+              `${incoming.id}-auth-notice`,
+              {
+                eventType: 'stream.delta',
+                text: JSON.stringify(notice),
+              },
+              incoming.id,
+            ),
+          );
+        }
+      } catch {
+        failed = true;
+        if (!outputFailed) {
+          write(
+            router.next(
+              'event',
+              `${incoming.id}-failed`,
+              {
+                eventType: 'stream.failed',
+                terminal: 'failed',
+                code: 'provider-auth-failed',
+              },
+              incoming.id,
+            ),
+          );
+        }
+      } finally {
+        streams.delete(incoming.id);
       }
+      if (!outputFailed && !failed) {
+        write(
+          router.next(
+            'event',
+            `${incoming.id}-terminal`,
+            {
+              eventType: 'stream.complete',
+              terminal: 'complete',
+            },
+            incoming.id,
+          ),
+        );
+        rememberTerminal(incoming.id, 'complete');
+      } else if (!outputFailed) {
+        rememberTerminal(incoming.id, 'failed');
+      }
+    } else if (incoming.kind === 'request' && method === 'product.turn.start') {
+      const completed = completedStreams.get(incoming.id);
+      if (completed) {
+        write(
+          router.next(
+            'event',
+            `${incoming.id}-replay-terminal`,
+            {
+              eventType:
+                completed === 'cancelled'
+                  ? 'stream.cancelled'
+                  : completed === 'failed'
+                    ? 'stream.failed'
+                    : 'stream.complete',
+              terminal: completed,
+              ...(completed === 'failed' ? { code: 'provider-turn-failed' } : {}),
+            },
+            incoming.id,
+          ),
+        );
+        return;
+      }
+      if (streams.has(incoming.id)) return;
+      const controller = new AbortController();
+      streams.set(incoming.id, controller);
+      let terminal: 'complete' | 'cancelled' = 'complete';
+      let failed = false;
+      try {
+        for await (const event of productRuntime.stream(incoming, controller.signal)) {
+          if (outputFailed) break;
+          if (event.type === 'text' && typeof event.text === 'string') {
+            write(
+              router.next(
+                'event',
+                `${incoming.id}-delta-${event.sequence}`,
+                {
+                  eventType: 'stream.delta',
+                  text: event.text,
+                },
+                incoming.id,
+              ),
+            );
+          } else if (event.type === 'tool' && typeof event.text === 'string') {
+            write(
+              router.next(
+                'event',
+                `${incoming.id}-tool-${event.sequence}`,
+                {
+                  eventType: 'tool.activity',
+                  text: event.text,
+                  code: event.code ?? 'started',
+                  toolCallId: event.toolCallId,
+                },
+                incoming.id,
+              ),
+            );
+          } else if (event.type === 'failed') {
+            write(
+              router.next(
+                'event',
+                `${incoming.id}-failed`,
+                {
+                  eventType: 'stream.failed',
+                  terminal: 'failed',
+                  code: event.code ?? 'provider-turn-failed',
+                },
+                incoming.id,
+              ),
+            );
+            failed = true;
+            break;
+          } else if (event.type === 'stopped') {
+            terminal = 'cancelled';
+            break;
+          }
+        }
+      } catch {
+        if (!outputFailed) {
+          write(
+            router.next(
+              'event',
+              `${incoming.id}-failed`,
+              {
+                eventType: 'stream.failed',
+                terminal: 'failed',
+                code: 'provider-turn-failed',
+              },
+              incoming.id,
+            ),
+          );
+        }
+        failed = true;
+      } finally {
+        streams.delete(incoming.id);
+      }
+      if (!outputFailed && !failed) {
+        write(
+          router.next(
+            'event',
+            `${incoming.id}-terminal`,
+            {
+              eventType: terminal === 'cancelled' ? 'stream.cancelled' : 'stream.complete',
+              terminal,
+            },
+            incoming.id,
+          ),
+        );
+        rememberTerminal(incoming.id, terminal);
+      } else if (!outputFailed) {
+        rememberTerminal(incoming.id, 'failed');
+      }
+    } else if (incoming.kind === 'request' && method === 'spike.crash') {
+      crashFixture();
+    } else if (incoming.kind === 'request' && method === 'stream.fixture') {
+      const completed = completedStreams.get(incoming.id);
+      if (completed) {
+        write(
+          router.next(
+            'event',
+            `${incoming.id}-replay-terminal`,
+            {
+              eventType: completed === 'cancelled' ? 'stream.cancelled' : 'stream.complete',
+              terminal: completed,
+            },
+            incoming.id,
+          ),
+        );
+        return;
+      }
+      if (streams.has(incoming.id)) return;
+      const controller = new AbortController();
+      streams.set(incoming.id, controller);
+      const terminal = await streamFixture(incoming, router, write, controller.signal).finally(() =>
+        streams.delete(incoming.id),
+      );
+      if (outputFailed) return;
+      rememberTerminal(incoming.id, terminal);
     } else if (incoming.kind === 'cancel' && incoming.correlationId) {
       const controller = streams.get(incoming.correlationId);
       if (controller) controller.abort();
-      write(router.idempotent(
-        incoming,
-        () => router.next(
-          'ack',
-          `ack-${incoming.id}`,
-          { accepted: Boolean(controller) },
-          incoming.id,
+      if (controller) void productRuntime.stop(incoming.correlationId);
+      write(
+        router.idempotent(incoming, () =>
+          router.next('ack', `ack-${incoming.id}`, { accepted: Boolean(controller) }, incoming.id),
         ),
-      ));
+      );
     } else {
       write(router.idempotent(incoming, () => fail(incoming)));
     }
@@ -214,9 +440,9 @@ export function runSidecar(privateFixture?: SidecarPrivateFixture): void {
             diagnostic('request failed');
             selectTerminalExitCode(70);
             if (
-              error instanceof HostRequestError
-              && (error.code === 'credential-response-rejected'
-                || error.code === 'approval-response-rejected')
+              error instanceof HostRequestError &&
+              (error.code === 'credential-response-rejected' ||
+                error.code === 'approval-response-rejected')
             ) {
               disconnectPrivateWork();
               clearInput();
@@ -250,18 +476,21 @@ export function runSidecar(privateFixture?: SidecarPrivateFixture): void {
   }
 
   if (privateFixture) {
-    void privateFixture.run(Object.freeze({ hostRequests, generation })).then((result) => {
-      if (outputFailed) return;
-      write(router.next('event', 'private-fixture-complete', { ...result }));
-    }).catch(() => {
-      diagnostic('private fixture failed');
-      selectTerminalExitCode(70);
-      disconnectPrivateWork();
-      clearInput();
-      process.stdin.destroy();
-      process.stdout.destroy();
-      process.exit(terminalExitCode);
-    });
+    void privateFixture
+      .run(Object.freeze({ hostRequests, generation }))
+      .then((result) => {
+        if (outputFailed) return;
+        write(router.next('event', 'private-fixture-complete', { ...result }));
+      })
+      .catch(() => {
+        diagnostic('private fixture failed');
+        selectTerminalExitCode(70);
+        disconnectPrivateWork();
+        clearInput();
+        process.stdin.destroy();
+        process.stdout.destroy();
+        process.exit(terminalExitCode);
+      });
   }
 
   installParentPipeLifecycle(streams, () => {

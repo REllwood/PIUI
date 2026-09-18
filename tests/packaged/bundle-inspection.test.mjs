@@ -18,6 +18,7 @@ import {
   sha256,
 } from './bundle-inspection.mjs';
 import {
+  PROCESS_OBSERVATION_MAX_BUFFER_BYTES,
   ProcessLedger,
   acquireOwnedLock,
   buildSignalPlan,
@@ -26,6 +27,13 @@ import {
   releaseOwnedLock,
   runOwnedCommand,
 } from '../../scripts/a21-gate-support.mjs';
+import {
+  APPLE_TOOLCHAIN_PATHS,
+  appleToolchainBuildEnvironment,
+  captureAppleToolchainAuthority,
+  releaseAppleToolchainAuthority,
+  revalidateAppleToolchainAuthority,
+} from '../../scripts/apple-toolchain-trust.mjs';
 
 const sourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const roots = [];
@@ -83,12 +91,28 @@ async function closedFixture({ sidecarPath = 'dist/index.js', sidecarBytes = Buf
   const root = await mkdtemp(resolve(tmpdir(), 'piui-a21-closed-'));
   roots.push(root);
   const sidecarRoot = resolve(root, 'Contents/Resources/resources/sidecar');
+  const resourcesRoot = resolve(root, 'Contents/Resources/resources');
   await mkdir(resolve(root, 'Contents/MacOS'), { recursive: true, mode: 0o755 });
   await mkdir(resolve(sidecarRoot, dirname(sidecarPath)), { recursive: true, mode: 0o755 });
   await writeFile(resolve(root, 'Contents/Info.plist'), '<plist/>\n', { mode: 0o644 });
   await writeFile(resolve(root, 'Contents/MacOS/piui'), hostBytes, { mode: 0o755 });
   const nodeBytes = thinMachO();
   await writeFile(resolve(root, 'Contents/MacOS/piui-node'), nodeBytes, { mode: 0o755 });
+  await writeFile(
+    resolve(resourcesRoot, 'THIRD-PARTY-NOTICES.txt'),
+    'PIUI THIRD-PARTY NOTICES\n\nFixture dependency notices.\n',
+    { mode: 0o644 },
+  );
+  await writeFile(
+    resolve(resourcesRoot, 'piui.cdx.json'),
+    `${JSON.stringify({
+      bomFormat: 'CycloneDX',
+      specVersion: '1.5',
+      version: 1,
+      components: [{ type: 'library', name: 'fixture', version: '1.0.0' }],
+    })}\n`,
+    { mode: 0o644 },
+  );
   await writeFile(resolve(sidecarRoot, sidecarPath), sidecarBytes, { mode: 0o644 });
   const manifest = { node: '22.23.1', piSdk: '0.82.0', closure: 'isolated-v1', files: [{ path: sidecarPath, bytes: sidecarBytes.length, sha256: sha256(sidecarBytes) }] };
   const manifestBytes = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`);
@@ -239,6 +263,102 @@ test('process signal planning handles leader-first exit, separate groups and PID
   assert.deepEqual(reusePlan.pids, []);
   const reparented = { ...node, ppid: 1 };
   assert.deepEqual(buildSignalPlan({ ledger, rows: [reparented], ownedGroups: new Set([101]) }).pids, [101]);
+});
+
+test('process observation uses its explicit authenticated-argv and ambient-row buffer bound', () => {
+  let invocation;
+  const rows = observeProcesses((command, args, options) => {
+    invocation = { command, args, options };
+    return {
+      status: 0,
+      stdout: ' 42 1 42 S Tue Jul 28 00:00:00 2026 /sealed/PIUI.app/Contents/MacOS/PIUI\n',
+    };
+  });
+  assert.equal(invocation.command, '/bin/ps');
+  assert.deepEqual(invocation.args, [
+    '-ww',
+    '-axo',
+    'pid=,ppid=,pgid=,state=,lstart=,command=',
+  ]);
+  assert.ok(Object.hasOwn(invocation.options, 'maxBuffer'));
+  assert.equal(invocation.options.maxBuffer, PROCESS_OBSERVATION_MAX_BUFFER_BYTES);
+  assert.equal(PROCESS_OBSERVATION_MAX_BUFFER_BYTES, 16 * 1_048_576);
+  assert.deepEqual(rows, [{
+    pid: 42,
+    ppid: 1,
+    pgid: 42,
+    state: 'S',
+    start: 'Tue Jul 28 00:00:00 2026',
+    command: '/sealed/PIUI.app/Contents/MacOS/PIUI',
+  }]);
+});
+
+test('process observation fails closed when the explicit buffer bound is exceeded', () => {
+  assert.throws(
+    () => observeProcesses((_command, _args, options) => {
+      assert.equal(options.maxBuffer, PROCESS_OBSERVATION_MAX_BUFFER_BYTES);
+      return {
+        error: Object.assign(new Error('raw process-table diagnostic must remain private'), {
+          code: 'ENOBUFS',
+        }),
+        status: null,
+        stdout: 'partial process table must not be parsed',
+      };
+    }),
+    (error) => error instanceof Error
+      && error.message === 'Process observation failed'
+      && !error.message.includes('diagnostic')
+      && !error.message.includes('partial'),
+  );
+});
+
+test('process observation exceeds Node default capacity but retains every controlled identity', async () => {
+  const children = [];
+  const syntheticArgument = 'p'.repeat(192 * 1_024);
+  try {
+    for (let index = 0; index < 6; index += 1) {
+      const child = spawn('/bin/sh', [
+        '-c',
+        'trap "" TERM; while :; do /bin/sleep 1; done',
+        `${index}-${syntheticArgument}`,
+      ], {
+        detached: true,
+        stdio: 'ignore',
+      });
+      await new Promise((resolveSpawn, rejectSpawn) => {
+        child.once('spawn', resolveSpawn);
+        child.once('error', rejectSpawn);
+      });
+      children.push(child);
+    }
+    await sleep(50);
+
+    const defaultObservation = spawnSync(
+      '/bin/ps',
+      ['-ww', '-axo', 'pid=,ppid=,pgid=,state=,lstart=,command='],
+      { encoding: 'utf8', env: { PATH: '/usr/bin:/bin' } },
+    );
+    assert.equal(defaultObservation.status, null);
+    assert.equal(defaultObservation.error?.code, 'ENOBUFS');
+
+    const observedPids = new Set(observeProcesses().map((row) => row.pid));
+    for (const child of children) {
+      assert.ok(observedPids.has(child.pid), 'explicitly bounded observation retained a controlled PID');
+    }
+  } finally {
+    const exits = children.map((child) => (
+      child.exitCode === null && child.signalCode === null
+        ? waitForExit(child)
+        : Promise.resolve({ status: child.exitCode, signal: child.signalCode })
+    ));
+    for (const child of children) {
+      if (!Number.isSafeInteger(child.pid)) continue;
+      try { process.kill(-child.pid, 'SIGKILL'); } catch (error) {
+        if (error?.code !== 'ESRCH') throw error;
+      }
+    }
+    await Promise.all(exits);
+  }
 });
 
 test('process ledger binds a newly observed independently grouped sidecar before cleanup', async () => {
@@ -493,10 +613,34 @@ async function compileSetsidSurvivor() {
   roots.push(root);
   const executable = resolve(root, 'setsid-survivor');
   const source = resolve(sourceRoot, 'tests/packaged/helpers/setsid-survivor.c');
-  const compiled = spawnSync('/usr/bin/clang', ['-std=c11', '-Wall', '-Wextra', '-Werror', source, '-o', executable], {
-    encoding: 'utf8',
-    env: { PATH: '/usr/bin:/bin' },
-  });
+  const authority = captureAppleToolchainAuthority();
+  let compiled;
+  try {
+    compiled = spawnSync(APPLE_TOOLCHAIN_PATHS.clang, [
+      '--no-default-config',
+      '-std=c11',
+      '-Wall',
+      '-Wextra',
+      '-Werror',
+      '-isysroot',
+      APPLE_TOOLCHAIN_PATHS.sdk,
+      source,
+      '-o',
+      executable,
+    ], {
+      encoding: 'utf8',
+      env: {
+        ...appleToolchainBuildEnvironment(),
+        LANG: 'C',
+        LC_ALL: 'C',
+        PATH: `${APPLE_TOOLCHAIN_PATHS.bin}:/usr/bin:/bin`,
+      },
+      timeout: 30_000,
+    });
+    revalidateAppleToolchainAuthority(authority);
+  } finally {
+    releaseAppleToolchainAuthority(authority);
+  }
   assert.equal(compiled.status, 0, compiled.stderr);
   return { root, executable };
 }

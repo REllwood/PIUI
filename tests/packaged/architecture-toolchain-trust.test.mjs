@@ -4,6 +4,7 @@ import {
   link,
   lstat,
   mkdtemp,
+  readFile,
   rm,
   writeFile,
 } from 'node:fs/promises';
@@ -14,6 +15,7 @@ import test from 'node:test';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import {
   architectureCacheEntryPath,
+  parseCargoLock,
   parsePnpmLocks,
   pinnedNpmDuplicateExceptions,
   pinnedNpmDuplicateExceptionsSha256,
@@ -22,7 +24,7 @@ import {
   processTrustedGzipTar,
 } from '../../scripts/architecture-toolchain-trust.mjs';
 
-const duplicateTableSha256 = 'd9d4d393f2dcf8b4aa65204a9a407af82fad2eeb6e037088c334cf3ac907c04f';
+const duplicateTableSha256 = 'edffad7646127a8b43d395372d7531eab6e325a4c39e65a6df8d830bb6c288ca';
 const legacyPaxTableSha256 = '4cba4ed3cef1c952a284a2ebe0df9c7b359812ea4a7a775fab305c65a523f19b';
 
 function octal(value, width) {
@@ -101,7 +103,7 @@ async function privateFixture(t, name, bytes) {
 }
 
 test('duplicate-entry exception table is closed, sorted and bound to the frozen locks', async () => {
-  assert.equal(pinnedNpmDuplicateExceptions.length, 10);
+  assert.equal(pinnedNpmDuplicateExceptions.length, 3);
   assert.equal(pinnedNpmDuplicateExceptionsSha256, duplicateTableSha256);
   assert.equal(pinnedNpmLegacyPaxExceptions.length, 1);
   assert.equal(pinnedNpmLegacyPaxExceptionsSha256, legacyPaxTableSha256);
@@ -109,7 +111,7 @@ test('duplicate-entry exception table is closed, sorted and bound to the frozen 
     pinnedNpmDuplicateExceptions.map((entry) => entry.archiveSha512),
     pinnedNpmDuplicateExceptions.map((entry) => entry.archiveSha512).toSorted(),
   );
-  assert.equal(new Set(pinnedNpmDuplicateExceptions.map((entry) => entry.archiveSha512)).size, 10);
+  assert.equal(new Set(pinnedNpmDuplicateExceptions.map((entry) => entry.archiveSha512)).size, 3);
   assert.equal(
     pinnedNpmDuplicateExceptions.some(
       (entry) => entry.package === 'data-uri-to-buffer' && entry.version === '4.0.1',
@@ -127,7 +129,7 @@ test('duplicate-entry exception table is closed, sorted and bound to the frozen 
   }
 });
 
-test('all ten exact upstream duplicate pairs validate only without extraction', async (t) => {
+test('all three exact upstream duplicate pairs validate only without extraction', async (t) => {
   const missing = [];
   for (const exception of pinnedNpmDuplicateExceptions) {
     try {
@@ -163,7 +165,7 @@ test('all ten exact upstream duplicate pairs validate only without extraction', 
   }
 });
 
-test('all 847 frozen npm archives pass the repeatable cache-backed validation walk', async (t) => {
+test('all 868 frozen npm archives pass the repeatable cache-backed validation walk', async (t) => {
   const locks = await parsePnpmLocks(resolve(import.meta.dirname, '../..'));
   const missing = [];
   for (const archive of locks) {
@@ -196,7 +198,57 @@ test('all 847 frozen npm archives pass the repeatable cache-backed validation wa
       singleTopLevel: true,
     });
   }
-  assert.equal(locks.length, 847);
+  assert.equal(locks.length, 868);
+});
+
+test('all 520 frozen Cargo archives pass the repeatable cache-backed validation walk', async (t) => {
+  const crates = await parseCargoLock(resolve(import.meta.dirname, '../..'));
+  const missing = [];
+  for (const crate of crates) {
+    try {
+      await lstat(architectureCacheEntryPath(crate));
+    } catch (error) {
+      if (error?.code === 'ENOENT') missing.push(crate.digest);
+      else throw error;
+    }
+  }
+  if (missing.length > 0) {
+    t.skip('Provisioned architecture cache is not present');
+    return;
+  }
+  for (const crate of crates) {
+    await processTrustedGzipTar(architectureCacheEntryPath(crate), {
+      label: crate.tuple,
+      maxEntries: 50_000,
+      maxExpandedBytes: 512 * 1_048_576,
+      requiredPrefix: `${crate.name}-${crate.version}`,
+    });
+  }
+  assert.equal(crates.length, 520);
+});
+
+test('regular-file POSIX type mode is accepted without permitting other high mode bits', async (t) => {
+  const accepted = gzipTar([
+    tarRecord({ mode: 0o100644, name: 'package/file.txt' }),
+  ]);
+  const acceptedFixture = await privateFixture(t, 'regular-posix-mode.tgz', accepted);
+  const inspected = await processTrustedGzipTar(acceptedFixture.path, {
+    maxExpandedBytes: 16 * 1_048_576,
+    singleTopLevel: true,
+  });
+  assert.equal(inspected.entries, 1);
+
+  const rejected = gzipTar([
+    tarRecord({ mode: 0o200644, name: 'package/file.txt' }),
+  ]);
+  const rejectedFixture = await privateFixture(t, 'unsupported-high-mode.tgz', rejected);
+  await assert.rejects(
+    processTrustedGzipTar(rejectedFixture.path, {
+      maxExpandedBytes: 16 * 1_048_576,
+      singleTopLevel: true,
+    }),
+    /unsupported tar mode bits/u,
+  );
 });
 
 test('generic dot paths and forged opt-in archives remain rejected', async (t) => {
@@ -337,7 +389,7 @@ test('base-256 tar numbers are accepted only for the exact validation-only legac
     ]));
     await assert.rejects(
       processTrustedGzipTar(fixture.path),
-      /negative base-256|unsafe base-256/u,
+      /base-256 tar number outside its exact pin|negative base-256|unsafe base-256/u,
     );
   }
 });
@@ -401,7 +453,7 @@ test('legacy PAX exception rejects reordered, extra, missing and changed records
         maxExpandedBytes: 4 * 1_048_576,
         pinnedLegacyPaxArchiveSha512: exception.archiveSha512,
       }),
-      /legacy PAX|exact pin/u,
+      /legacy PAX|exact pin|non-canonical PAX record length/u,
     );
   }
   await assert.rejects(

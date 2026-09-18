@@ -14,13 +14,27 @@ export async function streamFixture(
     if (signal.aborted) break;
     await new Promise((resolve) => setTimeout(resolve, 700));
     if (signal.aborted || write.failed) break;
-    write(router.next('event', `${request.id}-chunk-${index}`, { eventType: 'stream.delta', text }, request.id));
+    write(
+      router.next(
+        'event',
+        `${request.id}-chunk-${index}`,
+        { eventType: 'stream.delta', text },
+        request.id,
+      ),
+    );
   }
   const terminal = signal.aborted ? 'cancelled' : 'complete';
   if (write.failed) return terminal;
-  write(router.next('event', `${request.id}-terminal`, {
-    eventType: terminal === 'cancelled' ? 'stream.cancelled' : 'stream.complete',
-    terminal,
-  }, request.id));
+  write(
+    router.next(
+      'event',
+      `${request.id}-terminal`,
+      {
+        eventType: terminal === 'cancelled' ? 'stream.cancelled' : 'stream.complete',
+        terminal,
+      },
+      request.id,
+    ),
+  );
   return terminal;
 }

@@ -15,6 +15,7 @@ const knownEvents = new Set([
   'stream.delta',
   'stream.complete',
   'stream.cancelled',
+  'stream.failed',
   'tool.activity',
 ]);
 
