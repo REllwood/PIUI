@@ -64,6 +64,42 @@ impl CredentialSheetState {
             active: Arc::clone(&self.active),
         })
     }
+
+    pub(crate) fn credential_proxy(&self) -> CredentialProxy {
+        self.credential_proxy.clone()
+    }
+}
+
+#[tauri::command]
+pub fn credential_import_inspect(
+    app: AppHandle,
+) -> Result<crate::credentials::import::ImportInspection, String> {
+    use tauri::Manager;
+    let path = app
+        .path()
+        .home_dir()
+        .map_err(|_| "credential-import-source-unavailable".to_string())?
+        .join(".pi")
+        .join("agent")
+        .join("auth.json");
+    crate::credentials::import::inspect(&path)
+}
+
+#[tauri::command]
+pub fn credential_import_selected(
+    app: AppHandle,
+    state: State<'_, CredentialSheetState>,
+    provider_ids: Vec<String>,
+) -> Result<crate::credentials::import::ImportReceipt, String> {
+    use tauri::Manager;
+    let path = app
+        .path()
+        .home_dir()
+        .map_err(|_| "credential-import-source-unavailable".to_string())?
+        .join(".pi")
+        .join("agent")
+        .join("auth.json");
+    crate::credentials::import::import_selected(&path, provider_ids, &state.credential_proxy())
 }
 
 struct CredentialSheetPermit {
@@ -116,7 +152,7 @@ async fn present_credential_sheet_inner(
     #[cfg(not(feature = "a23-credential-test"))]
     let sheet = present_native_credential_sheet(window, provider_label);
     let decision = sheet.await.map_err(|error| error.code().to_string())?;
-    let result = match prepare_credential_completion(decision, account_label) {
+    match prepare_credential_completion(decision, account_label) {
         CredentialCompletion::Complete(result) => Ok(result),
         CredentialCompletion::Persist {
             account_label,
@@ -138,8 +174,7 @@ async fn present_credential_sheet_inner(
             .await
             .map_err(|_| "keychain-unavailable".to_string())?
         }
-    };
-    result
+    }
 }
 
 #[cfg(feature = "a23-credential-test")]

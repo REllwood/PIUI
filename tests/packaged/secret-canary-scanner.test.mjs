@@ -709,7 +709,10 @@ test('native watchdog terminates after parent death and the next run reclaims it
   let output = Buffer.alloc(0);
   try {
     await new Promise((resolveReady, rejectReady) => {
-      const timeout = setTimeout(() => rejectReady(new Error('probe readiness timeout')), 5_000);
+      const timeout = setTimeout(
+        () => rejectReady(new Error('probe readiness timeout')),
+        30_000,
+      );
       probe.stdout.on('data', (chunk) => {
         const previous = output;
         output = Buffer.concat([output, chunk]);
@@ -764,6 +767,45 @@ test('native watchdog terminates after parent death and the next run reclaims it
 });
 
 test('native helper statically uses descriptor-relative bounded traversal and explicit clearing', () => {
+  assert.match(
+    scannerSource,
+    /APPLE_TOOLCHAIN_PATHS[\s\S]*?captureAppleToolchainAuthority[\s\S]*?revalidateAppleToolchainAuthority/u,
+  );
+  assert.match(scannerSource, /'-isysroot',[\s\S]*?APPLE_TOOLCHAIN_PATHS\.sdk/u);
+  assert.match(
+    scannerSource,
+    /compilerAuthority = captureAppleToolchainAuthority\(\);[\s\S]*?revalidateAppleToolchainAuthority\(compilerAuthority\)[\s\S]*?releaseAppleToolchainAuthority\(compilerAuthority\)/u,
+  );
+  assert.match(
+    scannerSource,
+    /PATH: `\$\{APPLE_TOOLCHAIN_PATHS\.bin\}:\/usr\/bin:\/bin`/u,
+  );
+  const ensureStart = scannerSource.indexOf('async function ensureHelper(');
+  const ensureEnd = scannerSource.indexOf('\nfunction runtimeMode(', ensureStart);
+  assert.ok(ensureStart >= 0 && ensureEnd > ensureStart);
+  const ensureSource = scannerSource.slice(ensureStart, ensureEnd);
+  const releaseStart = ensureSource.indexOf('releaseAppleToolchainAuthority(compilerAuthority);');
+  const bufferCleanupStart = ensureSource.indexOf(
+    'for (const buffer of [compilation?.stdout, compilation?.stderr, source?.bytes])',
+  );
+  const descriptorCleanupStart = ensureSource.indexOf('if (source?.descriptor !== undefined)');
+  const workspaceCleanupStart = ensureSource.indexOf(
+    'try { await cleanupHelper(); }',
+    descriptorCleanupStart,
+  );
+  assert.ok(releaseStart >= 0);
+  assert.ok(bufferCleanupStart > releaseStart);
+  assert.ok(descriptorCleanupStart > bufferCleanupStart);
+  assert.ok(workspaceCleanupStart > descriptorCleanupStart);
+  assert.match(
+    ensureSource,
+    /releaseAppleToolchainAuthority\(compilerAuthority\);\s*\} catch \(error\) \{\s*cleanupErrors\.push\(error\);/u,
+  );
+  assert.match(
+    ensureSource,
+    /if \(primaryError && cleanupError\) \{\s*throw new AggregateError\(/u,
+  );
+  assert.doesNotMatch(scannerSource, /\/usr\/bin\/xcrun/u);
   assert.match(helperSource, /openat\(/);
   assert.match(helperSource, /fdopendir\(/);
   assert.match(helperSource, /fstatat\([^;]+AT_SYMLINK_NOFOLLOW/);

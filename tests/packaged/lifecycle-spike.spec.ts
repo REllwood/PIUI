@@ -12,9 +12,30 @@ import {
   parseLifecycleEvidence,
   parseNativeLifecycleEvidence,
 } from '../../scripts/assert-process-cleanup.mjs';
+import {
+  A27_OBSERVE_LOADING_AND_CLICK_SCRIPT,
+  A27_IDENTITY_EVIDENCE_KEYS,
+  assertA27LoadingObservation,
+  assertA27IdentityEvidence,
+  assertPreCleanupLifecycleEvidence,
+  finaliseLifecycleEvidence,
+  parsePackagedLifecycleEvidence,
+} from '../../scripts/run-packaged-lifecycle-probe.mjs';
 
 function line(value: unknown): Buffer {
   return Buffer.from(`${JSON.stringify(value)}\n`);
+}
+
+const sha = (character: string) => character.repeat(64);
+
+function lifecycleIdentity() {
+  return {
+    sourceDigest: sha('1'),
+    productionFingerprint: sha('2'),
+    automationFingerprint: sha('3'),
+    controlledDeltaSha256: sha('4'),
+    sameFrozenSource: true,
+  };
 }
 
 describe('A.27 packaged lifecycle contract', () => {
@@ -90,6 +111,45 @@ describe('A.27 packaged lifecycle contract', () => {
     expect(JSON.stringify(A27_EXPECTED_EVIDENCE)).not.toContain('/');
   });
 
+  it('emits and finalises the exact source, production, automation and delta identities', () => {
+    const identity = lifecycleIdentity();
+    const preCleanup = {
+      ...Object.fromEntries(
+        Object.entries(A27_EXPECTED_EVIDENCE)
+          .filter(([key]) => key !== 'generatedOutputsRemoved'),
+      ),
+      identity,
+    };
+    const final = {
+      ...A27_EXPECTED_EVIDENCE,
+      identity,
+    };
+    expect(A27_IDENTITY_EVIDENCE_KEYS).toEqual([
+      'automationFingerprint',
+      'controlledDeltaSha256',
+      'productionFingerprint',
+      'sameFrozenSource',
+      'sourceDigest',
+    ]);
+    expect(assertA27IdentityEvidence(identity)).toEqual(identity);
+    expect(assertPreCleanupLifecycleEvidence(preCleanup)).toEqual(preCleanup);
+    expect(finaliseLifecycleEvidence(preCleanup)).toEqual(final);
+    expect(parsePackagedLifecycleEvidence(line(final))).toEqual(final);
+    expect(() => parsePackagedLifecycleEvidence(line(A27_EXPECTED_EVIDENCE)))
+      .toThrow('A.27 packaged lifecycle probe rejected');
+
+    for (const malformedIdentity of [
+      { ...identity, sourceDigest: sha('z') },
+      { ...identity, productionFingerprint: identity.automationFingerprint },
+      { ...identity, controlledDeltaSha256: sha('A') },
+      { ...identity, sameFrozenSource: false },
+      { ...identity, workspacePath: '/private/project' },
+    ]) {
+      expect(() => assertA27IdentityEvidence(malformedIdentity))
+        .toThrow('A.27 packaged lifecycle probe rejected');
+    }
+  });
+
   it('keeps a visible progress indicator and busy state through every asynchronous stage', async () => {
     const source = await readFile(
       new URL('../../src/architecture-gate/LifecycleProbe.tsx', import.meta.url),
@@ -104,6 +164,30 @@ describe('A.27 packaged lifecycle contract', () => {
     expect(source).not.toContain('sidecarPid');
     expect(source).not.toContain('approvalId');
     expect(source).not.toContain('decisionId');
+
+    const observed = {
+      schemaVersion: 1,
+      phase: 'starting',
+      busy: true,
+      message: 'Starting the isolated helper…',
+      buttonLabel: 'Starting the isolated helper…',
+      buttonDisabled: true,
+      progressVisible: true,
+    };
+    expect(assertA27LoadingObservation(observed, 'starting')).toEqual(observed);
+    for (const malformed of [
+      { ...observed, busy: false, buttonDisabled: false, progressVisible: false },
+      { ...observed, buttonDisabled: false },
+      { ...observed, progressVisible: false },
+      { ...observed, buttonLabel: 'Start lifecycle verification' },
+      { ...observed, phase: 'running' },
+    ]) {
+      expect(() => assertA27LoadingObservation(malformed, 'starting'))
+        .toThrow('A.27 packaged lifecycle probe rejected');
+    }
+    expect(A27_OBSERVE_LOADING_AND_CLICK_SCRIPT).toContain('new MutationObserver(inspect)');
+    expect(A27_OBSERVE_LOADING_AND_CLICK_SCRIPT).toContain('button.click()');
+    expect(A27_OBSERVE_LOADING_AND_CLICK_SCRIPT).toContain('progress.getAttribute(\'aria-label\')');
   });
 
   it('uses a retained BSD flock on inherited FD3 and sets close-on-exec before sidecar start', async () => {

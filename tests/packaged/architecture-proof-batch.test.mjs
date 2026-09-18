@@ -21,6 +21,17 @@ function batch() {
   return architectureProofBatch('production', undefined, sha('4'));
 }
 
+function refreshEvidenceDigests(value) {
+  for (const [proofId, envelope] of Object.entries(value.proofs)) {
+    value.proofs[proofId] = createArchitectureProofEnvelope({
+      artifact: value.artifact,
+      evidence: envelope.evidence,
+      proofId,
+      sourceDigest: value.sourceDigest,
+    });
+  }
+}
+
 test('accepts only canonical, closed architecture proof batches', () => {
   const value = batch();
   const bytes = Buffer.from(`${canonicalArchitectureJson(value)}\n`);
@@ -100,10 +111,29 @@ test('binds proof identities to the recorded source and artefacts', () => {
     ['credential', (value) => {
       value.proofs['A.23'].evidence.credentialCleanupHelper.variantDefinitionSha256 = sha('b');
     }],
+    ['credential', (value) => {
+      value.proofs['A.23'].evidence.credentialCleanupHelper.executableSha256 = sha('b');
+    }],
+    ['credential', (value) => {
+      value.proofs['A.23'].evidence.credentialCleanupHelper.executableSize += 1;
+    }],
+    ['credential', (value) => {
+      value.proofs['A.23'].evidence.credentialCleanupHelper.helperSourceSha256 = sha('f');
+    }],
+    ['credential', (value) => {
+      value.proofs['A.23'].evidence.credentialCleanupHelper.toolchainReceiptSha256 = sha('b');
+    }],
+    ['credential', (value) => {
+      value.proofs['A.23'].evidence.credentialCleanupHelper.toolchainContextSha256 = sha('b');
+    }],
     ['automation', (value) => { value.proofs['A.26'].evidence.identity.sourceDigest = sha('b'); }],
     ['automation', (value) => { value.proofs['A.26'].evidence.identity.productionFingerprint = sha('b'); }],
     ['automation', (value) => { value.proofs['A.26'].evidence.identity.automationFingerprint = sha('b'); }],
     ['automation', (value) => { value.proofs['A.26'].evidence.identity.controlledDeltaSha256 = sha('b'); }],
+    ['automation', (value) => { value.proofs['A.27'].evidence.identity.sourceDigest = sha('b'); }],
+    ['automation', (value) => { value.proofs['A.27'].evidence.identity.productionFingerprint = sha('b'); }],
+    ['automation', (value) => { value.proofs['A.27'].evidence.identity.automationFingerprint = sha('b'); }],
+    ['automation', (value) => { value.proofs['A.27'].evidence.identity.controlledDeltaSha256 = sha('b'); }],
     ['automation', (value) => { value.proofs['A.28'].evidence.identity.sourceDigest = sha('b'); }],
     ['automation', (value) => { value.proofs['A.28'].evidence.identity.productionFingerprint = sha('b'); }],
     ['automation', (value) => { value.proofs['A.28'].evidence.identity.automationFingerprint = sha('b'); }],
@@ -119,6 +149,26 @@ test('binds proof identities to the recorded source and artefacts', () => {
     assert.throws(() => parseArchitectureProofBatch(
       Buffer.from(`${canonicalArchitectureJson(value)}\n`),
       batchId,
+    ));
+  }
+});
+
+test('binds refreshed A.27 evidence identities to the automation artefact', () => {
+  const sourceDigest = sha('4');
+  const production = architectureProofBatch('production', undefined, sourceDigest);
+  const mutations = [
+    (identity) => { identity.sourceDigest = sha('b'); },
+    (identity) => { identity.productionFingerprint = sha('b'); },
+    (identity) => { identity.automationFingerprint = sha('b'); },
+    (identity) => { identity.controlledDeltaSha256 = sha('b'); },
+  ];
+  for (const mutate of mutations) {
+    const value = architectureProofBatch('automation', production.artifact, sourceDigest);
+    mutate(value.proofs['A.27'].evidence.identity);
+    refreshEvidenceDigests(value);
+    assert.throws(() => parseArchitectureProofBatch(
+      Buffer.from(`${canonicalArchitectureJson(value)}\n`),
+      'automation',
     ));
   }
 });
@@ -169,6 +219,7 @@ test('rejects valid lowercase envelope replay and identity mutations for every p
       (envelope) => { envelope.sourceDigest = sha('b'); },
       (envelope) => { envelope.artifactFingerprint = sha('c'); },
       (envelope) => { envelope.artifactSha256 = sha('d'); },
+      (envelope) => { envelope.evidenceSha256 = sha('d'); },
       (envelope) => { envelope.proofId = id === 'A.21' ? 'A.22' : 'A.21'; },
     ];
     if (contract.artifactKind !== 'production') {
@@ -223,6 +274,7 @@ test('allows semantically valid pre-cleanup batches only for in-process finalisa
   const production = architectureProofBatch('production', undefined, sourceDigest);
   production.proofs['A.21'].evidence.cleanup = 'emitted-after-owned-temporary-cleanup';
   delete production.proofs['A.24'].evidence.generatedOutputsRemoved;
+  refreshEvidenceDigests(production);
   assert.throws(() => assertArchitectureProofBatch(production, 'production'));
   assert.equal(assertArchitectureProofBatch(production, 'production', {
     requireFinalProofs: false,
@@ -230,6 +282,7 @@ test('allows semantically valid pre-cleanup batches only for in-process finalisa
 
   const credential = architectureProofBatch('credential', production.artifact, sourceDigest);
   delete credential.proofs['A.23'].evidence.generatedOutputsRemoved;
+  refreshEvidenceDigests(credential);
   assert.throws(() => assertArchitectureProofBatch(credential, 'credential'));
   assert.equal(assertArchitectureProofBatch(credential, 'credential', {
     requireFinalProofs: false,
@@ -237,6 +290,7 @@ test('allows semantically valid pre-cleanup batches only for in-process finalisa
 
   const approval = architectureProofBatch('approval', production.artifact, sourceDigest);
   delete approval.proofs['A.25'].evidence.generatedOutputsRemoved;
+  refreshEvidenceDigests(approval);
   assert.throws(() => assertArchitectureProofBatch(approval, 'approval'));
   assert.equal(assertArchitectureProofBatch(approval, 'approval', {
     requireFinalProofs: false,
@@ -245,6 +299,7 @@ test('allows semantically valid pre-cleanup batches only for in-process finalisa
   const automation = architectureProofBatch('automation', production.artifact, sourceDigest);
   delete automation.proofs['A.26'].evidence.generatedOutputsRemoved;
   delete automation.proofs['A.27'].evidence.generatedOutputsRemoved;
+  refreshEvidenceDigests(automation);
   assert.throws(() => assertArchitectureProofBatch(automation, 'automation'));
   assert.equal(assertArchitectureProofBatch(automation, 'automation', {
     requireFinalProofs: false,

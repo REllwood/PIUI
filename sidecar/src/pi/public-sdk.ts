@@ -13,6 +13,13 @@ import {
   createAgentSessionFromServices,
   createAgentSessionRuntime,
   createAgentSessionServices,
+  createBashToolDefinition,
+  createEditToolDefinition,
+  createFindToolDefinition,
+  createGrepToolDefinition,
+  createLsToolDefinition,
+  createReadToolDefinition,
+  createWriteToolDefinition,
   type AgentSessionEvent,
   type AgentSessionServices,
   type CreateAgentSessionRuntimeFactory,
@@ -23,6 +30,7 @@ import {
   type SessionHeader,
   type ToolDefinition,
 } from '@earendil-works/pi-coding-agent';
+import { join, resolve } from 'node:path';
 
 export type PublicInlineExtension = InlineExtension;
 export type PublicExtensionContext = ExtensionContext;
@@ -31,6 +39,7 @@ export type PublicAgentSessionEvent = AgentSessionEvent;
 export type PublicAgentSessionRuntime = AgentSessionRuntime;
 export type PublicAgentSessionServices = AgentSessionServices;
 export type PublicModelRuntimeInstance = ModelRuntime;
+export type PublicPackageManagerInstance = DefaultPackageManager;
 export type PublicCreateAgentSessionRuntimeFactory = CreateAgentSessionRuntimeFactory;
 export type PublicSessionEntry = SessionEntry;
 export type PublicSessionHeader = SessionHeader;
@@ -38,11 +47,36 @@ export type PublicSessionManagerInstance = SessionManager;
 export type PublicToolDefinition = ToolDefinition;
 
 export const PublicModelRuntime = ModelRuntime;
+export const PublicPackageManager = DefaultPackageManager;
 export const PublicSessionManager = SessionManager;
 export const PublicSettingsManager = SettingsManager;
+// Pi 0.82 declares getDefaultSessionDir in its session-manager module but does
+// not re-export it from the supported package root. Keep the pinned encoding
+// here so PIUI can pass its native-granted agent directory without a deep SDK
+// import. The adapter contract test locks this to the 0.82 behaviour.
+export function publicDefaultSessionDir(cwd: string, agentDir: string): string {
+  const resolvedCwd = resolve(cwd);
+  const safePath = `--${resolvedCwd.replace(/^[/\\]/u, '').replaceAll(/[/\\:]/gu, '-')}--`;
+  return join(resolve(agentDir), 'sessions', safePath);
+}
 export const publicCreateAgentSessionFromServices = createAgentSessionFromServices;
 export const publicCreateAgentSessionRuntime = createAgentSessionRuntime;
 export const publicCreateAgentSessionServices = createAgentSessionServices;
+export const publicCreateToolDefinitions = (cwd: string): readonly ToolDefinition[] => {
+  // Pi's individual tool definitions intentionally carry narrower generic
+  // render argument types. PIUI preserves each object unchanged and exposes
+  // only the common runtime ToolDefinition contract to the approval decorator.
+  const definitions: readonly unknown[] = Object.freeze([
+    createReadToolDefinition(cwd),
+    createBashToolDefinition(cwd),
+    createEditToolDefinition(cwd),
+    createWriteToolDefinition(cwd),
+    createGrepToolDefinition(cwd),
+    createFindToolDefinition(cwd),
+    createLsToolDefinition(cwd),
+  ]);
+  return definitions as readonly ToolDefinition[];
+};
 export const PUBLIC_SESSION_VERSION = CURRENT_SESSION_VERSION;
 
 export type PublicCredentialStore = NonNullable<CreateModelRuntimeOptions['credentials']>;
@@ -117,17 +151,17 @@ function assertLoaderIntegrity(): void {
   const globalArray = safeOwnDescriptor(globalThis, 'Array');
   const pushDescriptor = safeOwnDescriptor(Array.prototype, 'push');
   if (
-    !pushDescriptor
-    || pushDescriptor.configurable
-    || (safeApply(safeHasOwn, pushDescriptor, ['writable']) && pushDescriptor.writable)
-    || globalArray?.value !== originalArray
-    || globalArray.configurable
-    || globalArray.writable
-    || Array.prototype.push !== originalArrayPush
-    || !safeIsFrozen(Array.prototype)
-    || !safeIsFrozen(Object.prototype)
-    || !safeIsFrozen(DefaultResourceLoader)
-    || !safeIsFrozen(loaderPrototype)
+    !pushDescriptor ||
+    pushDescriptor.configurable ||
+    (safeApply(safeHasOwn, pushDescriptor, ['writable']) && pushDescriptor.writable) ||
+    globalArray?.value !== originalArray ||
+    globalArray.configurable ||
+    globalArray.writable ||
+    Array.prototype.push !== originalArrayPush ||
+    !safeIsFrozen(Array.prototype) ||
+    !safeIsFrozen(Object.prototype) ||
+    !safeIsFrozen(DefaultResourceLoader) ||
+    !safeIsFrozen(loaderPrototype)
   ) {
     throw new Error('trusted-loader-hardening-failed');
   }
@@ -135,10 +169,10 @@ function assertLoaderIntegrity(): void {
     const name = criticalLoaderMethods[index];
     const descriptor = safeOwnDescriptor(loaderPrototype, name);
     if (
-      !descriptor
-      || descriptor.value !== originalLoaderMethods[name]
-      || descriptor.configurable
-      || descriptor.writable
+      !descriptor ||
+      descriptor.value !== originalLoaderMethods[name] ||
+      descriptor.configurable ||
+      descriptor.writable
     ) {
       throw new Error('trusted-loader-hardening-failed');
     }
@@ -152,15 +186,13 @@ if (isProjectLoaderIsolate) {
   assertLoaderIntegrity();
 }
 
-function bindOriginal<T extends (...args: never[]) => unknown>(
-  method: T,
-  receiver: object,
-): T {
+function bindOriginal<T extends (...args: never[]) => unknown>(method: T, receiver: object): T {
   return safeApply(safeBind, method, [receiver]) as T;
 }
 
 function ownData(value: unknown, key: string): unknown {
-  if (value === null || typeof value !== 'object') throw new Error('trusted-resource-observer-rejected');
+  if (value === null || typeof value !== 'object')
+    throw new Error('trusted-resource-observer-rejected');
   const descriptor = safeOwnDescriptor(value, key);
   if (!descriptor || !safeApply(safeHasOwn, descriptor, ['value'])) {
     throw new Error('trusted-resource-observer-rejected');
@@ -191,10 +223,12 @@ export type TrustedResourceCounts = Readonly<{
  * isolated in-memory settings and an explicitly empty agent directory. The
  * caller must establish containment and the exact trust lease first.
  */
-export async function loadTrustedProjectSnapshot(options: Readonly<{
-  snapshotRoot: string;
-  agentRoot: string;
-}>): Promise<TrustedResourceCounts> {
+export async function loadTrustedProjectSnapshot(
+  options: Readonly<{
+    snapshotRoot: string;
+    agentRoot: string;
+  }>,
+): Promise<TrustedResourceCounts> {
   // This is intentionally process-lifetime. Restoring a permissive value while
   // loaded extension callbacks remain alive would reopen package acquisition.
   process.env.PI_OFFLINE = '1';
@@ -264,10 +298,11 @@ export async function loadTrustedProjectSnapshot(options: Readonly<{
     prompts: promptCount > maximum ? maximum : promptCount,
     themes: themeCount > maximum ? maximum : themeCount,
     packages: 0,
-    truncated: extensionCount > maximum
-      || skillCount > maximum
-      || promptCount > maximum
-      || themeCount > maximum,
+    truncated:
+      extensionCount > maximum ||
+      skillCount > maximum ||
+      promptCount > maximum ||
+      themeCount > maximum,
   });
 }
 
@@ -276,12 +311,18 @@ export function publicSdkMetadata() {
     piVersion: VERSION,
     nodeVersion: process.versions.node,
     architecture: process.arch,
-    capabilities: Object.entries(REQUIRED_PUBLIC_CAPABILITIES).filter(([, available]) => available).map(([name]) => name).sort(),
+    capabilities: Object.entries(REQUIRED_PUBLIC_CAPABILITIES)
+      .filter(([, available]) => available)
+      .map(([name]) => name)
+      .sort(),
   };
 }
 
 export function assertPublicSdk(): void {
-  const unavailable = Object.entries(REQUIRED_PUBLIC_CAPABILITIES).filter(([, available]) => !available).map(([name]) => name);
+  const unavailable = Object.entries(REQUIRED_PUBLIC_CAPABILITIES)
+    .filter(([, available]) => !available)
+    .map(([name]) => name);
   if (VERSION !== '0.82.0') throw new Error('Pinned Pi SDK version mismatch');
-  if (unavailable.length) throw new Error(`Required public Pi capabilities unavailable: ${unavailable.join(', ')}`);
+  if (unavailable.length)
+    throw new Error(`Required public Pi capabilities unavailable: ${unavailable.join(', ')}`);
 }

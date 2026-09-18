@@ -31,6 +31,7 @@ use zeroize::Zeroizing;
 
 const MAX_JS_SAFE_SEQUENCE: u64 = 9_007_199_254_740_991;
 const MAX_WORKSPACE_WAITERS: usize = 32;
+const MAX_PRODUCT_WAITERS: usize = 32;
 
 #[cfg(feature = "a23-credential-test")]
 const A23_RAW_CAPTURE_MAX_BYTES: usize = 262_144;
@@ -120,6 +121,27 @@ impl A23RawCapture {
     }
 }
 
+/// Joins Pi's agent directory onto a home directory. Both the supervisor and
+/// `commands::product` resolve the same location, so they share this join and
+/// cannot drift apart.
+pub(crate) fn pi_agent_dir_within(home: &Path) -> PathBuf {
+    home.join(".pi").join("agent")
+}
+
+/// Resolves the Pi agent directory for a home directory that may be missing or
+/// empty. Kept pure so it can be tested without mutating process environment.
+fn pi_agent_dir_for_home(home: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    home.filter(|value| !value.is_empty())
+        .map(|value| pi_agent_dir_within(Path::new(&value)))
+}
+
+/// The host user's real Pi agent directory, read from the host process
+/// environment before the sidecar's own environment is cleared. Returns `None`
+/// when `HOME` is absent or empty, in which case no directory is claimed.
+fn host_pi_agent_dir() -> Option<PathBuf> {
+    pi_agent_dir_for_home(std::env::var_os("HOME"))
+}
+
 #[derive(Debug, Clone)]
 pub struct SupervisorPaths {
     pub node: PathBuf,
@@ -141,7 +163,7 @@ impl SupervisorPaths {
         #[cfg(debug_assertions)]
         {
             let _ = app;
-            return Self::development();
+            Self::development()
         }
         #[cfg(not(debug_assertions))]
         {
@@ -478,6 +500,42 @@ impl GenerationWriter {
         let mut bytes = Zeroizing::new(
             serde_json::to_vec(&envelope)
                 .map_err(|_| "internal sidecar request invalid".to_string())?,
+        );
+        bytes.push(b'\n');
+        self.write_bytes(bytes)?;
+        Ok(id)
+    }
+
+    pub(super) fn write_product_request<F>(
+        &mut self,
+        expected_generation: u64,
+        method: &str,
+        payload: Map<String, Value>,
+        register: F,
+    ) -> Result<String, String>
+    where
+        F: FnOnce(&str) -> Result<(), String>,
+    {
+        crate::protocol::product::validate_product_request(method, &payload)?;
+        self.ensure_active(expected_generation)?;
+        let (id, sequence) = self.next_internal_coordinates("product")?;
+        let mut payload = payload;
+        payload.insert("method".into(), Value::String(method.into()));
+        let envelope = Envelope {
+            version: 1,
+            kind: ProtocolKind::Request,
+            id: id.clone(),
+            correlation_id: None,
+            decision_id: None,
+            sequence,
+            payload,
+            error: None,
+        };
+        validate_envelope(&envelope).map_err(|_| "internal product request invalid".to_string())?;
+        register(&id)?;
+        let mut bytes = Zeroizing::new(
+            serde_json::to_vec(&envelope)
+                .map_err(|_| "internal product request invalid".to_string())?,
         );
         bytes.push(b'\n');
         self.write_bytes(bytes)?;
@@ -831,8 +889,70 @@ impl GenerationWriter {
     }
 }
 
+type EnvelopeWaiter = (u64, SyncSender<Result<Envelope, String>>);
+type PendingEnvelopeWaiters = Mutex<HashMap<String, EnvelopeWaiter>>;
+
 pub(super) struct WorkspaceWaiters {
-    pending: Mutex<HashMap<String, (u64, SyncSender<Result<Envelope, String>>)>>,
+    pending: PendingEnvelopeWaiters,
+}
+
+pub(super) struct ProductWaiters {
+    pending: PendingEnvelopeWaiters,
+}
+
+impl ProductWaiters {
+    pub(super) fn new() -> Self {
+        Self {
+            pending: Mutex::new(HashMap::with_capacity(MAX_PRODUCT_WAITERS)),
+        }
+    }
+
+    pub(super) fn register(
+        &self,
+        id: &str,
+        generation: u64,
+        sender: SyncSender<Result<Envelope, String>>,
+    ) -> Result<(), String> {
+        let mut pending = self
+            .pending
+            .lock()
+            .map_err(|_| "product waiter unavailable".to_string())?;
+        if pending.len() >= MAX_PRODUCT_WAITERS || pending.contains_key(id) {
+            return Err("product waiter unavailable".into());
+        }
+        pending.insert(id.to_string(), (generation, sender));
+        Ok(())
+    }
+
+    pub(super) fn deliver(&self, generation: u64, envelope: Envelope) -> Result<bool, String> {
+        let Some(correlation) = envelope.correlation_id.as_deref() else {
+            return Ok(false);
+        };
+        if !correlation.starts_with("rust-product-") {
+            return Ok(false);
+        }
+        let waiter = self
+            .pending
+            .lock()
+            .map_err(|_| "product waiter unavailable".to_string())?
+            .remove(correlation);
+        let Some((expected_generation, sender)) = waiter else {
+            return Err("product response correlation unavailable".into());
+        };
+        if expected_generation != generation {
+            return Err("stale product response".into());
+        }
+        sender
+            .try_send(Ok(envelope))
+            .map_err(|_| "product waiter unavailable".to_string())?;
+        Ok(true)
+    }
+
+    fn cancel(&self, id: &str) {
+        if let Ok(mut pending) = self.pending.lock() {
+            pending.remove(id);
+        }
+    }
 }
 
 impl WorkspaceWaiters {
@@ -947,12 +1067,68 @@ impl Drop for WorkspaceWaiter {
     }
 }
 
+pub(crate) struct ProductWaiter {
+    id: String,
+    generation: u64,
+    receiver: Receiver<Result<Envelope, String>>,
+    waiters: Arc<ProductWaiters>,
+    control: Arc<GenerationControl>,
+}
+
+impl ProductWaiter {
+    pub(crate) fn wait(mut self, timeout: Duration) -> Result<Envelope, String> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if !self.control.is_active() {
+                return Err("product execution uncertain".into());
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err("product response timed out".into());
+            }
+            match self
+                .receiver
+                .recv_timeout(remaining.min(Duration::from_millis(10)))
+            {
+                Ok(Ok(response)) => {
+                    if response.kind != ProtocolKind::Response
+                        || response.correlation_id.as_deref() != Some(self.id.as_str())
+                    {
+                        return Err("product response invalid".into());
+                    }
+                    self.waiters.cancel(&self.id);
+                    self.id.clear();
+                    return Ok(response);
+                }
+                Ok(Err(error)) => return Err(error),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err("product execution uncertain".into());
+                }
+            }
+        }
+    }
+
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+}
+
+impl Drop for ProductWaiter {
+    fn drop(&mut self) {
+        if !self.id.is_empty() {
+            self.waiters.cancel(&self.id);
+        }
+    }
+}
+
 struct RunningSidecar {
     generation: u64,
     child: Child,
     writer: Arc<Mutex<GenerationWriter>>,
     messages: Receiver<Result<Envelope, String>>,
     workspace_waiters: Arc<WorkspaceWaiters>,
+    product_waiters: Arc<ProductWaiters>,
     stdout: Option<JoinHandle<()>>,
     stderr: Option<JoinHandle<()>>,
     dispatcher: Option<JoinHandle<()>>,
@@ -1044,6 +1220,13 @@ impl SidecarSupervisor {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .process_group(0);
+        // The sealed HOME above keeps dependency home discovery inside the
+        // bundle, so Pi's own agent directory has to be named explicitly.
+        // Without it the model runtime would write its models store into the
+        // signed resources and ignore the user's real Pi configuration.
+        if let Some(agent_dir) = host_pi_agent_dir() {
+            command.env("PIUI_PI_AGENT_DIR", agent_dir);
+        }
         configure_architecture_test_sidecar(&mut command)?;
         let mut child = command
             .spawn()
@@ -1116,6 +1299,7 @@ impl SidecarSupervisor {
         };
         let (public_sender, public_receiver) = mpsc::sync_channel(PUBLIC_QUEUE_CAPACITY);
         let workspace_waiters = Arc::new(WorkspaceWaiters::new());
+        let product_waiters = Arc::new(ProductWaiters::new());
         let DispatcherHandles {
             dispatcher,
             credential_coordinator,
@@ -1126,6 +1310,7 @@ impl SidecarSupervisor {
             raw_receiver,
             public_sender,
             Arc::clone(&workspace_waiters),
+            Arc::clone(&product_waiters),
             self.credential_proxy.clone(),
             Arc::clone(&self.approval_registry),
             Arc::clone(&self.workspace_registry),
@@ -1140,6 +1325,7 @@ impl SidecarSupervisor {
             writer,
             messages: public_receiver,
             workspace_waiters,
+            product_waiters,
             stdout: Some(stdout_handle),
             stderr: Some(stderr_handle),
             dispatcher: Some(dispatcher),
@@ -1336,6 +1522,50 @@ impl SidecarSupervisor {
         })
     }
 
+    pub(crate) fn begin_product_request(
+        &mut self,
+        generation: u64,
+        method: &str,
+        payload: Map<String, Value>,
+    ) -> Result<ProductWaiter, String> {
+        if self.current_generation() != Some(generation) {
+            return Err("stale sidecar generation".into());
+        }
+        let running = self
+            .running
+            .as_ref()
+            .ok_or_else(|| "sidecar unavailable".to_string())?;
+        let (sender, receiver) = sync_channel(1);
+        let waiters = Arc::clone(&running.product_waiters);
+        let control = Arc::clone(&running.control);
+        let mut registered = None;
+        let request_id = running
+            .writer
+            .lock()
+            .map_err(|_| "sidecar writer unavailable".to_string())?
+            .write_product_request(generation, method, payload, |id| {
+                waiters.register(id, generation, sender)?;
+                registered = Some(id.to_string());
+                Ok(())
+            });
+        let request_id = match request_id {
+            Ok(id) => id,
+            Err(error) => {
+                if let Some(id) = registered.as_deref() {
+                    waiters.cancel(id);
+                }
+                return Err(error);
+            }
+        };
+        Ok(ProductWaiter {
+            id: request_id,
+            generation,
+            receiver,
+            waiters,
+            control,
+        })
+    }
+
     pub fn send_envelope(&mut self, envelope: &Envelope) -> Result<(), String> {
         let status = self.status();
         if !status.running {
@@ -1347,12 +1577,11 @@ impl SidecarSupervisor {
             .generation
             .ok_or_else(|| "sidecar generation unavailable".to_string())?;
         let running = self.running.as_ref().expect("running status has sidecar");
-        let result = running
+        running
             .writer
             .lock()
             .map_err(|_| "sidecar writer unavailable".to_string())?
-            .write_public(generation, envelope);
-        result
+            .write_public(generation, envelope)
     }
 
     pub fn receive_envelope(&mut self, timeout: Duration) -> Result<Envelope, String> {
@@ -1642,6 +1871,23 @@ mod tests {
             std::thread::sleep(timeout);
             Ok(false)
         }
+    }
+
+    // `HOME` is process-wide state shared with every other test in this
+    // binary, so the resolution is exercised through its pure form rather
+    // than by mutating the environment.
+    #[test]
+    fn pi_agent_dir_resolves_only_from_a_real_home_directory() {
+        assert_eq!(
+            pi_agent_dir_for_home(Some(std::ffi::OsString::from("/Users/example"))),
+            Some(PathBuf::from("/Users/example/.pi/agent"))
+        );
+        assert_eq!(pi_agent_dir_for_home(None), None);
+        assert_eq!(pi_agent_dir_for_home(Some(std::ffi::OsString::new())), None);
+        assert_eq!(
+            pi_agent_dir_within(Path::new("/Users/example")),
+            PathBuf::from("/Users/example/.pi/agent")
+        );
     }
 
     #[test]

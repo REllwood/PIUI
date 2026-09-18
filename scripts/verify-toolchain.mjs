@@ -1,8 +1,9 @@
+import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { arch, platform, release } from 'node:os';
-import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
+import { architectureToolchainPins } from './architecture-toolchain-trust.mjs';
 
 const pinnedNode = '22.23.1';
 const supportedNode = { major: 22, minimumMinor: 19 };
@@ -17,11 +18,22 @@ if (major !== supportedNode.major || minor < supportedNode.minimumMinor) {
   problems.push(`unsupported host Node ${process.versions.node}; expected >=22.19.0 <23`);
 }
 
-let bundled = { prepared: false, expected: `v${pinnedNode}` };
+let bundled = {
+  prepared: false,
+  expectedExecutableSha256: architectureToolchainPins.node.executableSha256,
+};
 if (existsSync(bundledPath)) {
-  const actual = execFileSync(bundledPath, ['--version'], { encoding: 'utf8' }).trim();
-  bundled = { prepared: true, expected: `v${pinnedNode}`, actual };
-  if (actual !== bundled.expected) problems.push(`bundled Node ${actual}; expected ${bundled.expected}`);
+  const actualExecutableSha256 = createHash('sha256')
+    .update(readFileSync(bundledPath))
+    .digest('hex');
+  bundled = {
+    prepared: true,
+    expectedExecutableSha256: architectureToolchainPins.node.executableSha256,
+    actualExecutableSha256,
+  };
+  if (actualExecutableSha256 !== bundled.expectedExecutableSha256) {
+    problems.push('bundled Node executable bytes do not match the pinned official runtime');
+  }
 }
 
 const packageJson = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'));

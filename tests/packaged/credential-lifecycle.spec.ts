@@ -24,12 +24,15 @@ import {
 import {
   A23_CLEANUP_HELPER_BUILD_ARGUMENT_TAIL,
   A23_CLEANUP_HELPER_BUILD_RECIPE_SHA256,
+  A23_MAINTENANCE_FAILURE_CODES,
   A23_PROCESS_TOPOLOGY,
   assertA23CleanupHelperIdentity,
   assertAcceptedCandidateProcess,
+  credentialCleanupSandbox,
   credentialProbeSandbox,
   createA23CleanupHelperIdentity,
   parseAccessibilityControlState,
+  parseA23MaintenanceFailure,
   parseNativeBoundaryEvidence,
   parsePackagedCredentialEvidence,
   parsePrivateChannelTranscript,
@@ -391,11 +394,70 @@ function privateTranscript(canary: string): Buffer {
   }
 }
 
+function webViewAuditFixture(events: readonly Record<string, unknown>[] = []) {
+  return {
+    schemaVersion: 1,
+    scope: 'credential-probe-webview-surfaces',
+    observation: {
+      authority: 'trusted-webview-self-serialised-self-attested',
+      hostValidation: 'native-boundary-closed-schema-and-canary-scan',
+      independentLiveBrowserInspection: 'not-performed-not-claimed',
+    },
+    coverage: {
+      arbitraryJavascriptHeap: 'not-enumerable-not-claimed',
+      childBrowsingContexts: 'iframe-and-frame-elements-zero-observed',
+      documentDom: 'bounded-document-light-dom-only',
+      shadowRoots: 'observable-open-zero-closed-not-observable-not-claimed',
+      webStorage: 'complete-local-and-session-at-capture-trusted-self-attested',
+      tauriEvents: {
+        event: 'piui://stream-probe',
+        nativeAdmission: 'rust-recorded-after-native-queue-admission',
+        webviewDelivery: 'trusted-self-attested',
+      },
+    },
+    document: {
+      outerHtml: '<html><body><main>Credential probe</main></body></html>',
+      bodyTextContent: 'Credential probe',
+      textContent: 'Credential probe',
+      formControls: [] as Array<{
+        index: number;
+        tag: string;
+        inputType: string;
+        name: string;
+        value: string;
+        checked: boolean;
+        selectedValues: string[];
+      }>,
+      visibilityState: 'visible',
+      url: 'tauri://localhost/index.html?spike=credential',
+      frameElementCount: 0,
+      iframeElementCount: 0,
+      observableOpenShadowRootCount: 0,
+    },
+    storage: {
+      local: [] as Array<{ key: string; value: string }>,
+      session: [] as Array<{ key: string; value: string }>,
+    },
+    tauriEvents: events.map((payload, index) => ({
+      sequence: index + 1,
+      event: 'piui://stream-probe',
+      payload,
+    })),
+  };
+}
+
 function nativeBoundaryFixture(runNonce: string, candidatePid: number, hostIdentity: {
   dev: number;
   ino: number;
   bytes: number;
-}): Buffer {
+}, options: {
+  nativeEvents?: readonly Record<string, unknown>[];
+  observedEvents?: readonly Record<string, unknown>[];
+  mutateAudit?: (audit: ReturnType<typeof webViewAuditFixture>) => void;
+} = {}): Buffer {
+  const nativeEvents = options.nativeEvents ?? [];
+  const audit = webViewAuditFixture(options.observedEvents ?? nativeEvents);
+  options.mutateAudit?.(audit);
   const records = [
     {
       schemaVersion: 1,
@@ -410,7 +472,7 @@ function nativeBoundaryFixture(runNonce: string, candidatePid: number, hostIdent
       coverage: {
         invokeInputs: 'all-native-handler-entries',
         invokeResults: 'closed-a23-command-set',
-        rustEvents: 'webview-queue-admission',
+        rustEvents: 'piui-stream-probe-native-queue-admission',
         documentDom: 'not-claimed',
         webStorage: 'not-claimed',
         arbitraryJavascriptHeap: 'not-claimed',
@@ -423,6 +485,13 @@ function nativeBoundaryFixture(runNonce: string, candidatePid: number, hostIdent
       command: 'sidecar_start',
       result: { running: true, failed: false },
     },
+    ...nativeEvents.map((event) => ({
+      schemaVersion: 1,
+      record: 'rust-event',
+      event: 'piui://stream-probe',
+      boundary: 'piui-stream-probe-native-queue-admission',
+      bytesUtf8: JSON.stringify(event),
+    })),
     {
       schemaVersion: 1,
       record: 'invoke-entry',
@@ -458,11 +527,41 @@ function nativeBoundaryFixture(runNonce: string, candidatePid: number, hostIdent
       command: 'credential_lifecycle_status',
       result: { state: 'passed' },
     },
+    {
+      schemaVersion: 1,
+      record: 'invoke-entry',
+      command: 'credential_lifecycle_status',
+      input: { webviewAudit: audit },
+    },
+    {
+      schemaVersion: 1,
+      record: 'invoke-result',
+      command: 'credential_lifecycle_status',
+      result: { state: 'passed' },
+    },
   ].map((record, index) => ({ ...record, sequence: index + 1 }));
   return Buffer.from(`${records.map((record) => JSON.stringify(record)).join('\n')}\n`, 'utf8');
 }
 
 describe.sequential('A.23 credential lifecycle focused contracts', () => {
+  it('accepts only the exact bounded maintenance failure vocabulary', () => {
+    for (const code of A23_MAINTENANCE_FAILURE_CODES) {
+      expect(parseA23MaintenanceFailure(
+        Buffer.from(`A23_MAINTENANCE_FAILURE=${code}\n`, 'utf8'),
+      )).toBe(code);
+    }
+    for (const hostile of [
+      'A23_MAINTENANCE_FAILURE=unknown\n',
+      'A23_MAINTENANCE_FAILURE=seed-index-write\r\n',
+      'A23_MAINTENANCE_FAILURE=seed-index-write\nextra\n',
+      'A23_MAINTENANCE_FAILURE=SEED-INDEX-WRITE\n',
+      'arbitrary child diagnostics\n',
+    ]) {
+      expect(parseA23MaintenanceFailure(Buffer.from(hostile, 'utf8'))).toBeUndefined();
+    }
+    expect(parseA23MaintenanceFailure('not bytes' as never)).toBeUndefined();
+  });
+
   it('specifies get → refresh → logout/delete using only the private in-memory host', async () => {
     const canary = runtimeCanary();
     const { evidence, trace } = await runInMemoryLifecycle(canary);
@@ -567,6 +666,7 @@ describe.sequential('A.23 credential lifecycle focused contracts', () => {
     const runNonce = '0123456789abcdef'.repeat(2);
     const candidatePid = 4242;
     const hostIdentity = { dev: 7, ino: 11, bytes: 16_384 };
+    const canary = Buffer.from(runtimeCanary(), 'ascii');
     const evidence = nativeBoundaryFixture(runNonce, candidatePid, hostIdentity);
     try {
       expect(parseNativeBoundaryEvidence(
@@ -574,21 +674,266 @@ describe.sequential('A.23 credential lifecycle focused contracts', () => {
         runNonce,
         candidatePid,
         hostIdentity,
-      )).toEqual({ records: 7, events: 0 });
+        canary,
+      )).toEqual({ records: 9, events: 0 });
       expect(() => parseNativeBoundaryEvidence(
         evidence,
         'f'.repeat(32),
         candidatePid,
         hostIdentity,
+        canary,
       )).toThrow();
       expect(() => parseNativeBoundaryEvidence(
         evidence,
         runNonce,
         candidatePid + 1,
         hostIdentity,
+        canary,
       )).toThrow();
     } finally {
+      canary.fill(0);
       evidence.fill(0);
+    }
+  });
+
+  it('correlates one piui stream-probe admission with trusted delivery self-attestation', () => {
+    const runNonce = '0123456789abcdef'.repeat(2);
+    const candidatePid = 4242;
+    const hostIdentity = { dev: 7, ino: 11, bytes: 16_384 };
+    const canary = Buffer.from(runtimeCanary(), 'ascii');
+    const event = {
+      version: 1,
+      kind: 'event',
+      id: 'event-safe-1',
+      sequence: 1,
+      payload: { eventType: 'sidecar.status', status: 'ready' },
+    };
+    const evidence = nativeBoundaryFixture(runNonce, candidatePid, hostIdentity, {
+      nativeEvents: [event],
+    });
+    const mismatched = nativeBoundaryFixture(runNonce, candidatePid, hostIdentity, {
+      nativeEvents: [event],
+      observedEvents: [{
+        ...event,
+        payload: { eventType: 'sidecar.status', status: 'mismatched' },
+      }],
+    });
+    try {
+      expect(parseNativeBoundaryEvidence(
+        evidence,
+        runNonce,
+        candidatePid,
+        hostIdentity,
+        canary,
+      )).toEqual({ records: 10, events: 1 });
+      expect(() => parseNativeBoundaryEvidence(
+        mismatched,
+        runNonce,
+        candidatePid,
+        hostIdentity,
+        canary,
+      )).toThrow('A.23 packaged credential probe rejected');
+    } finally {
+      canary.fill(0);
+      evidence.fill(0);
+      mismatched.fill(0);
+    }
+  });
+
+  it('detects a canary in each bounded trusted WebView self-attestation field', () => {
+    const runNonce = '0123456789abcdef'.repeat(2);
+    const candidatePid = 4242;
+    const hostIdentity = { dev: 7, ino: 11, bytes: 16_384 };
+    const cases: Array<{
+      label: string;
+      fixture(canaryText: string): Buffer;
+    }> = [
+      {
+        label: 'document light DOM and live light-DOM form host state',
+        fixture: (canaryText) => nativeBoundaryFixture(
+          runNonce,
+          candidatePid,
+          hostIdentity,
+          {
+            mutateAudit: (audit) => {
+              audit.document.outerHtml =
+                `<html><body><input value="${canaryText}"></body></html>`;
+              audit.document.formControls = [{
+                index: 0,
+                tag: 'input',
+                inputType: 'text',
+                name: 'fixture',
+                value: canaryText,
+                checked: false,
+                selectedValues: [],
+              }];
+            },
+          },
+        ),
+      },
+      {
+        label: 'local storage',
+        fixture: (canaryText) => nativeBoundaryFixture(
+          runNonce,
+          candidatePid,
+          hostIdentity,
+          {
+            mutateAudit: (audit) => {
+              audit.storage.local.push({ key: 'credential-fixture', value: canaryText });
+            },
+          },
+        ),
+      },
+      {
+        label: 'session storage',
+        fixture: (canaryText) => nativeBoundaryFixture(
+          runNonce,
+          candidatePid,
+          hostIdentity,
+          {
+            mutateAudit: (audit) => {
+              audit.storage.session.push({ key: 'credential-fixture', value: canaryText });
+            },
+          },
+        ),
+      },
+      {
+        label: 'Tauri event payload',
+        fixture: (canaryText) => {
+          const event = {
+            version: 1,
+            kind: 'event',
+            id: 'event-leak-1',
+            sequence: 1,
+            payload: { eventType: 'sidecar.status', detail: canaryText },
+          };
+          return nativeBoundaryFixture(runNonce, candidatePid, hostIdentity, {
+            nativeEvents: [event],
+          });
+        },
+      },
+    ];
+    for (const testCase of cases) {
+      const canaryText = runtimeCanary();
+      const canary = Buffer.from(canaryText, 'ascii');
+      const evidence = testCase.fixture(canaryText);
+      try {
+        expect(
+          () => parseNativeBoundaryEvidence(
+            evidence,
+            runNonce,
+            candidatePid,
+            hostIdentity,
+            canary,
+          ),
+          testCase.label,
+        ).toThrow('A.23 packaged credential probe rejected');
+      } finally {
+        canary.fill(0);
+        evidence.fill(0);
+      }
+    }
+  });
+
+  it('fails closed when any WebView audit collection bound is exceeded', () => {
+    const runNonce = '0123456789abcdef'.repeat(2);
+    const candidatePid = 4242;
+    const hostIdentity = { dev: 7, ino: 11, bytes: 16_384 };
+    const canary = Buffer.from(runtimeCanary(), 'ascii');
+    const controls = Array.from({ length: 257 }, (_, index) => ({
+      index,
+      tag: 'input',
+      inputType: 'text',
+      name: `field-${index}`,
+      value: '',
+      checked: false,
+      selectedValues: [],
+    }));
+    const storage = Array.from({ length: 257 }, (_, index) => ({
+      key: `key-${String(index).padStart(3, '0')}`,
+      value: '',
+    }));
+    const events = Array.from({ length: 129 }, (_, index) => ({
+      version: 1,
+      kind: 'event',
+      id: `event-${index}`,
+      sequence: index + 1,
+      payload: { eventType: 'sidecar.status' },
+    }));
+    const evidence = [
+      nativeBoundaryFixture(runNonce, candidatePid, hostIdentity, {
+        mutateAudit: (audit) => { audit.document.formControls = controls; },
+      }),
+      nativeBoundaryFixture(runNonce, candidatePid, hostIdentity, {
+        mutateAudit: (audit) => { audit.storage.local = storage; },
+      }),
+      nativeBoundaryFixture(runNonce, candidatePid, hostIdentity, {
+        mutateAudit: (audit) => {
+          audit.document.outerHtml = `<html>${'x'.repeat(20_000)}</html>`;
+          audit.document.bodyTextContent = 'y'.repeat(20_000);
+          audit.document.textContent = 'z'.repeat(20_000);
+        },
+      }),
+      nativeBoundaryFixture(runNonce, candidatePid, hostIdentity, {
+        nativeEvents: events,
+      }),
+    ];
+    try {
+      for (const candidate of evidence) {
+        expect(() => parseNativeBoundaryEvidence(
+          candidate,
+          runNonce,
+          candidatePid,
+          hostIdentity,
+          canary,
+        )).toThrow('A.23 packaged credential probe rejected');
+      }
+    } finally {
+      canary.fill(0);
+      for (const candidate of evidence) candidate.fill(0);
+    }
+  });
+
+  it('rejects independent-browser, shadow-root and child-context overclaims', () => {
+    const runNonce = '0123456789abcdef'.repeat(2);
+    const candidatePid = 4242;
+    const hostIdentity = { dev: 7, ino: 11, bytes: 16_384 };
+    const canary = Buffer.from(runtimeCanary(), 'ascii');
+    const evidence = [
+      nativeBoundaryFixture(runNonce, candidatePid, hostIdentity, {
+        mutateAudit: (audit) => {
+          audit.observation.independentLiveBrowserInspection = 'performed';
+        },
+      }),
+      nativeBoundaryFixture(runNonce, candidatePid, hostIdentity, {
+        mutateAudit: (audit) => { audit.coverage.documentDom = 'complete-document-dom'; },
+      }),
+      nativeBoundaryFixture(runNonce, candidatePid, hostIdentity, {
+        mutateAudit: (audit) => { audit.coverage.shadowRoots = 'all-shadow-roots-observed'; },
+      }),
+      nativeBoundaryFixture(runNonce, candidatePid, hostIdentity, {
+        mutateAudit: (audit) => { audit.document.iframeElementCount = 1; },
+      }),
+      nativeBoundaryFixture(runNonce, candidatePid, hostIdentity, {
+        mutateAudit: (audit) => { audit.document.frameElementCount = 1; },
+      }),
+      nativeBoundaryFixture(runNonce, candidatePid, hostIdentity, {
+        mutateAudit: (audit) => { audit.document.observableOpenShadowRootCount = 1; },
+      }),
+    ];
+    try {
+      for (const candidate of evidence) {
+        expect(() => parseNativeBoundaryEvidence(
+          candidate,
+          runNonce,
+          candidatePid,
+          hostIdentity,
+          canary,
+        )).toThrow('A.23 packaged credential probe rejected');
+      }
+    } finally {
+      canary.fill(0);
+      for (const candidate of evidence) candidate.fill(0);
     }
   });
 
@@ -614,6 +959,15 @@ describe.sequential('A.23 credential lifecycle focused contracts', () => {
     expect(() => parseAccessibilityControlState(Buffer.from(
       'AXButton\tFinalising…\tfalse\n',
     ))).toThrow();
+    const capturing = Buffer.from([
+      'AXButton\tCapturing WebView surfaces…\tfalse',
+      'AXStaticText\tCapturing bounded WebView state and event payloads.\tunknown',
+      '',
+    ].join('\n'));
+    expect(parseAccessibilityControlState(capturing)).toEqual({
+      state: 'pending',
+      controls: 2,
+    });
   });
 
   it('boundedly transitions from exact Verifying accessibility state to Finalising', async () => {
@@ -779,7 +1133,7 @@ describe.sequential('A.23 credential lifecycle focused contracts', () => {
       scripts: Record<string, string>;
     };
     expect(packageDocument.scripts['spike:packaged:credentials'])
-      .toBe('node scripts/package-spike.mjs --authoritative-a23');
+      .toBe('/usr/bin/env -i PATH=/usr/bin:/bin LANG=en_AU.UTF-8 LC_ALL=en_AU.UTF-8 /usr/bin/ruby --disable-gems scripts/architecture-bootstrap.rb package --authoritative-a23');
     const cargo = readFileSync(resolve(repositoryRoot, 'src-tauri/Cargo.toml'), 'utf8');
     const runner = readFileSync(
       resolve(repositoryRoot, 'scripts/run-packaged-credential-probe.mjs'),
@@ -790,6 +1144,15 @@ describe.sequential('A.23 credential lifecycle focused contracts', () => {
       'utf8',
     );
     const appHost = readFileSync(resolve(repositoryRoot, 'src-tauri/src/lib.rs'), 'utf8');
+    const appMain = readFileSync(resolve(repositoryRoot, 'src-tauri/src/main.rs'), 'utf8');
+    const credentialMaintenance = readFileSync(
+      resolve(repositoryRoot, 'src-tauri/src/a23_credential_maintenance.rs'),
+      'utf8',
+    );
+    const cleanupHarness = readFileSync(
+      resolve(repositoryRoot, 'src-tauri/src/bin/credential-cleanup-harness.rs'),
+      'utf8',
+    );
     const bridge = readFileSync(
       resolve(repositoryRoot, 'src-tauri/src/commands/bridge.rs'),
       'utf8',
@@ -808,8 +1171,45 @@ describe.sequential('A.23 credential lifecycle focused contracts', () => {
     expect(cargo).toContain('required-features = ["a23-credential-test"]');
     expect(runner).toContain("stdio: ['ignore', stdout, stderr, 'ignore', 'ignore', 'ignore', 'pipe']");
     expect(runner).toContain("name of candidate is \"Insert test value\"");
+    expect(runner.match(/if exists window 1 then/g)).toHaveLength(3);
+    expect(runner).toMatch(
+      /set clickedProbe to false\s+repeat 300 times\s+try\s+set frontmost to true\s+end try/u,
+    );
+    expect(runner).not.toMatch(/tell appProcess\s+set frontmost to true/u);
     expect(runner.match(/await assertPrivateExecutableLease\(helper\);/g)).toHaveLength(4);
-    expect(runner).toContain('private-held-copy-rechecked-and-keychain-sandboxed');
+    expect(runner).toContain(
+      'private-precheck-and-same-accepted-host-creator-cleanup-keychain-sandboxed',
+    );
+    for (const mode of [
+      '--a23-cleanup',
+      '--a23-inspect-cleanup-fixture',
+      '--a23-seed-cleanup-fixture',
+    ]) {
+      expect(runner).toContain(mode);
+      expect(appMain).toContain(mode);
+      expect(credentialMaintenance).toContain(mode);
+    }
+    expect(runner).toContain(
+      'await proveAcceptedHostCreatorCleanup(bundle, namespace, signal, reportPhase)',
+    );
+    expect(runner).toMatch(
+      /async function runAcceptedHostKeychainMode\([\s\S]*?let result;[\s\S]*?result = await executeInputCommand\([\s\S]*?classifyA23MaintenanceExecutionFailure\(error, label\)/,
+    );
+    expect(runner).toContain('candidate termination was not proven before cleanup');
+    expect(runner).toContain('await assertAcceptedBundleIdentity(bundle)');
+    expect(appMain).toContain('#[cfg(not(feature = "a23-credential-test"))]');
+    expect(appMain).toContain('production_arguments_request_a23_maintenance');
+    expect(credentialMaintenance).toContain('const FIXTURE_REFERENCE: &str =');
+    expect(credentialMaintenance).toContain('.create_at_reference(');
+    expect(credentialMaintenance).toContain('.cleanup_test_repository()');
+    expect(credentialMaintenance).toContain('secret_absent');
+    expect(credentialMaintenance).toContain('label_absent');
+    expect(cleanupHarness).toContain(
+      'a23_credential_maintenance::run_cleanup_with_failure_code',
+    );
+    expect(cleanupHarness).toContain('code.stderr_line()');
+    expect(runner).toContain('const A23_MAINTENANCE_TIMEOUT_MS = 120_000;');
+    expect(runner).toContain('const A23_NATIVE_SHEET_TIMEOUT_MS = 120_000;');
     expect(runner).not.toContain("command: '/dev/fd/3'");
     expect(runner).not.toMatch(/\/usr\/bin\/(?:pbcopy|pbpaste)|pasteboardInput/);
     expect(runner).toContain('(deny mach-lookup\n');
@@ -906,6 +1306,11 @@ describe.sequential('A.23 credential lifecycle focused contracts', () => {
     expect(runner).toContain('(literal "/System/Library/OpenSSL/openssl.cnf")');
     expect(runner).toContain('credentialProbeSandbox(runtime, bundle)');
     expect(runner).toContain("'com.apple.securityd.xpc'");
+    expect(runner).toContain("'com.apple.system.opendirectoryd.libinfo'");
+    expect(runner).toContain('Library/Keychains/login.keychain-db');
+    expect(runner).toContain('(allow file-read* file-write* file-test-existence');
+    expect(runner).toContain('(sysctl-name "hw.pagesize_compat")');
+    expect(runner).toContain('(sysctl-name "security.mac.sandbox.sentinel")');
     for (const key of ['artefacts', 'cache', 'config', 'data', 'home', 'temporary', 'working']) {
       expect(runner).toContain(`  '${key}',`);
     }
@@ -941,6 +1346,38 @@ describe.sequential('A.23 credential lifecycle focused contracts', () => {
     expect(profile).toContain('(global-name "com.apple.pasteboard.1")');
     expect(profile).toContain('(global-name "com.apple.pbs.fetch_services")');
     expect(profile).not.toMatch(/com\.apple\.logd|com\.apple\.analyticsd/);
+  });
+
+  it('scopes maintenance writes to the login Keychain and its closed companion families', () => {
+    const helper = '/private/tmp/piui-a23-maintenance/PIUI';
+    const keychain = resolve(homedir(), 'Library/Keychains/login.keychain-db');
+    const keychainDirectory = resolve(homedir(), 'Library/Keychains');
+    const escapedKeychainDirectory = keychainDirectory.replace(
+      /[.*+?^${}()|[\]\\]/gu,
+      '\\$&',
+    );
+    const profile = credentialCleanupSandbox(helper);
+    expect(profile.match(/\(allow file-read\* file-write\* file-test-existence/g)).toHaveLength(1);
+    expect(profile).toContain(
+      `(allow file-read* file-write* file-test-existence\n      (literal "${keychain}")`,
+    );
+    expect(profile).toContain(
+      `(regex #"^${escapedKeychainDirectory}/\\.[A-Za-z0-9_]+$")`,
+    );
+    expect(profile).toContain(
+      `(regex #"^${escapedKeychainDirectory}/login\\.keychain-db\\.sb-[-A-Za-z0-9_]+$")`,
+    );
+    expect(profile).toContain('(sysctl-name "security.mac.sandbox.sentinel")');
+    expect(profile).not.toContain(`(subpath "${keychainDirectory}")`);
+    expect(profile).not.toContain(`(prefix "${keychainDirectory}")`);
+    expect(profile).toMatch(
+      new RegExp(
+        `\\(with-filter \\(process-path "${helper}"\\)[\\s\\S]*?`
+          + `\\(allow file-read\\* file-write\\* file-test-existence[\\s\\S]*?`
+          + `login\\.keychain-db"\\)`,
+        'u',
+      ),
+    );
   });
 
   it('behaviourally fences sandbox reads, execution, Mach lookup and local network access', async () => {
@@ -1102,12 +1539,16 @@ describe.sequential('A.23 credential lifecycle focused contracts', () => {
       resolve(repositoryRoot, 'scripts/run-packaged-credential-probe.mjs'),
       'utf8',
     );
-    const terminationCatch = runner.indexOf('cleanupErrors.push(error);', runner.indexOf('if (ledger)'));
+    const terminationCatch = runner.indexOf(
+      "recordCleanupFailure('cleanup-candidate-termination', error);",
+      runner.indexOf('if (ledger)'),
+    );
     const exactRootFallback = runner.indexOf('await terminateUnledgeredRoot(child);', terminationCatch);
     const identityRetry = runner.indexOf('await ledger.terminate();', exactRootFallback);
     expect(terminationCatch).toBeGreaterThan(-1);
     expect(exactRootFallback).toBeGreaterThan(terminationCatch);
     expect(identityRetry).toBeGreaterThan(exactRootFallback);
+    expect(runner).toContain('reportPhase(primaryFailure && failurePhase');
     expect(runner).not.toContain('terminateRecordedProcessGroupsWithoutObservation');
   });
 
@@ -1169,7 +1610,7 @@ describe.sequential('A.23 credential lifecycle focused contracts', () => {
     }
   });
 
-  it('uses native-owned bounded WebView boundary evidence and remains visibly finalising', () => {
+  it('host-scans a bounded trusted WebView self-attestation and remains visibly busy', () => {
     const recorder = readFileSync(
       resolve(repositoryRoot, 'src/architecture-gate/a23WebViewEvidence.ts'),
       'utf8',
@@ -1180,6 +1621,10 @@ describe.sequential('A.23 credential lifecycle focused contracts', () => {
     );
     const nativeEvidence = readFileSync(
       resolve(repositoryRoot, 'src-tauri/src/commands/a23_native_evidence.rs'),
+      'utf8',
+    );
+    const bridge = readFileSync(
+      resolve(repositoryRoot, 'src-tauri/src/commands/bridge.rs'),
       'utf8',
     );
     const commandModules = readFileSync(
@@ -1197,7 +1642,29 @@ describe.sequential('A.23 credential lifecycle focused contracts', () => {
     );
 
     expect(recorder).toContain('not acceptance evidence');
-    expect(probe).not.toMatch(/A23WebViewEvidenceRecorder|credential_webview_snapshot|\.capture\(\)/);
+    expect(probe).not.toMatch(/A23WebViewEvidenceRecorder|credential_webview_snapshot/);
+    expect(probe).toContain('class A23WebViewSurfaceCapture');
+    expect(probe).toContain("const A23_TAURI_EVENT = 'piui://stream-probe'");
+    expect(probe).toContain('MAX_WEBVIEW_AUDIT_BYTES = 49_152');
+    expect(probe).toContain('trusted-webview-self-serialised-self-attested');
+    expect(probe).toContain('not-performed-not-claimed');
+    expect(probe).toContain("document.querySelectorAll('iframe')");
+    expect(probe).toContain("document.querySelectorAll('frame')");
+    expect(probe).toContain('element.shadowRoot === null');
+    expect(probe).toContain('bounded-document-light-dom-only');
+    expect(probe).toContain('observable-open-zero-closed-not-observable-not-claimed');
+    expect(probe).toContain('complete-local-and-session-at-capture-trusted-self-attested');
+    expect(probe).toContain("arbitraryJavascriptHeap: 'not-enumerable-not-claimed'");
+    const listenerRegistration = probe.indexOf('stopListening = await listen<JsonValue>');
+    const sidecarStart = probe.indexOf("await invoke('sidecar_start')");
+    const captureBusy = probe.indexOf("setBusyLabel('Capturing WebView surfaces…')");
+    const auditInvoke = probe.indexOf('webviewAudit: surfaceCapture.capture()');
+    const finalisingBusy = probe.indexOf("setBusyLabel('Finalising…')", captureBusy);
+    expect(listenerRegistration).toBeGreaterThan(-1);
+    expect(sidecarStart).toBeGreaterThan(listenerRegistration);
+    expect(captureBusy).toBeGreaterThan(sidecarStart);
+    expect(auditInvoke).toBeGreaterThan(captureBusy);
+    expect(finalisingBusy).toBeGreaterThan(auditInvoke);
     expect(commandModules).toMatch(
       /#\[cfg\(feature = "a23-credential-test"\)\]\s*pub mod a23_native_evidence;/,
     );
@@ -1206,9 +1673,22 @@ describe.sequential('A.23 credential lifecycle focused contracts', () => {
     expect(nativeEvidence).toContain('PIUI_A23_NATIVE_EVIDENCE_PATH');
     expect(nativeEvidence).toContain('.create_new(true)');
     expect(nativeEvidence).toContain('.custom_flags(libc::O_NOFOLLOW)');
+    // The header scopes the Rust recorder itself. The final WebView audit is
+    // a later invoke input captured by that recorder and validated by the host.
     expect(nativeEvidence).toContain('"documentDom": "not-claimed"');
     expect(nativeEvidence).toContain('"webStorage": "not-claimed"');
     expect(nativeEvidence).toContain('"arbitraryJavascriptHeap": "not-claimed"');
+    expect(nativeEvidence).toContain(
+      'const STREAM_EVENT_BOUNDARY: &str = "piui-stream-probe-native-queue-admission";',
+    );
+    expect(nativeEvidence).toContain('"rustEvents": STREAM_EVENT_BOUNDARY');
+    expect(nativeEvidence).toContain('record_piui_stream_probe_admission');
+    expect(bridge).toMatch(
+      /self\.event_output\.enqueue\(generation, envelope\)\?;[\s\S]{0,320}record_piui_stream_probe_admission\(envelope\)\?;/,
+    );
+    expect(bridge).toMatch(
+      /let receipt = self\.event_output\.enqueue_ack_with_receipt\([\s\S]{0,640}record_piui_stream_probe_admission\(envelope\)\?;/,
+    );
     expect(appHost).toContain('state.record_invoke_entry(invoke.message.command()');
     expect(appHost).not.toContain('credential_webview_snapshot');
     expect(process).toMatch(/self\.write_bytes\(bytes\)\?;[\s\S]{0,240}record_host_response/);
@@ -1217,6 +1697,7 @@ describe.sequential('A.23 credential lifecycle focused contracts', () => {
     expect(process).toContain('fn record_sidecar_frame(&self, raw: &[u8])');
     expect(process).not.toContain('record_if_credential_request');
 
+    expect(probe).toContain("setBusyLabel('Capturing WebView surfaces…')");
     expect(probe).toContain("setBusyLabel('Finalising…')");
     expect(probe).toContain('await waitForExternalTermination(controller.signal)');
     expect(probe).toContain('activeProbe.current?.abort()');
@@ -1251,16 +1732,19 @@ describe.sequential('A.23 credential lifecycle focused contracts', () => {
       publicSurfaces: {
         accessibilityControls: 'runner-owned-after-quiescence-scanned',
         nativeInvokeBoundary: 'all-entries-and-expected-results-scanned',
-        rustEventBoundary: 'no-events-observed',
-        documentDom: 'not-claimed',
-        webStorage: 'not-claimed',
-        arbitraryJavascriptHeap: 'not-claimed',
+        rustEventBoundary: 'piui-stream-probe-native-admission-and-trusted-webview-self-attested-delivery-host-scanned',
+        webViewInspectionAuthority: 'trusted-webview-self-serialised-self-attested-not-independent-live-browser-inspection',
+        documentDom: 'bounded-document-light-dom-native-boundary-host-scanned',
+        childBrowsingContexts: 'trusted-webview-self-attested-zero-iframe-and-frame-elements',
+        shadowRoots: 'trusted-webview-self-attested-zero-observable-open-closed-not-observable-not-claimed',
+        webStorage: 'bounded-local-and-session-native-boundary-host-scanned',
+        arbitraryJavascriptHeap: 'not-enumerable-not-claimed',
         logsAndCrashArtefacts: 'isolated-runtime-and-owned-stdio-only',
         ordinaryAppData: 'isolated-runtime-only',
       },
       cleanup: {
         credentialInputDescriptorClosed: true,
-        helperExecutionResidual: 'private-held-copy-rechecked-and-keychain-sandboxed',
+        helperExecutionResidual: 'private-precheck-and-same-accepted-host-creator-cleanup-keychain-sandboxed',
         keychainEntriesRemoved: true,
         keychainIndexRemoved: true,
         ownedProcessesRemoved: true,
@@ -1322,23 +1806,28 @@ describe.sequential('A.23 credential lifecycle focused contracts', () => {
 
   it('binds the private cleanup executable to the exact source, recipe and toolchain', () => {
     expect(A23_CLEANUP_HELPER_BUILD_RECIPE_SHA256)
-      .toBe('fbf5b1f2e49932477247528ccf2ae8df4aefd747c7d44be72e0ca5ee5ddb21c3');
+      .toBe('505266112b63c5a69c34f4fffdfe1b64c22e8b6785c65bdeba23b2759e28a655');
     const helper = {
       sha256: '1'.repeat(64),
       size: 1_048_576,
     };
-    const pnpmEntry = '/private/toolchain/pnpm.cjs';
+    const tauriEntry = '/private/source/node_modules/@tauri-apps/cli/tauri.js';
+    const formalBuildOverlayPath = '/private/build/authenticated-build.json';
     const variantOverlayPath = '/private/build/credential-overlay.json';
+    const buildArgumentTail = A23_CLEANUP_HELPER_BUILD_ARGUMENT_TAIL.map((argument) => (
+      argument === '<authenticated-build-overlay>' ? formalBuildOverlayPath : argument
+    ));
     const identity = createA23CleanupHelperIdentity({
       buildArguments: [
-        pnpmEntry,
-        ...A23_CLEANUP_HELPER_BUILD_ARGUMENT_TAIL,
+        tauriEntry,
+        ...buildArgumentTail,
         variantOverlayPath,
       ],
+      formalBuildOverlayPath,
       frozenSourceDigest: '2'.repeat(64),
       helper,
       helperSourceSha256: '3'.repeat(64),
-      pnpmEntry,
+      tauriEntry,
       toolchainContextSha256: '4'.repeat(64),
       toolchainReceiptSha256: '5'.repeat(64),
       variantOverlayPath,
@@ -1357,15 +1846,16 @@ describe.sequential('A.23 credential lifecycle focused contracts', () => {
     });
     expect(() => createA23CleanupHelperIdentity({
       buildArguments: [
-        pnpmEntry,
-        ...A23_CLEANUP_HELPER_BUILD_ARGUMENT_TAIL,
+        tauriEntry,
+        ...buildArgumentTail,
         variantOverlayPath,
         '--unexpected',
       ],
+      formalBuildOverlayPath,
       frozenSourceDigest: '2'.repeat(64),
       helper,
       helperSourceSha256: '3'.repeat(64),
-      pnpmEntry,
+      tauriEntry,
       toolchainContextSha256: '4'.repeat(64),
       toolchainReceiptSha256: '5'.repeat(64),
       variantOverlayPath,

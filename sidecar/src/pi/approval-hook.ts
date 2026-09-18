@@ -43,6 +43,8 @@ export type ApprovalContext = Readonly<{
 export type ApprovalGateOptions = Readonly<{
   /** Test fixtures may shorten this bounded guard; production uses the host guard. */
   cohortTimeoutMs?: number;
+  beforeExecute?: (toolName: string, params: unknown) => Promise<unknown>;
+  afterExecute?: (token: unknown, result: unknown, error: unknown | undefined) => Promise<void>;
 }>;
 
 type DefinitionLookup = (name: string) => PublicToolDefinition | undefined;
@@ -102,10 +104,13 @@ function copyDefinition<T extends PublicToolDefinition>(
   const descriptors = Object.getOwnPropertyDescriptors(original);
   const keys = Reflect.ownKeys(descriptors);
   if (
-    keys.some((key) => typeof key === 'symbol' || !Object.hasOwn(descriptors[key as string], 'value'))
-    || typeof descriptors.name?.value !== 'string'
-    || typeof descriptors.execute?.value !== 'function'
-  ) throw new Error('approval-wrapper-rejected');
+    keys.some(
+      (key) => typeof key === 'symbol' || !Object.hasOwn(descriptors[key as string], 'value'),
+    ) ||
+    typeof descriptors.name?.value !== 'string' ||
+    typeof descriptors.execute?.value !== 'function'
+  )
+    throw new Error('approval-wrapper-rejected');
   const decorated = Object.create(Object.getPrototypeOf(original), descriptors) as T;
   Object.defineProperty(decorated, 'execute', {
     configurable: false,
@@ -119,7 +124,8 @@ function copyDefinition<T extends PublicToolDefinition>(
 function ownValue(value: unknown, key: string): unknown {
   if (value === null || typeof value !== 'object') throw new Error('approval-cohort-rejected');
   const descriptor = Object.getOwnPropertyDescriptor(value, key);
-  if (!descriptor || !Object.hasOwn(descriptor, 'value')) throw new Error('approval-cohort-rejected');
+  if (!descriptor || !Object.hasOwn(descriptor, 'value'))
+    throw new Error('approval-cohort-rejected');
   return descriptor.value;
 }
 
@@ -145,8 +151,11 @@ function deriveCohort(
   if (!latestMessage) throw new Error('approval-cohort-rejected');
   const assistantEntryId = ownValue(latestMessage, 'id');
   const message = ownValue(latestMessage, 'message');
-  if (typeof assistantEntryId !== 'string' || !WIRE_COORDINATE.test(assistantEntryId)
-    || ownValue(message, 'role') !== 'assistant') {
+  if (
+    typeof assistantEntryId !== 'string' ||
+    !WIRE_COORDINATE.test(assistantEntryId) ||
+    ownValue(message, 'role') !== 'assistant'
+  ) {
     throw new Error('approval-cohort-rejected');
   }
   const content = ownValue(message, 'content');
@@ -160,20 +169,33 @@ function deriveCohort(
     if (ownValue(block, 'type') !== 'toolCall') continue;
     const id = ownValue(block, 'id');
     const name = ownValue(block, 'name');
-    if (typeof id !== 'string' || !WIRE_COORDINATE.test(id) || !isApprovalToolName(name)
-      || seen.has(id) || orderedMembers.length >= MAX_COHORT_MEMBERS) {
+    if (
+      typeof id !== 'string' ||
+      !WIRE_COORDINATE.test(id) ||
+      !isApprovalToolName(name) ||
+      seen.has(id) ||
+      orderedMembers.length >= MAX_COHORT_MEMBERS
+    ) {
       throw new Error('approval-cohort-rejected');
     }
     seen.add(id);
-    orderedMembers.push(Object.freeze({
-      ordinal: orderedMembers.length,
-      toolCallId: id,
-      toolName: name,
-    }));
+    orderedMembers.push(
+      Object.freeze({
+        ordinal: orderedMembers.length,
+        toolCallId: id,
+        toolName: name,
+      }),
+    );
   }
-  if (orderedMembers.length < 1
-    || orderedMembers.filter((member) => member.toolCallId === toolCallId && member.toolName === toolName).length !== 1
-    || orderedMembers.some((member) => member.toolCallId === toolCallId && member.toolName !== toolName)) {
+  if (
+    orderedMembers.length < 1 ||
+    orderedMembers.filter(
+      (member) => member.toolCallId === toolCallId && member.toolName === toolName,
+    ).length !== 1 ||
+    orderedMembers.some(
+      (member) => member.toolCallId === toolCallId && member.toolName !== toolName,
+    )
+  ) {
     throw new Error('approval-cohort-rejected');
   }
 
@@ -191,15 +213,19 @@ function deriveCohort(
 }
 
 function sameDescriptor(left: ApprovalCohortDescriptor, right: ApprovalCohortDescriptor): boolean {
-  return left.assistantEntryId === right.assistantEntryId
-    && left.cohortDigest === right.cohortDigest
-    && left.orderedMembers.length === right.orderedMembers.length
-    && left.orderedMembers.every((member, index) => {
+  return (
+    left.assistantEntryId === right.assistantEntryId &&
+    left.cohortDigest === right.cohortDigest &&
+    left.orderedMembers.length === right.orderedMembers.length &&
+    left.orderedMembers.every((member, index) => {
       const other = right.orderedMembers[index];
-      return member.ordinal === other.ordinal
-        && member.toolCallId === other.toolCallId
-        && member.toolName === other.toolName;
-    });
+      return (
+        member.ordinal === other.ordinal &&
+        member.toolCallId === other.toolCallId &&
+        member.toolName === other.toolName
+      );
+    })
+  );
 }
 
 function privateCohortKey(context: ApprovalContext, descriptor: ApprovalCohortDescriptor): string {
@@ -222,9 +248,15 @@ function createCohort(
   let releaseRegistered!: (value: boolean) => void;
   let releaseAllReady!: (value: boolean) => void;
   let releaseGroup!: (value: boolean) => void;
-  const registered = new Promise<boolean>((resolve) => { releaseRegistered = resolve; });
-  const allReady = new Promise<boolean>((resolve) => { releaseAllReady = resolve; });
-  const groupRelease = new Promise<boolean>((resolve) => { releaseGroup = resolve; });
+  const registered = new Promise<boolean>((resolve) => {
+    releaseRegistered = resolve;
+  });
+  const allReady = new Promise<boolean>((resolve) => {
+    releaseAllReady = resolve;
+  });
+  const groupRelease = new Promise<boolean>((resolve) => {
+    releaseGroup = resolve;
+  });
   const timer = setTimeout(onTimeout, timeoutMs);
   timer.unref?.();
   return {
@@ -255,8 +287,12 @@ export function createApprovalGate(
   options: ApprovalGateOptions = {},
 ) {
   const cohortTimeoutMs = options.cohortTimeoutMs ?? DEFAULT_COHORT_TIMEOUT_MS;
-  if (!Number.isSafeInteger(cohortTimeoutMs) || cohortTimeoutMs < 1
-    || cohortTimeoutMs > DEFAULT_COHORT_TIMEOUT_MS) throw new Error('approval-gate-rejected');
+  if (
+    !Number.isSafeInteger(cohortTimeoutMs) ||
+    cohortTimeoutMs < 1 ||
+    cohortTimeoutMs > DEFAULT_COHORT_TIMEOUT_MS
+  )
+    throw new Error('approval-gate-rejected');
 
   const pendingByInput = new WeakMap<object, PendingInvocation>();
   const pendingByToolCall = new Map<string, PendingInvocation>();
@@ -316,17 +352,19 @@ export function createApprovalGate(
     }
     if (cohort.abandonSent) return;
     cohort.abandonSent = true;
-    void host.abandonApproval({
-      method: 'approval.abandon',
-      schemaVersion: 2,
-      generation: context.generation,
-      sessionId: context.sessionId,
-      workspaceId: context.workspaceId,
-      workspaceRevision: context.workspaceRevision,
-      assistantEntryId: cohort.descriptor.assistantEntryId,
-      cohortDigest: cohort.descriptor.cohortDigest,
-      reason,
-    }).catch(() => undefined);
+    void host
+      .abandonApproval({
+        method: 'approval.abandon',
+        schemaVersion: 2,
+        generation: context.generation,
+        sessionId: context.sessionId,
+        workspaceId: context.workspaceId,
+        workspaceRevision: context.workspaceRevision,
+        assistantEntryId: cohort.descriptor.assistantEntryId,
+        cohortDigest: cohort.descriptor.cohortDigest,
+        reason,
+      })
+      .catch(() => undefined);
   }
 
   function finish(pending: PendingInvocation): void {
@@ -345,9 +383,15 @@ export function createApprovalGate(
   }
 
   function verifyCurrent(pending: PendingInvocation): boolean {
-    if (pending.cohort.failed || !pending.params || !pending.originalInput || pending.signal?.aborted
-      || pending.params !== pending.originalInput
-      || !isActiveDefinition(pending.toolName, pending.definition)) return false;
+    if (
+      pending.cohort.failed ||
+      !pending.params ||
+      !pending.originalInput ||
+      pending.signal?.aborted ||
+      pending.params !== pending.originalInput ||
+      !isActiveDefinition(pending.toolName, pending.definition)
+    )
+      return false;
     let canonical: ReturnType<typeof canonicaliseApprovalInput> | undefined;
     try {
       canonical = canonicaliseApprovalInput(pending.params);
@@ -373,8 +417,13 @@ export function createApprovalGate(
     if (cohort.failed || cohort.members.size !== cohort.descriptor.orderedMembers.length) return;
     const ready = cohort.descriptor.orderedMembers.every((member) => {
       const pending = cohort.members.get(member.toolCallId);
-      return Boolean(pending && pending.wrapperStarted && pending.readySent
-        && pending.readyAcknowledged && verifyCurrent(pending));
+      return Boolean(
+        pending &&
+          pending.wrapperStarted &&
+          pending.readySent &&
+          pending.readyAcknowledged &&
+          verifyCurrent(pending),
+      );
     });
     if (ready) cohort.releaseAllReady(true);
   }
@@ -382,26 +431,36 @@ export function createApprovalGate(
   function acceptGroupGrant(pending: PendingInvocation, grant: ApprovalGrant): Promise<boolean> {
     const cohort = pending.cohort;
     const commit = grant.groupCommit;
-    if (!commit || commit.cohortDigest !== cohort.descriptor.cohortDigest
-      || commit.memberCount !== cohort.descriptor.orderedMembers.length
-      || grant.transactionId !== commit.transactionId
-      || cohort.groupGrants.has(pending.toolCallId)) {
+    if (
+      !commit ||
+      commit.cohortDigest !== cohort.descriptor.cohortDigest ||
+      commit.memberCount !== cohort.descriptor.orderedMembers.length ||
+      grant.transactionId !== commit.transactionId ||
+      cohort.groupGrants.has(pending.toolCallId)
+    ) {
       abandon(cohort, 'extension-error');
       return cohort.groupRelease;
     }
     cohort.groupGrants.set(pending.toolCallId, grant);
     if (cohort.groupGrants.size === cohort.descriptor.orderedMembers.length) {
-      const valid = !cohort.failed && cohort.descriptor.orderedMembers.every((member) => {
-        const exact = cohort.members.get(member.toolCallId);
-        const exactGrant = cohort.groupGrants.get(member.toolCallId);
-        return Boolean(exact && exactGrant
-          && exact.wrapperStarted && exact.readySent && exact.readyAcknowledged
-          && exactGrant.invocationId === exact.invocationId
-          && exactGrant.toolCallId === exact.toolCallId
-          && exactGrant.inputDigest === exact.digest
-          && exactGrant.scopeIds.length === 1
-          && verifyCurrent(exact));
-      });
+      const valid =
+        !cohort.failed &&
+        cohort.descriptor.orderedMembers.every((member) => {
+          const exact = cohort.members.get(member.toolCallId);
+          const exactGrant = cohort.groupGrants.get(member.toolCallId);
+          return Boolean(
+            exact &&
+              exactGrant &&
+              exact.wrapperStarted &&
+              exact.readySent &&
+              exact.readyAcknowledged &&
+              exactGrant.invocationId === exact.invocationId &&
+              exactGrant.toolCallId === exact.toolCallId &&
+              exactGrant.inputDigest === exact.digest &&
+              exactGrant.scopeIds.length === 1 &&
+              verifyCurrent(exact),
+          );
+        });
       if (!valid) abandon(cohort, 'extension-error');
       else cohort.releaseGroup(true);
     }
@@ -436,33 +495,41 @@ export function createApprovalGate(
           }
 
           const definition = decoratedByName.get(event.toolName);
-          if (!definition || !isActiveDefinition(event.toolName, definition) || !isPlainObject(originalInput)
-            || pendingByToolCall.has(event.toolCallId) || pendingByInput.has(originalInput)
-            || cohort.failed || cohort.members.has(event.toolCallId)
-            || pendingByToolCall.size >= MAX_ACTIVE_MEMBERS) {
+          if (
+            !definition ||
+            !isActiveDefinition(event.toolName, definition) ||
+            !isPlainObject(originalInput) ||
+            pendingByToolCall.has(event.toolCallId) ||
+            pendingByInput.has(originalInput) ||
+            cohort.failed ||
+            cohort.members.has(event.toolCallId) ||
+            pendingByToolCall.size >= MAX_ACTIVE_MEMBERS
+          ) {
             abandon(cohort, 'extension-error');
             throw new Error('approval-cohort-rejected');
           }
 
           canonical = canonicaliseApprovalInput(originalInput);
           const invocationId = opaque('invocation');
-          const approval = host.requestApproval({
-            method: 'approval.request',
-            schemaVersion: 2,
-            generation: context.generation,
-            sessionId: context.sessionId,
-            workspaceId: context.workspaceId,
-            workspaceRevision: context.workspaceRevision,
-            invocationId,
-            toolCallId: event.toolCallId,
-            toolName: event.toolName,
-            inputDigest: canonical.digest,
-            input: canonical.value,
-            cohort: descriptor,
-          }).then<ApprovalOutcome, ApprovalOutcome>(
-            (grant) => Object.freeze({ grant, failed: false }),
-            () => Object.freeze({ failed: true }),
-          );
+          const approval = host
+            .requestApproval({
+              method: 'approval.request',
+              schemaVersion: 2,
+              generation: context.generation,
+              sessionId: context.sessionId,
+              workspaceId: context.workspaceId,
+              workspaceRevision: context.workspaceRevision,
+              invocationId,
+              toolCallId: event.toolCallId,
+              toolName: event.toolName,
+              inputDigest: canonical.digest,
+              input: canonical.value,
+              cohort: descriptor,
+            })
+            .then<ApprovalOutcome, ApprovalOutcome>(
+              (grant) => Object.freeze({ grant, failed: false }),
+              () => Object.freeze({ failed: true }),
+            );
           const pending: PendingInvocation = {
             invocationId,
             toolCallId: event.toolCallId,
@@ -508,16 +575,33 @@ export function createApprovalGate(
   function decorateToolDefinition<T extends PublicToolDefinition>(original: T): T {
     const name = Object.getOwnPropertyDescriptor(original, 'name')?.value;
     const originalExecute = Object.getOwnPropertyDescriptor(original, 'execute')?.value;
-    if (!isApprovalToolName(name) || typeof originalExecute !== 'function' || decoratedByName.has(name)) {
+    if (
+      !isApprovalToolName(name) ||
+      typeof originalExecute !== 'function' ||
+      decoratedByName.has(name)
+    ) {
       throw new Error('approval-wrapper-rejected');
     }
 
     let decorated!: T;
-    const execute: PublicToolDefinition['execute'] = async (toolCallId, params, signal, onUpdate, ctx) => {
-      const identity = params !== null && typeof params === 'object' ? params as object : undefined;
+    const execute: PublicToolDefinition['execute'] = async (
+      toolCallId,
+      params,
+      signal,
+      onUpdate,
+      ctx,
+    ) => {
+      const identity =
+        params !== null && typeof params === 'object' ? (params as object) : undefined;
       const pending = identity ? pendingByInput.get(identity) : undefined;
-      if (!pending || pending.toolCallId !== toolCallId || pending.definition !== decorated
-        || pending.wrapperStarted || pending.settled || !pending.approval) {
+      if (
+        !pending ||
+        pending.toolCallId !== toolCallId ||
+        pending.definition !== decorated ||
+        pending.wrapperStarted ||
+        pending.settled ||
+        !pending.approval
+      ) {
         throw new Error(FIXED_BLOCK_REASON);
       }
 
@@ -535,33 +619,35 @@ export function createApprovalGate(
       try {
         // Multi-call turns may be scheduled sequentially by Pi. No individual
         // grant can bypass the exact complete-registration barrier.
-        if (!await pending.cohort.registered || !verifyCurrent(pending)) {
+        if (!(await pending.cohort.registered) || !verifyCurrent(pending)) {
           throw new Error(FIXED_BLOCK_REASON);
         }
 
         pending.readySent = true;
-        const ready: Promise<ReadyOutcome> = host.notifyApprovalReady({
-          method: 'approval.ready',
-          schemaVersion: 2,
-          generation: context.generation,
-          invocationId: pending.invocationId,
-          toolCallId: pending.toolCallId,
-          inputDigest: pending.digest,
-          cohortDigest: pending.cohort.descriptor.cohortDigest,
-        }).then<ReadyOutcome, ReadyOutcome>(
-          () => {
-            pending.readyAcknowledged = true;
-            maybeReleaseAllReady(pending.cohort);
-            return Object.freeze({ failed: false });
-          },
-          () => Object.freeze({ failed: true }),
-        );
+        const ready: Promise<ReadyOutcome> = host
+          .notifyApprovalReady({
+            method: 'approval.ready',
+            schemaVersion: 2,
+            generation: context.generation,
+            invocationId: pending.invocationId,
+            toolCallId: pending.toolCallId,
+            inputDigest: pending.digest,
+            cohortDigest: pending.cohort.descriptor.cohortDigest,
+          })
+          .then<ReadyOutcome, ReadyOutcome>(
+            () => {
+              pending.readyAcknowledged = true;
+              maybeReleaseAllReady(pending.cohort);
+              return Object.freeze({ failed: false });
+            },
+            () => Object.freeze({ failed: true }),
+          );
 
         const outcomes = await Promise.race([
           Promise.all([ready, approval, pending.cohort.allReady]),
-          pending.cohort.groupRelease.then((released) => (
-            released ? new Promise<never>(() => undefined) : undefined
-          )),
+          pending.cohort.groupRelease.then((released) =>
+            released ? new Promise<never>(() => undefined) : undefined,
+          ),
         ]);
         if (!outcomes) throw new Error(FIXED_BLOCK_REASON);
         const [readyOutcome, approvalOutcome, allReady] = outcomes;
@@ -570,14 +656,19 @@ export function createApprovalGate(
           throw new Error(FIXED_BLOCK_REASON);
         }
         const grant = approvalOutcome.grant;
-        if (grant.decision !== 'approved' || grant.invocationId !== pending.invocationId
-          || grant.inputDigest !== pending.digest || grant.toolCallId !== pending.toolCallId
-          || grant.cohortDigest !== pending.cohort.descriptor.cohortDigest
-          || grant.scopeIds.length !== 1 || !grant.transactionId) {
+        if (
+          grant.decision !== 'approved' ||
+          grant.invocationId !== pending.invocationId ||
+          grant.inputDigest !== pending.digest ||
+          grant.toolCallId !== pending.toolCallId ||
+          grant.cohortDigest !== pending.cohort.descriptor.cohortDigest ||
+          grant.scopeIds.length !== 1 ||
+          !grant.transactionId
+        ) {
           throw new Error(FIXED_BLOCK_REASON);
         }
         if (grant.groupCommit) {
-          if (!await acceptGroupGrant(pending, grant)) throw new Error(FIXED_BLOCK_REASON);
+          if (!(await acceptGroupGrant(pending, grant))) throw new Error(FIXED_BLOCK_REASON);
         }
         if (!verifyCurrent(pending)) {
           abandon(pending.cohort, signal?.aborted ? 'pi-abort' : 'digest-change');
@@ -589,7 +680,35 @@ export function createApprovalGate(
         deepFreezeApprovalValue(params);
         if (!verifyCurrent(pending)) throw new Error(FIXED_BLOCK_REASON);
         finish(pending);
-        return await Reflect.apply(originalExecute, original, [toolCallId, params, signal, onUpdate, ctx]);
+        let observation: unknown;
+        try {
+          observation = await options.beforeExecute?.(name, params);
+        } catch {
+          observation = undefined;
+        }
+        try {
+          const result = (await Reflect.apply(originalExecute, original, [
+            toolCallId,
+            params,
+            signal,
+            onUpdate,
+            ctx,
+          ])) as Awaited<ReturnType<PublicToolDefinition['execute']>>;
+          try {
+            await options.afterExecute?.(observation, result, undefined);
+          } catch {
+            // Change evidence is supplementary and must never cause an already
+            // completed, approved Pi tool to be re-run.
+          }
+          return result;
+        } catch (error) {
+          try {
+            await options.afterExecute?.(observation, undefined, error);
+          } catch {
+            // Preserve the authoritative tool failure.
+          }
+          throw error;
+        }
       } finally {
         finish(pending);
       }
@@ -604,7 +723,8 @@ export function createApprovalGate(
     if (lookup) throw new Error('approval-session-rejected');
     const method = session?.getToolDefinition;
     if (typeof method !== 'function') throw new Error('approval-session-rejected');
-    const bound: DefinitionLookup = (name) => Reflect.apply(method, session, [name]) as PublicToolDefinition | undefined;
+    const bound: DefinitionLookup = (name) =>
+      Reflect.apply(method, session, [name]) as PublicToolDefinition | undefined;
     for (const [name, definition] of decoratedByName) {
       if (bound(name) !== definition) throw new Error('approval-session-rejected');
     }

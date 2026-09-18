@@ -3,12 +3,17 @@ import { constants } from 'node:fs';
 import { lstat, open, readFile, readdir, realpath } from 'node:fs/promises';
 import { basename, dirname, posix, relative, resolve, sep } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import {
+  assertAutomationHostSigningEvidence,
+} from '../../scripts/automation-host-signing.mjs';
 
 export const SIDECAR_ROOT = 'Contents/Resources/resources/sidecar';
 export const SIDECAR_MANIFEST = `${SIDECAR_ROOT}/manifest.json`;
 export const HOST_PATH = 'Contents/MacOS/piui';
 export const NODE_PATH = 'Contents/MacOS/piui-node';
 const INFO_PATH = 'Contents/Info.plist';
+const NOTICES_PATH = 'Contents/Resources/resources/THIRD-PARTY-NOTICES.txt';
+const SBOM_PATH = 'Contents/Resources/resources/piui.cdx.json';
 const FORBIDDEN_NAMES = /^(?:\.env(?:\..*)?|\.npmrc|\.netrc|\.git-credentials|auth\.json|credentials\.json|id_(?:rsa|ecdsa|ed25519)|.*\.(?:p12|pfx|pem|key|mobileprovision))$/i;
 const SECRET_TEXT = /(?:-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|\b(?:authorization|proxy-authorization)\s*:\s*(?:bearer|basic)\s+|\b(?:apple|github|npm|updater|openai|anthropic|aws|azure|google)[_-]+(?:api[_-]?key|token|password|secret|private[_-]?key)\s*[=:]\s*[^\s"']+)/i;
 const MACHO_64_LE_BYTES = 0xcffaedfe;
@@ -298,7 +303,15 @@ function sidecarFingerprint(entries) {
   return sha256(Buffer.from(JSON.stringify(identity)));
 }
 
-export async function inspectBundle({ appPath, sourceRoot, anchors, forbiddenValues = [], expectedNode = '22.23.1', expectedPi = '0.82.0' }) {
+export async function inspectBundle({
+  anchors,
+  appPath,
+  expectedNode = '22.23.1',
+  expectedPi = '0.82.0',
+  forbiddenValues = [],
+  hostSigningIdentity,
+  sourceRoot,
+}) {
   if (!anchors) throw new Error('Independent staging anchors are required');
   const inventory = await inventoryBundle(appPath);
   const files = inventory.entries.filter((entry) => entry.kind === 'file');
@@ -315,7 +328,7 @@ export async function inspectBundle({ appPath, sourceRoot, anchors, forbiddenVal
     const entry = files.find((candidate) => candidate.path === `${SIDECAR_ROOT}/${expected.path}`);
     if (!entry || entry.bytes !== expected.bytes || entry.sha256 !== expected.sha256) throw new Error('Bundled sidecar file differs from anchored manifest');
   }
-  const allowedFiles = [INFO_PATH, HOST_PATH, NODE_PATH, SIDECAR_MANIFEST, ...manifest.files.map((entry) => `${SIDECAR_ROOT}/${entry.path}`)].sort((a, b) => Buffer.from(a).compare(Buffer.from(b)));
+  const allowedFiles = [INFO_PATH, HOST_PATH, NODE_PATH, NOTICES_PATH, SBOM_PATH, SIDECAR_MANIFEST, ...manifest.files.map((entry) => `${SIDECAR_ROOT}/${entry.path}`)].sort((a, b) => Buffer.from(a).compare(Buffer.from(b)));
   const sortedFiles = [...filePaths].sort((a, b) => Buffer.from(a).compare(Buffer.from(b)));
   if (JSON.stringify(sortedFiles) !== JSON.stringify(allowedFiles)) throw new Error('Bundle contains a file outside the explicit layout');
   const actualDirectories = inventory.entries.filter((entry) => entry.kind === 'directory').map((entry) => entry.path).sort((a, b) => Buffer.from(a).compare(Buffer.from(b)));
@@ -326,6 +339,24 @@ export async function inspectBundle({ appPath, sourceRoot, anchors, forbiddenVal
   const hostEntry = files.find((entry) => entry.path === HOST_PATH);
   const nodeEntry = files.find((entry) => entry.path === NODE_PATH);
   if (!hostEntry || !nodeEntry || nodeEntry.sha256 !== anchors.nodeSha256 || nodeEntry.bytes !== anchors.nodeBytes) throw new Error('Bundled Node differs from independently captured anchor');
+  const noticesBytes = await readFile(resolve(inventory.root, NOTICES_PATH));
+  if (noticesBytes.length < 32
+    || noticesBytes.length > 16 * 1_048_576
+    || !noticesBytes.toString('utf8').startsWith('PIUI THIRD-PARTY NOTICES\n')) {
+    throw new Error('Bundled third-party notices are invalid');
+  }
+  let sbom;
+  try {
+    sbom = JSON.parse(await readFile(resolve(inventory.root, SBOM_PATH), 'utf8'));
+  } catch {
+    throw new Error('Bundled SBOM is invalid');
+  }
+  if (sbom?.bomFormat !== 'CycloneDX'
+    || sbom?.specVersion !== '1.5'
+    || !Array.isArray(sbom.components)
+    || sbom.components.length < 1) {
+    throw new Error('Bundled SBOM is invalid');
+  }
 
   const signatureStates = {};
   for (const entry of files) {
@@ -351,9 +382,35 @@ export async function inspectBundle({ appPath, sourceRoot, anchors, forbiddenVal
   }
   const hostSignature = signatureStates[HOST_PATH];
   const nodeSignature = signatureStates[NODE_PATH];
-  if (!hostSignature || hostSignature.cms || (hostSignature.signature !== 'none' && !hostSignature.adhoc)) throw new Error('Local host has identity-bearing or invalid signature state');
+  let acceptedHostSigningIdentity = null;
+  let acceptedHostSignature;
+  if (hostSigningIdentity === undefined) {
+    if (!hostSignature
+      || hostSignature.cms
+      || (hostSignature.signature !== 'none' && !hostSignature.adhoc)) {
+      throw new Error('Local host has identity-bearing or invalid signature state');
+    }
+    acceptedHostSignature = hostSignature.signature;
+  } else {
+    acceptedHostSigningIdentity = assertAutomationHostSigningEvidence(hostSigningIdentity);
+    if (!hostSignature
+      || hostSignature.signature !== 'cms'
+      || !hostSignature.cms
+      || hostSignature.adhoc
+      || acceptedHostSigningIdentity.executableSha256 !== hostEntry.sha256
+      || acceptedHostSigningIdentity.executableBytes !== hostEntry.bytes) {
+      throw new Error('Automation host Apple Development identity does not match its held bytes');
+    }
+    acceptedHostSignature = 'apple-development';
+  }
   if (!nodeSignature) throw new Error('Bundled Node is not Mach-O');
-  for (const [path, state] of Object.entries(signatureStates)) if (path !== NODE_PATH && state.cms) throw new Error('Only hash-pinned upstream Node may carry CMS signature material');
+  for (const [path, state] of Object.entries(signatureStates)) {
+    if (path !== NODE_PATH
+      && state.cms
+      && !(path === HOST_PATH && acceptedHostSigningIdentity)) {
+      throw new Error('Unpinned bundle executable carries CMS signature material');
+    }
+  }
 
   const capabilityPath = resolve(sourceRoot, 'src-tauri/capabilities/default.json');
   const configPath = resolve(sourceRoot, 'src-tauri/tauri.conf.json');
@@ -361,7 +418,12 @@ export async function inspectBundle({ appPath, sourceRoot, anchors, forbiddenVal
   const config = JSON.parse(await readFile(configPath, 'utf8'));
   if (JSON.stringify(capability.permissions) !== JSON.stringify(['core:default'])) throw new Error('Unexpected Tauri capability permissions');
   if (config.bundle?.macOS?.signingIdentity !== undefined) throw new Error('Signing identity must remain unset');
-  if (JSON.stringify(config.bundle?.externalBin) !== JSON.stringify(['binaries/piui-node']) || JSON.stringify(config.bundle?.resources) !== JSON.stringify(['resources/sidecar'])) throw new Error('Unexpected bundle resource configuration');
+  if (JSON.stringify(config.bundle?.externalBin) !== JSON.stringify(['binaries/piui-node'])
+    || JSON.stringify(config.bundle?.resources) !== JSON.stringify([
+      'resources/sidecar',
+      'resources/THIRD-PARTY-NOTICES.txt',
+      'resources/piui.cdx.json',
+    ])) throw new Error('Unexpected bundle resource configuration');
 
   const hostPath = resolve(inventory.root, HOST_PATH);
   const nodePath = resolve(inventory.root, NODE_PATH);
@@ -369,7 +431,7 @@ export async function inspectBundle({ appPath, sourceRoot, anchors, forbiddenVal
   // staging anchor and its frozen version. Executing the mutable bundle path
   // here would add a post-inventory pathname race without adding evidence.
   const nodeVersion = `v${expectedNode}`;
-  return Object.freeze({ appPath: inventory.root, hostPath, nodePath, nodeVersion, piVersion: manifest.piSdk, fingerprint: inventory.fingerprint, entries: inventory.entries.length, files: files.length, sidecarFiles: manifest.files.length, hostSignature: hostSignature.signature, nodeSignature: nodeSignature.signature, machoFiles: Object.keys(signatureStates).length, hostIdentity: identityFromEntry(hostEntry), nodeIdentity: identityFromEntry(nodeEntry), nodeSha256: nodeEntry.sha256, sidecarSha256: sidecarFingerprint(inventory.entries), sourceConfigSha256: sha256(await readFile(configPath)), sourceCapabilitySha256: sha256(await readFile(capabilityPath)) });
+  return Object.freeze({ appPath: inventory.root, hostPath, nodePath, nodeVersion, piVersion: manifest.piSdk, fingerprint: inventory.fingerprint, entries: inventory.entries.length, files: files.length, sidecarFiles: manifest.files.length, hostSignature: acceptedHostSignature, hostSigningIdentity: acceptedHostSigningIdentity, nodeSignature: nodeSignature.signature, machoFiles: Object.keys(signatureStates).length, hostIdentity: identityFromEntry(hostEntry), nodeIdentity: identityFromEntry(nodeEntry), nodeSha256: nodeEntry.sha256, sidecarSha256: sidecarFingerprint(inventory.entries), sourceConfigSha256: sha256(await readFile(configPath)), sourceCapabilitySha256: sha256(await readFile(capabilityPath)) });
 }
 
 export async function revalidateBundle(bundle) {

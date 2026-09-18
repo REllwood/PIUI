@@ -1,4 +1,6 @@
-use super::process::{APPROVAL_WRITE_MAX_DURATION, GenerationWriter, WorkspaceWaiters};
+use super::process::{
+    APPROVAL_WRITE_MAX_DURATION, GenerationWriter, ProductWaiters, WorkspaceWaiters,
+};
 use super::router::{SequenceOutcome, SequenceRouter};
 use super::stdio::{GenerationControl, RawFrame, fail_generation};
 use crate::credentials::CredentialProxy;
@@ -91,6 +93,7 @@ pub(super) fn start_dispatcher(
     raw_receiver: Receiver<RawFrame>,
     public_sender: SyncSender<PublicMessage>,
     workspace_waiters: Arc<WorkspaceWaiters>,
+    product_waiters: Arc<ProductWaiters>,
     proxy: CredentialProxy,
     approval_registry: Arc<ApprovalRegistry>,
     workspace_registry: Arc<WorkspaceRegistry>,
@@ -136,6 +139,7 @@ pub(super) fn start_dispatcher(
             raw_receiver,
             public_sender,
             workspace_waiters,
+            product_waiters,
             approval_registry,
             workspace_registry,
             private_sender,
@@ -161,6 +165,7 @@ fn dispatch_loop(
     raw_receiver: Receiver<RawFrame>,
     public_sender: SyncSender<PublicMessage>,
     workspace_waiters: Arc<WorkspaceWaiters>,
+    product_waiters: Arc<ProductWaiters>,
     approval_registry: Arc<ApprovalRegistry>,
     workspace_registry: Arc<WorkspaceRegistry>,
     private_sender: SyncSender<PrivateWork>,
@@ -318,6 +323,26 @@ fn dispatch_loop(
             if workspace_waiters.deliver(generation, envelope).is_err() {
                 fatal(
                     "sidecar workspace response unavailable",
+                    &control,
+                    &public_sender,
+                );
+                return;
+            }
+            continue;
+        }
+
+        if envelope
+            .correlation_id
+            .as_deref()
+            .is_some_and(|correlation| correlation.starts_with("rust-product-"))
+        {
+            if envelope.kind != ProtocolKind::Response {
+                fatal("sidecar product response invalid", &control, &public_sender);
+                return;
+            }
+            if product_waiters.deliver(generation, envelope).is_err() {
+                fatal(
+                    "sidecar product response unavailable",
                     &control,
                     &public_sender,
                 );
@@ -1048,6 +1073,7 @@ mod tests {
                 raw_receiver,
                 public_sender,
                 workspace_waiters,
+                Arc::new(ProductWaiters::new()),
                 proxy,
                 Arc::clone(&approval_registry),
                 Arc::clone(&workspace_registry),
@@ -1769,6 +1795,7 @@ mod tests {
             raw_receiver,
             public_sender,
             workspace_waiters,
+            Arc::new(ProductWaiters::new()),
             CredentialProxy::in_memory_for_dispatcher_test(),
             Arc::new(ApprovalRegistry::default()),
             Arc::new(WorkspaceRegistry::default()),

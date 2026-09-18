@@ -1,13 +1,7 @@
 import { resolve } from 'node:path';
 import type { ProtocolEnvelope } from '@piui/protocol';
-import type {
-  ApprovalHost,
-  createApprovalGate,
-} from '../pi/approval-hook.js';
-import type {
-  HostRequestClient,
-  HostRequestError,
-} from '../bridge/host-requests.js';
+import type { ApprovalHost, createApprovalGate } from '../pi/approval-hook.js';
+import type { HostRequestClient, HostRequestError } from '../bridge/host-requests.js';
 import type { SidecarRouter } from '../bridge/router.js';
 import type { canonicaliseApprovalInput } from '../pi/approval-canonical.js';
 import type {
@@ -92,30 +86,42 @@ function matrixEnvironment(): MatrixEnvironment | undefined {
   const controlRoot = process.env.PIUI_A25_CONTROL_ROOT;
   const workspaceId = process.env.PIUI_A25_WORKSPACE_ID;
   const revisionText = process.env.PIUI_A25_WORKSPACE_REVISION;
-  if (mode === undefined && controlRoot === undefined && workspaceId === undefined && revisionText === undefined) {
+  if (
+    mode === undefined &&
+    controlRoot === undefined &&
+    workspaceId === undefined &&
+    revisionText === undefined
+  ) {
     return undefined;
   }
   const workspaceRevision = Number(revisionText);
-  if (mode !== '1' || !controlRoot || !workspaceId
-    || !/^workspace-[0-9a-f]{32}$/.test(workspaceId)
-    || !Number.isSafeInteger(workspaceRevision) || workspaceRevision < 1) {
+  if (
+    mode !== '1' ||
+    !controlRoot ||
+    !workspaceId ||
+    !/^workspace-[0-9a-f]{32}$/.test(workspaceId) ||
+    !Number.isSafeInteger(workspaceRevision) ||
+    workspaceRevision < 1
+  ) {
     throw new Error('approval-matrix-environment-rejected');
   }
   return Object.freeze({ controlRoot, workspaceId, workspaceRevision });
 }
 
 function responsesFor(candidate: A25ApprovalCase, dependencies: A25ApprovalDependencies) {
-  const calls = candidate.tools.map((toolName, member) => dependencies.publicFauxToolCall(
-    toolName,
-    Object.freeze({ caseId: candidate.id, value: 'fixed' }),
-    { id: `a25-g${candidate.generation}-t${candidate.turn}-m${member}` },
-  ));
+  const calls = candidate.tools.map((toolName, member) =>
+    dependencies.publicFauxToolCall(
+      toolName,
+      Object.freeze({ caseId: candidate.id, value: 'fixed' }),
+      { id: `a25-g${candidate.generation}-t${candidate.turn}-m${member}` },
+    ),
+  );
   return Object.freeze([
     dependencies.publicFauxAssistantMessage(calls, { stopReason: 'toolUse', timestamp: 0 }),
-    dependencies.publicFauxAssistantMessage(
-      'A.25 fixed turn complete.',
-      { stopReason: 'stop', timestamp: 0 },
-    ),
+    dependencies.publicFauxAssistantMessage('A.25 fixed turn complete.', {
+      stopReason: 'stop',
+      timestamp: 0,
+    }),
   ]);
 }
 
@@ -165,11 +171,7 @@ function alignRouter(router: SidecarRouter, correlationId: string): void {
   }
 }
 
-function replayContext(
-  generation: number,
-  sessionId: string,
-  environment: MatrixEnvironment,
-) {
+function replayContext(generation: number, sessionId: string, environment: MatrixEnvironment) {
   return Object.freeze({
     generation,
     sessionId,
@@ -203,8 +205,7 @@ async function replayOldNativeFrames(
         Object.freeze({ ordinal: 0, toolCallId: individualToolCallId, toolName: 'read' }),
       ]),
     });
-    const individualCohortCanonical =
-      dependencies.canonicaliseApprovalInput(individualDescriptor);
+    const individualCohortCanonical = dependencies.canonicaliseApprovalInput(individualDescriptor);
     const individualRouter = new dependencies.SidecarRouter();
     const individualWritten: ProtocolEnvelope[] = [];
     const individualBroker = new dependencies.HostRequestClient({
@@ -212,23 +213,24 @@ async function replayOldNativeFrames(
       write: (envelope) => individualWritten.push(envelope),
     });
     alignRouter(individualRouter, individualCorrelation);
-    const individualPending = individualBroker.requestApproval({
-      method: 'approval.request',
-      schemaVersion: 2,
-      ...context,
-      invocationId: `invocation-${'d'.repeat(32)}`,
-      toolCallId: individualToolCallId,
-      toolName: 'read',
-      inputDigest: inputCanonical.digest,
-      input,
-      cohort: Object.freeze({
-        ...individualDescriptor,
-        cohortDigest: individualCohortCanonical.digest,
-      }),
-    }).catch((error: unknown) => error);
+    const individualPending = individualBroker
+      .requestApproval({
+        method: 'approval.request',
+        schemaVersion: 2,
+        ...context,
+        invocationId: `invocation-${'d'.repeat(32)}`,
+        toolCallId: individualToolCallId,
+        toolName: 'read',
+        inputDigest: inputCanonical.digest,
+        input,
+        cohort: Object.freeze({
+          ...individualDescriptor,
+          cohortDigest: individualCohortCanonical.digest,
+        }),
+      })
+      .catch((error: unknown) => error);
     individualCohortCanonical.bytes.fill(0);
-    if (individualWritten.length !== 1
-      || individualWritten[0]?.id !== individualCorrelation) {
+    if (individualWritten.length !== 1 || individualWritten[0]?.id !== individualCorrelation) {
       throw new Error('approval-matrix-replay-rejected');
     }
     let individualConsumeError: unknown;
@@ -238,20 +240,25 @@ async function replayOldNativeFrames(
       individualConsumeError = error;
     }
     const individualSettlement = await individualPending;
-    if (!(individualConsumeError instanceof dependencies.HostRequestError)
-      || individualConsumeError.code !== 'approval-response-rejected'
-      || !(individualSettlement instanceof dependencies.HostRequestError)
-      || !['approval-response-rejected', 'approval-unavailable']
-        .includes(individualSettlement.code)
-      || !individualBroker.credentialGeneration.signal.aborted
-      || individualBroker.pendingApprovalCount !== 0) {
+    if (
+      !(individualConsumeError instanceof dependencies.HostRequestError) ||
+      individualConsumeError.code !== 'approval-response-rejected' ||
+      !(individualSettlement instanceof dependencies.HostRequestError) ||
+      !['approval-response-rejected', 'approval-unavailable'].includes(individualSettlement.code) ||
+      !individualBroker.credentialGeneration.signal.aborted ||
+      individualBroker.pendingApprovalCount !== 0
+    ) {
       throw new Error('approval-matrix-replay-rejected');
     }
 
     const groupPayload = record(oldGroup.payload);
-    if (!Array.isArray(groupPayload.members) || groupPayload.members.length !== 3
-      || groupPayload.generation !== 1 || context.generation !== 1
-      || groupPayload.sessionId === context.sessionId) {
+    if (
+      !Array.isArray(groupPayload.members) ||
+      groupPayload.members.length !== 3 ||
+      groupPayload.generation !== 1 ||
+      context.generation !== 1 ||
+      groupPayload.sessionId === context.sessionId
+    ) {
       throw new Error('approval-matrix-replay-rejected');
     }
     const groupMembers = groupPayload.members.map((member, ordinal) => {
@@ -270,11 +277,15 @@ async function replayOldNativeFrames(
     });
     const groupDescriptor = Object.freeze({
       assistantEntryId: 'a25-replacement-group-entry',
-      orderedMembers: Object.freeze(groupMembers.map((member) => Object.freeze({
-        ordinal: member.ordinal,
-        toolCallId: member.toolCallId,
-        toolName: member.toolName,
-      }))),
+      orderedMembers: Object.freeze(
+        groupMembers.map((member) =>
+          Object.freeze({
+            ordinal: member.ordinal,
+            toolCallId: member.toolCallId,
+            toolName: member.toolName,
+          }),
+        ),
+      ),
     });
     const groupCohortCanonical = dependencies.canonicaliseApprovalInput(groupDescriptor);
     const groupCohort = Object.freeze({
@@ -290,22 +301,24 @@ async function replayOldNativeFrames(
     });
     const groupPending = groupMembers.map((member, ordinal) => {
       alignRouter(groupRouter, member.correlationId);
-      return groupBroker.requestApproval({
-        method: 'approval.request',
-        schemaVersion: 2,
-        ...context,
-        invocationId: `invocation-${(ordinal + 224).toString(16).padStart(32, '0')}`,
-        toolCallId: member.toolCallId,
-        toolName: member.toolName,
-        inputDigest: inputCanonical.digest,
-        input,
-        cohort: groupCohort,
-      }).catch((error: unknown) => error);
+      return groupBroker
+        .requestApproval({
+          method: 'approval.request',
+          schemaVersion: 2,
+          ...context,
+          invocationId: `invocation-${(ordinal + 224).toString(16).padStart(32, '0')}`,
+          toolCallId: member.toolCallId,
+          toolName: member.toolName,
+          inputDigest: inputCanonical.digest,
+          input,
+          cohort: groupCohort,
+        })
+        .catch((error: unknown) => error);
     });
-    if (groupWritten.length !== groupMembers.length
-      || groupWritten.some((envelope, index) => (
-        envelope.id !== groupMembers[index]?.correlationId
-      ))) {
+    if (
+      groupWritten.length !== groupMembers.length ||
+      groupWritten.some((envelope, index) => envelope.id !== groupMembers[index]?.correlationId)
+    ) {
       throw new Error('approval-matrix-replay-rejected');
     }
     let groupConsumeError: unknown;
@@ -315,14 +328,17 @@ async function replayOldNativeFrames(
       groupConsumeError = error;
     }
     const groupSettlements = await Promise.all(groupPending);
-    if (!(groupConsumeError instanceof dependencies.HostRequestError)
-      || groupConsumeError.code !== 'approval-response-rejected'
-      || groupSettlements.some((settlement) => (
-        !(settlement instanceof dependencies.HostRequestError)
-        || !['approval-response-rejected', 'approval-unavailable'].includes(settlement.code)
-      ))
-      || !groupBroker.credentialGeneration.signal.aborted
-      || groupBroker.pendingApprovalCount !== 0) {
+    if (
+      !(groupConsumeError instanceof dependencies.HostRequestError) ||
+      groupConsumeError.code !== 'approval-response-rejected' ||
+      groupSettlements.some(
+        (settlement) =>
+          !(settlement instanceof dependencies.HostRequestError) ||
+          !['approval-response-rejected', 'approval-unavailable'].includes(settlement.code),
+      ) ||
+      !groupBroker.credentialGeneration.signal.aborted ||
+      groupBroker.pendingApprovalCount !== 0
+    ) {
       throw new Error('approval-matrix-replay-rejected');
     }
     return Object.freeze({
@@ -331,8 +347,8 @@ async function replayOldNativeFrames(
       staleBrokerWaitersRemaining:
         individualBroker.pendingApprovalCount + groupBroker.pendingApprovalCount,
       staleBrokerGenerationsAborted:
-        Number(individualBroker.credentialGeneration.signal.aborted)
-        + Number(groupBroker.credentialGeneration.signal.aborted),
+        Number(individualBroker.credentialGeneration.signal.aborted) +
+        Number(groupBroker.credentialGeneration.signal.aborted),
     });
   } finally {
     inputCanonical.bytes.fill(0);
@@ -401,18 +417,24 @@ export function createA25ApprovalFixtureFromEnvironment(
         },
         abandonApproval: (payload) => hostRequests.abandonApproval(payload),
       });
-      const gate = dependencies.createApprovalGate(observedHost, Object.freeze({
-        generation,
-        sessionId,
-        workspaceId: environment.workspaceId,
-        workspaceRevision: environment.workspaceRevision,
-      }));
+      const gate = dependencies.createApprovalGate(
+        observedHost,
+        Object.freeze({
+          generation,
+          sessionId,
+          workspaceId: environment.workspaceId,
+          workspaceRevision: environment.workspaceRevision,
+        }),
+      );
       const definitions = createApprovalProbeDefinitions(witness);
       const decorated = Object.freeze(definitions.map(gate.decorateToolDefinition));
-      const settingsManager = dependencies.PublicSettingsManager.inMemory({
-        compaction: { enabled: false },
-        retry: { enabled: false },
-      }, { projectTrusted: false });
+      const settingsManager = dependencies.PublicSettingsManager.inMemory(
+        {
+          compaction: { enabled: false },
+          retry: { enabled: false },
+        },
+        { projectTrusted: false },
+      );
       const modelRuntime = await dependencies.PublicModelRuntime.create({
         credentials: {
           read: async () => undefined,
@@ -426,20 +448,20 @@ export function createA25ApprovalFixtureFromEnvironment(
       const faux = dependencies.publicFauxProvider({
         api: 'a25-offline-api',
         provider: 'a25-offline-provider',
-        models: [{
-          id: 'a25-model',
-          name: 'A.25 offline model',
-          reasoning: false,
-          input: ['text'],
-          contextWindow: 8_192,
-          maxTokens: 256,
-        }],
+        models: [
+          {
+            id: 'a25-model',
+            name: 'A.25 offline model',
+            reasoning: false,
+            input: ['text'],
+            contextWindow: 8_192,
+            maxTokens: 256,
+          },
+        ],
         tokenSize: { min: 1, max: 1 },
         tokensPerSecond: 1_000,
       });
-      faux.setResponses(cases.flatMap((candidate) => [
-        ...responsesFor(candidate, dependencies),
-      ]));
+      faux.setResponses(cases.flatMap((candidate) => [...responsesFor(candidate, dependencies)]));
       modelRuntime.registerNativeProvider(faux.provider);
       const services = await dependencies.publicCreateAgentSessionServices({
         cwd: workspaceRoot,

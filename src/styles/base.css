@@ -1,0 +1,293 @@
+.piui,
+.piui *,
+.piui *::before,
+.piui *::after {
+  box-sizing: border-box;
+}
+
+.piui {
+  min-width: 0;
+  min-height: 100vh;
+  color: var(--text);
+  background: var(--canvas);
+  accent-color: var(--work);
+}
+
+.piui button,
+.piui input,
+.piui textarea,
+.piui select {
+  font: inherit;
+}
+
+.piui button,
+.piui [role='button'] {
+  min-width: var(--target);
+  min-height: var(--target);
+}
+
+.piui button {
+  color: inherit;
+}
+
+.piui :focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.piui ::selection {
+  color: var(--text);
+  background: var(--selection);
+}
+
+.piui .sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.piui .button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: var(--target);
+  padding: 0 16px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-control);
+  color: var(--text);
+  background: var(--surface-raised);
+  cursor: pointer;
+  transition:
+    background var(--duration-feedback) var(--ease-standard),
+    border-color var(--duration-feedback) var(--ease-standard);
+}
+
+.piui .button:hover:not(:disabled) {
+  border-color: var(--text-muted);
+  background: var(--surface-highlight);
+}
+
+.piui .button--primary {
+  border-color: var(--primary);
+  color: var(--primary-on);
+  background: var(--primary);
+  font-weight: 600;
+}
+
+.piui .button--danger {
+  border-color: var(--danger);
+  color: var(--danger);
+  background: var(--danger-surface);
+}
+
+.piui .button--quiet {
+  border-color: transparent;
+  background: transparent;
+}
+
+.piui button:disabled,
+.piui input:disabled,
+.piui textarea:disabled,
+.piui select:disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
+}
+
+.piui .icon-button {
+  display: inline-grid;
+  place-items: center;
+  width: var(--target);
+  height: var(--target);
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  color: var(--text-muted);
+  background: transparent;
+  cursor: pointer;
+  transition:
+    background var(--duration-feedback),
+    color var(--duration-feedback);
+}
+
+.piui .icon-button:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--surface-highlight);
+}
+
+.piui .field,
+.piui .select,
+.piui .textarea {
+  width: 100%;
+  min-height: var(--target);
+  padding: 10px 12px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-control);
+  color: var(--text);
+  background: var(--surface);
+}
+
+.piui .textarea {
+  min-height: 76px;
+  resize: vertical;
+}
+
+.piui .status-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  gap: 6px;
+  padding: 2px 8px;
+  border: 1px solid var(--divider);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 18px;
+  white-space: nowrap;
+}
+
+.piui .status-pill[data-tone='success'] {
+  color: var(--success);
+  background: var(--accent-surface);
+}
+.piui .status-pill[data-tone='work'] {
+  color: var(--work);
+  background: var(--work-surface);
+}
+.piui .status-pill[data-tone='warning'] {
+  color: var(--warning);
+  background: var(--warning-surface);
+}
+.piui .status-pill[data-tone='danger'] {
+  color: var(--danger);
+  background: var(--danger-surface);
+}
+
+.piui .loading-spinner,
+.startup-status .loading-spinner {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: piui-spin 700ms linear infinite;
+}
+.startup-status {
+  display: flex;
+  min-height: 100vh;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 24px;
+  color: var(--text-muted);
+  background: var(--canvas);
+  font: 14px/22px var(--font-sans);
+}
+
+@keyframes piui-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+:root[data-motion='reduced'] .piui .loading-spinner {
+  animation: none;
+  border-right-color: currentColor;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .piui .loading-spinner,
+  .startup-status .loading-spinner {
+    animation: none;
+    border-right-color: currentColor;
+  }
+}
+
+:root[data-contrast='increased'] .piui {
+  --divider: var(--control-border);
+  --shadow-small: none;
+  --shadow-large: none;
+}
+
+:root[data-transparency='reduced'] .piui .translucent {
+  backdrop-filter: none;
+  background: var(--surface);
+}
+
+@keyframes piui-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes piui-surface-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes piui-sheet-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.context-plane {
+  animation: piui-surface-enter var(--duration-panel) var(--ease-standard);
+}
+.composer-suggestions {
+  animation: piui-surface-enter var(--duration-feedback) var(--ease-standard);
+}
+.piui .button:active:not(:disabled),
+.piui .icon-button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+:root[data-motion='reduced'] .piui *,
+:root[data-motion='reduced'] .piui *::before,
+:root[data-motion='reduced'] .piui *::after,
+:root[data-motion='reduced'] .piui *::backdrop {
+  animation: none !important;
+  transition: none !important;
+  scroll-behavior: auto !important;
+}
+:root[data-motion='reduced'] .welcome-starter:hover,
+:root[data-motion='reduced'] .piui .button:active,
+:root[data-motion='reduced'] .piui .icon-button:active {
+  transform: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .piui *,
+  .piui *::before,
+  .piui *::after,
+  .piui *::backdrop {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+  .welcome-starter:hover,
+  .piui .button:active,
+  .piui .icon-button:active {
+    transform: none;
+  }
+}

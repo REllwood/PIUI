@@ -48,6 +48,27 @@ export function architectureMeasuredDelta(kind, {
   const automation = kind === 'automation-twin';
   const codeDirectorySha256 = architectureSha(automation ? 'c' : 'a');
   const twinHostSha256 = architectureSha(automation ? 'd' : 'c');
+  const deterministicSigningIdentitySha256 = automation
+    ? sha256Bytes(Buffer.from(canonicalArchitectureJson({
+      bundleIdentifier: 'au.com.piui.desktop.architecture-test',
+      cdHash: codeDirectorySha256.slice(0, 40),
+      certificateSha1: '140176A6796D69938D9E84C7121FAACBC13779C4',
+      certificateSha256: 'e297ea4e5e9536fda83fa2989a45b393b9abb19cfd821c022e77b72429727bcd',
+      codeDirectoryFlags: 0,
+      codeDirectorySha256,
+      designatedRequirement: 'anchor apple generic and identifier "au.com.piui.desktop.architecture-test" and certificate leaf[subject.OU] = "3478YKFMRY"',
+      entitlements: 'none',
+      nonCmsSignatureSha256: architectureSha('1'),
+      nonCmsSignatureSlots: [
+        { sha256: codeDirectorySha256, size: 265, slot: 0 },
+        { sha256: architectureSha('e'), size: 136, slot: 2 },
+      ],
+      requirementsSha256: architectureSha('e'),
+      schemaVersion: 1,
+      signature: 'apple-development',
+      teamIdentifier: '3478YKFMRY',
+    }), 'utf8'))
+    : null;
   const record = {
     added: [],
     baseFingerprint,
@@ -80,25 +101,61 @@ export function architectureMeasuredDelta(kind, {
         baseUuid: '01'.repeat(16),
         loadCommandContractSha256: architectureSha('9'),
         path: 'Contents/MacOS/piui',
-        postSignCodeDirectoryFlags: automation ? 0x2 : 0x20002,
+        postSignBundleIdentifier: automation
+          ? 'au.com.piui.desktop.architecture-test'
+          : null,
+        postSignCdHash: automation ? codeDirectorySha256.slice(0, 40) : null,
+        postSignCertificateSha1: automation
+          ? '140176A6796D69938D9E84C7121FAACBC13779C4'
+          : null,
+        postSignCertificateSha256: automation
+          ? 'e297ea4e5e9536fda83fa2989a45b393b9abb19cfd821c022e77b72429727bcd'
+          : null,
+        postSignCmsBytes: automation ? 4_801 : null,
+        postSignCmsSha256: automation ? architectureSha('f') : null,
+        postSignCodeDirectoryFlags: automation ? 0 : 0x20002,
         postSignCodeDirectorySha256: codeDirectorySha256,
+        postSignDesignatedRequirement: automation
+          ? 'anchor apple generic and identifier "au.com.piui.desktop.architecture-test" and certificate leaf[subject.OU] = "3478YKFMRY"'
+          : null,
+        postSignDeterministicIdentitySha256: deterministicSigningIdentitySha256,
+        postSignEntitlements: automation ? 'none' : null,
+        postSignExecutableBytes: automation ? 35_008 : null,
         postSignForm: automation ? 'superblob' : 'code-directory',
-        postSignReproductionSha256: automation ? twinHostSha256 : null,
+        postSignNonCmsSignatureSha256: automation ? architectureSha('1') : null,
+        postSignRequirementsSha256: automation ? architectureSha('e') : null,
+        postSignSignatureContainerBytes: automation ? 18_448 : null,
         postSignSlots: automation
           ? [
-            { sha256: codeDirectorySha256, slot: 0 },
-            { sha256: architectureSha('e'), slot: 2 },
-            { sha256: architectureSha('f'), slot: 0x10000 },
+            { sha256: codeDirectorySha256, size: 265, slot: 0 },
+            { sha256: architectureSha('e'), size: 136, slot: 2 },
+            { sha256: architectureSha('f'), size: 4_801, slot: 0x10000 },
           ]
-          : [{ sha256: codeDirectorySha256, slot: 0 }],
+          : [{ sha256: codeDirectorySha256, size: 16, slot: 0 }],
+        postSignTeamIdentifier: automation ? '3478YKFMRY' : null,
         repeatPreSignCodeDirectorySha256: architectureSha('a'),
+        repeatPostSignCmsBytes: automation ? 4_802 : null,
+        repeatPostSignCmsSha256: automation ? architectureSha('0') : null,
+        repeatPostSignCodeDirectorySha256: automation ? codeDirectorySha256 : null,
+        repeatPostSignDeterministicIdentitySha256: deterministicSigningIdentitySha256,
+        repeatPostSignExecutableBytes: automation ? 35_024 : null,
+        repeatPostSignNonCmsSignatureSha256: automation ? architectureSha('1') : null,
+        repeatPostSignSignatureContainerBytes: automation ? 18_464 : null,
+        repeatPostSignSlots: automation
+          ? [
+            { sha256: codeDirectorySha256, size: 265, slot: 0 },
+            { sha256: architectureSha('e'), size: 136, slot: 2 },
+            { sha256: architectureSha('0'), size: 4_802, slot: 0x10000 },
+          ]
+          : null,
+        repeatTwinSha256: automation ? architectureSha('0') : null,
         repeatTwinUuid: '02'.repeat(16),
         twinPreSignCodeDirectoryFlags: 0x20002,
         twinPreSignCodeDirectorySha256: architectureSha('a'),
         twinPreSignForm: 'code-directory',
         twinPreSignNormalisedSha256: architectureSha('b'),
         twinSha256: twinHostSha256,
-        twinSignature: 'adhoc',
+        twinSignature: automation ? 'cms' : 'adhoc',
         twinUuid: '02'.repeat(16),
         type: 'macho',
       },
@@ -106,7 +163,7 @@ export function architectureMeasuredDelta(kind, {
     equalEntriesSha256: architectureSha('3'),
     kind,
     removed: [],
-    repeatTwinFingerprint: twinFingerprint,
+    repeatTwinFingerprint: automation ? architectureSha('0') : twinFingerprint,
     schemaVersion: 1,
     twinFingerprint,
     variantDefinitionSha256: ARCHITECTURE_VARIANT_DEFINITION_SHA256[kind],
@@ -127,7 +184,7 @@ const PROOF_IDS_BY_BATCH = Object.freeze({
 export function architectureArtifact(batchId, productionArtifact) {
   const definitions = {
     approval: ['approval-twin', architectureSha('7'), 'unsigned-or-adhoc', false],
-    automation: ['automation-twin', architectureSha('9'), 'adhoc', true],
+    automation: ['automation-twin', architectureSha('9'), 'apple-development', true],
     credential: ['credential-twin', architectureSha('5'), 'unsigned-or-adhoc', false],
     production: ['production', architectureSha('1'), 'unsigned-or-adhoc', false],
   };
@@ -230,7 +287,7 @@ function a23Evidence(artifact, sourceDigest) {
     bundleFingerprint: artifact.fingerprint,
     cleanup: {
       credentialInputDescriptorClosed: true,
-      helperExecutionResidual: 'private-held-copy-rechecked-and-keychain-sandboxed',
+      helperExecutionResidual: 'private-precheck-and-same-accepted-host-creator-cleanup-keychain-sandboxed',
       keychainEntriesRemoved: true,
       keychainIndexRemoved: true,
       ownedProcessesRemoved: true,
@@ -271,13 +328,16 @@ function a23Evidence(artifact, sourceDigest) {
     },
     publicSurfaces: {
       accessibilityControls: 'runner-owned-after-quiescence-scanned',
-      arbitraryJavascriptHeap: 'not-claimed',
-      documentDom: 'not-claimed',
+      arbitraryJavascriptHeap: 'not-enumerable-not-claimed',
+      childBrowsingContexts: 'trusted-webview-self-attested-zero-iframe-and-frame-elements',
+      documentDom: 'bounded-document-light-dom-native-boundary-host-scanned',
       logsAndCrashArtefacts: 'isolated-runtime-and-owned-stdio-only',
       nativeInvokeBoundary: 'all-entries-and-expected-results-scanned',
       ordinaryAppData: 'isolated-runtime-only',
-      rustEventBoundary: 'no-events-observed',
-      webStorage: 'not-claimed',
+      rustEventBoundary: 'piui-stream-probe-native-admission-and-trusted-webview-self-attested-delivery-host-scanned',
+      shadowRoots: 'trusted-webview-self-attested-zero-observable-open-closed-not-observable-not-claimed',
+      webStorage: 'bounded-local-and-session-native-boundary-host-scanned',
+      webViewInspectionAuthority: 'trusted-webview-self-serialised-self-attested-not-independent-live-browser-inspection',
     },
     schemaVersion: 1,
     status: 'pass',
@@ -332,18 +392,36 @@ function a25Evidence() {
 }
 
 function a26Evidence(artifact, sourceDigest) {
+  const automationFrontend = {
+    fileCount: 18,
+    inventorySha256: architectureSha('b'),
+    javascriptRegexEngineChunks: 1,
+    moduleProvenanceSha256: architectureSha('f'),
+    onigurumaEngineChunks: 0,
+    resourceAllowlistEntries: 17,
+    resourceAllowlistSha256: architectureSha('c'),
+    wasmFiles: 0,
+    wasmMagicFrontendFiles: 0,
+    wasmPayloadReferences: 0,
+  };
   return {
     browser: {
       codeLoadingIndicatorPresented: true,
       cspViolations: 0,
       disclosedExternalOpens: 0,
+      duplicateResourceEntries: 0,
       eventCanaryExecuted: false,
+      hostileSameOriginResourceEntries: 0,
       loadingIndicatorPresented: true,
       locationUnchanged: true,
       navigationApiAttempts: 0,
       networkApiAttempts: 0,
+      missingResourceEntries: 0,
+      observedResourceEntries: 17,
+      observedResourceSha256: architectureSha('c'),
       popupAttempts: 0,
       rasterResourceEntries: 1,
+      resourceAllowlistEntries: 17,
       runtimeErrors: 0,
       schemaVersion: 1,
       scriptCanaryExecuted: false,
@@ -352,14 +430,18 @@ function a26Evidence(artifact, sourceDigest) {
       wasmApiAttempts: 0,
     },
     bundle: {
+      automationFrontend,
       automationWebdriverIncluded: true,
       cspExact: true,
-      javascriptRegexEngineChunks: 1,
-      onigurumaEngineChunks: 0,
       piuiRasterOnlyImageAddition: true,
+      productionFrontend: {
+        ...automationFrontend,
+        inventorySha256: architectureSha('a'),
+        moduleProvenanceSha256: architectureSha('e'),
+        resourceAllowlistSha256: architectureSha('d'),
+      },
       productionWebdriverIncluded: false,
-      wasmFiles: 0,
-      wasmMagicFrontendFiles: 0,
+      repeatAutomationFrontend: { ...automationFrontend },
     },
     cleanup: {
       bundlesRevalidated: true,
@@ -371,21 +453,25 @@ function a26Evidence(artifact, sourceDigest) {
       blockedLinks: 31,
       engine: 'javascript-regex',
       externalLinkButtons: 3,
+      fallbackSourceTextExact: true,
       highlightTokenNodes: 12,
-      highlightedBlocks: 1,
+      highlightedBlocks: 2,
       hostileFixtureSha256: A26_HOSTILE_FIXTURE_SHA256,
       loadedRasterImages: 1,
+      languageFallbacks: 1,
       omittedAssets: 19,
-      plainCodeBlocks: 1,
+      plainCodeBlocks: 3,
       probeReady: true,
       rasterFixtureSha256: A26_RASTER_FIXTURE_SHA256,
       rasterImages: 1,
       rasterSourcesExact: true,
       rawAuditRegions: 1,
+      renderBudgetFallbacks: 1,
       schemaVersion: 1,
       unsafeActiveAttributes: 0,
       unsafeActiveElements: 0,
       wasmModules: 0,
+      workBudgetFallbacks: 1,
     },
     driver: {
       activatedTwinIpv4LoopbackListeners: 1,
@@ -409,6 +495,19 @@ function a26Evidence(artifact, sourceDigest) {
     native: A26_EXPECTED_NATIVE_EVIDENCE,
     schemaVersion: 1,
     status: 'pass',
+  };
+}
+
+function a27Evidence(artifact, sourceDigest) {
+  return {
+    ...A27_EXPECTED_EVIDENCE,
+    identity: {
+      automationFingerprint: artifact.fingerprint,
+      controlledDeltaSha256: artifact.controlledDeltaSha256,
+      productionFingerprint: artifact.baseProductionFingerprint,
+      sameFrozenSource: true,
+      sourceDigest,
+    },
   };
 }
 
@@ -489,11 +588,17 @@ function a28Evidence(artifact, sourceDigest) {
     schemaVersion: 1,
     status: 'pass',
     voiceOver: {
+      architectureGateRunContextSha256: 'e'.repeat(64),
+      attestationSha256: 'f'.repeat(64),
       blockingDefects: 0,
-      checksumsValidated: true,
+      challengeRequestSha256: '1'.repeat(64),
+      comparisonReceiptSha256: '2'.repeat(64),
       evidenceValidated: true,
+      expectedContextSha256: '3'.repeat(64),
+      gateContextCompared: true,
       humanWitnessed: true,
       modesChecked: 4,
+      publishedReceiptSha256: '4'.repeat(64),
     },
   };
 }
@@ -506,7 +611,7 @@ export function architectureProofEvidence(id, artifact, sourceDigest) {
     'A.24': a24Evidence,
     'A.25': a25Evidence,
     'A.26': () => a26Evidence(artifact, sourceDigest),
-    'A.27': () => ({ ...A27_EXPECTED_EVIDENCE }),
+    'A.27': () => a27Evidence(artifact, sourceDigest),
     'A.28': () => a28Evidence(artifact, sourceDigest),
   };
   const factory = factories[id];

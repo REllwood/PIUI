@@ -7,7 +7,7 @@ use crate::domain::workspace::WorkspaceRegistry;
 use crate::protocol::{Envelope, ProtocolKind, validate_envelope};
 use crate::supervisor::{
     NODE_VERSION, PI_VERSION, PROTOCOL_VERSION, RestartController, SidecarStatus,
-    SidecarSupervisor, SupervisorPaths,
+    SidecarSupervisor, SupervisorPaths, report_sidecar_failure,
 };
 use serde_json::Value;
 use std::sync::{Arc, Mutex, mpsc::Receiver};
@@ -324,7 +324,18 @@ pub fn sidecar_start(
     let result = bridge_start_transport(state.inner());
     #[cfg(feature = "a23-credential-test")]
     record_a23_command_result(&_app, "sidecar_start", &result)?;
-    let status = result?;
+    // The reason the start refused is otherwise only held in memory. Reporting
+    // it here is what lets a packaged run be explained from its own stderr.
+    let status = match result {
+        Ok(status) => status,
+        Err(reason) => {
+            report_sidecar_failure(&reason);
+            return Err(reason);
+        }
+    };
+    if let Some(reason) = status.failure.as_deref() {
+        report_sidecar_failure(reason);
+    }
     if let Some(line) = packaged_readiness_line(&status) {
         eprintln!("{line}");
     }
@@ -370,6 +381,21 @@ pub fn bridge_status_transport(state: &BridgeState) -> Result<SidecarStatus, Str
     };
     state.activate_running_status(&status)?;
     Ok(status)
+}
+
+pub fn bridge_observe_status(state: &BridgeState) -> Result<SidecarStatus, String> {
+    let mut supervisor = state
+        .supervisor
+        .lock()
+        .map_err(|_| "sidecar state unavailable".to_string())?;
+    let previous_generation = supervisor.current_generation();
+    let observed = supervisor.status();
+    if observed.failed
+        && let Some(generation) = previous_generation
+    {
+        state.deactivate_generation(generation)?;
+    }
+    Ok(observed)
 }
 
 #[tauri::command]

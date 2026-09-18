@@ -15,7 +15,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import {
@@ -32,6 +32,9 @@ import {
 import {
   buildGuardedProduction,
   createPrivateTemporary,
+  guardedProductionGlobalLockPath,
+  guardedProductionOuterSandboxConfiguration,
+  runGuardedProductionOuterSandboxCanary,
 } from '../../scripts/build-production.mjs';
 import { snapshotArchitectureSource } from '../../scripts/architecture-source-snapshot.mjs';
 import { validateLatestArchitectureGate } from '../../scripts/check-architecture-gate.mjs';
@@ -40,11 +43,28 @@ import {
   parseGuardedProductionResult,
 } from '../../scripts/guarded-production-contract.mjs';
 import {
+  architecturePackageGlobalLockPath,
+} from '../../scripts/package-spike.mjs';
+import {
+  acquireOwnedLock,
+  configureAuthenticatedNodeSpawn,
+  createAuthenticatedNodeGuardedProductionSandboxProfile,
+  releaseOwnedLock,
+} from '../../scripts/a21-gate-support.mjs';
+import {
+  createAuthenticatedNodeSpawnConfiguration,
+} from '../../scripts/authenticated-node-spawn.mjs';
+import {
+  APPLE_TOOLCHAIN_PATHS,
+} from '../../scripts/apple-toolchain-trust.mjs';
+import {
   architectureProofBatch,
 } from './architecture-proof-fixtures.mjs';
 
 const sha = (character) => character.repeat(64);
 const runId = '20260731T120000000Z-0123456789abcdef0123456789abcdef';
+const actualRepositoryRoot = resolve(fileURLToPath(new URL('../..', import.meta.url)));
+const authenticatedSandboxNode = process.env.PIUI_AUTHENTICATED_NODE_TEST_PATH;
 
 function productionArtifact(fingerprint = sha('1')) {
   return architectureArtifactFromBundle({
@@ -683,6 +703,231 @@ test('guarded result parsing rejects tampering and non-canonical control bytes',
   }), /rejected/u);
 });
 
+test('outer sandbox configuration grants only exact guarded build authorities', () => {
+  const command = '/private/tmp/bootstrap/node';
+  const isolateRoot = '/private/tmp/piui-guarded-package-fixture';
+  const outputRoot = '/private/tmp/piui-production-output-fixture';
+  const lockPath = '/private/tmp/piui-architecture-gate-locks/fixture.lock';
+  const configuration = guardedProductionOuterSandboxConfiguration({
+    bootstrapRoot: '/private/tmp/bootstrap',
+    command,
+    isolateRoot,
+    lockPath,
+    outputRoot,
+    repositoryRoot: '/private/tmp/repository',
+  });
+  const sortedUnique = (values) => [...new Set(values)].sort((left, right) => (
+    Buffer.from(left).compare(Buffer.from(right))
+  ));
+  const exactAppleTools = [
+    APPLE_TOOLCHAIN_PATHS.ar,
+    APPLE_TOOLCHAIN_PATHS.clang,
+    APPLE_TOOLCHAIN_PATHS.clangxx,
+    APPLE_TOOLCHAIN_PATHS.dsymutil,
+    APPLE_TOOLCHAIN_PATHS.installNameTool,
+    APPLE_TOOLCHAIN_PATHS.ld,
+    APPLE_TOOLCHAIN_PATHS.libtool,
+    APPLE_TOOLCHAIN_PATHS.lipo,
+    APPLE_TOOLCHAIN_PATHS.llvmNm,
+    APPLE_TOOLCHAIN_PATHS.llvmOtool,
+    APPLE_TOOLCHAIN_PATHS.nm,
+    APPLE_TOOLCHAIN_PATHS.otool,
+    APPLE_TOOLCHAIN_PATHS.otoolClassic,
+    APPLE_TOOLCHAIN_PATHS.ranlib,
+    APPLE_TOOLCHAIN_PATHS.strip,
+  ];
+  const exactSystemTools = [
+    '/bin/bash',
+    '/bin/chmod',
+    '/bin/cp',
+    '/bin/ls',
+    '/bin/ps',
+    '/bin/sh',
+    '/usr/bin/bsdtar',
+    '/usr/bin/codesign',
+    '/usr/bin/env',
+    '/usr/bin/lockf',
+    '/usr/bin/plutil',
+    '/usr/bin/ruby',
+    '/usr/bin/sandbox-exec',
+    '/usr/bin/uname',
+    '/usr/bin/xattr',
+    '/usr/sbin/lsof',
+  ];
+  assert.deepEqual(
+    configuration.executableFiles,
+    sortedUnique([command, ...exactAppleTools, ...exactSystemTools]),
+  );
+  assert.deepEqual(configuration.executableRoots, sortedUnique([
+    resolve(isolateRoot, 'authenticated-toolchain'),
+    resolve(isolateRoot, 'source/node_modules'),
+    resolve(isolateRoot, 'source/src-tauri/binaries'),
+    resolve(isolateRoot, 'source/src-tauri/target'),
+    resolve(isolateRoot, 'tauri-build-tools'),
+    resolve(isolateRoot, 'tmp'),
+  ]));
+  for (const forbiddenShim of [
+    '/usr/bin/ar',
+    '/usr/bin/cc',
+    '/usr/bin/clang',
+    '/usr/bin/clang++',
+    '/usr/bin/dsymutil',
+    '/usr/bin/install_name_tool',
+    '/usr/bin/ld',
+    '/usr/bin/libtool',
+    '/usr/bin/lipo',
+    '/usr/bin/nm',
+    '/usr/bin/otool',
+    '/usr/bin/ranlib',
+    '/usr/bin/strip',
+    '/usr/bin/xcode-select',
+    '/usr/bin/xcrun',
+  ]) {
+    assert.equal(configuration.executableFiles.includes(forbiddenShim), false, forbiddenShim);
+  }
+  assert.deepEqual(configuration.writableFiles, []);
+  assert.deepEqual(configuration.writableRoots, [isolateRoot, outputRoot].sort());
+  assert.deepEqual(configuration.readableFiles, sortedUnique([
+    '/',
+    '/Library',
+    '/Library/Developer',
+    '/dev/null',
+    '/dev/random',
+    '/dev/urandom',
+    '/dev/zero',
+    '/private/etc/localtime',
+    '/private/etc/ssl/openssl.cnf',
+    '/private/var/select/sh',
+    command,
+    lockPath,
+    ...exactAppleTools,
+    ...exactSystemTools,
+  ]));
+  assert.deepEqual(configuration.readableRoots, sortedUnique([
+    '/Library/Apple/System/Library',
+    '/System/Library',
+    '/private/tmp/bootstrap',
+    '/private/tmp/repository',
+    '/private/var/db/timezone',
+    '/usr/lib',
+    '/usr/share/zoneinfo',
+    APPLE_TOOLCHAIN_PATHS.root,
+    isolateRoot,
+    outputRoot,
+  ]));
+});
+
+test('differently rooted guarded launches contend on one canonical global package lock', async (t) => {
+  const globalTemporaryRoot = await realpath(tmpdir());
+  const fixtureRoot = await mkdtemp(join(globalTemporaryRoot, 'piui-guarded-lock-contention.'));
+  t.after(async () => removeTestTree(fixtureRoot));
+  const repositoryRoot = join(fixtureRoot, 'repository');
+  const firstIsolate = join(fixtureRoot, 'first-isolate');
+  const secondIsolate = join(fixtureRoot, 'second-isolate');
+  await Promise.all([
+    mkdir(repositoryRoot, { mode: 0o700 }),
+    mkdir(firstIsolate, { mode: 0o700 }),
+    mkdir(secondIsolate, { mode: 0o700 }),
+  ]);
+  const lockPath = guardedProductionGlobalLockPath(repositoryRoot, fixtureRoot);
+  assert.equal(
+    lockPath,
+    architecturePackageGlobalLockPath(repositoryRoot, fixtureRoot),
+  );
+  assert.equal(lockPath.startsWith(`${firstIsolate}/`), false);
+  assert.equal(lockPath.startsWith(`${secondIsolate}/`), false);
+  const first = await acquireOwnedLock(lockPath, {
+    label: 'First differently rooted guarded launch',
+  });
+  try {
+    await assert.rejects(
+      acquireOwnedLock(lockPath, {
+        label: 'Second differently rooted guarded launch',
+      }),
+      /already held/u,
+    );
+  } finally {
+    await releaseOwnedLock(first);
+  }
+});
+
+test('authenticated guarded outer sandbox denies ambient and parent re-exec canaries', {
+  skip: !authenticatedSandboxNode && 'PIUI_AUTHENTICATED_NODE_TEST_PATH is unavailable',
+}, async (t) => {
+  if (process.platform !== 'darwin') {
+    t.skip('Seatbelt denial canaries require macOS');
+    return;
+  }
+  const nodePath = await realpath(authenticatedSandboxNode);
+  const globalTemporaryRoot = await realpath(tmpdir());
+  const fixtureRoot = await mkdtemp(join(globalTemporaryRoot, 'piui-guarded-outer-canary.'));
+  t.after(async () => removeTestTree(fixtureRoot));
+  const isolateRoot = join(fixtureRoot, 'guarded-isolate');
+  const home = join(isolateRoot, 'home');
+  const temporary = join(isolateRoot, 'tmp');
+  const outputRoot = join(fixtureRoot, 'guarded-output');
+  const siblingHome = join(fixtureRoot, 'sibling-home');
+  const siblingTemporary = join(fixtureRoot, 'sibling-tmp');
+  await Promise.all([
+    mkdir(home, { mode: 0o700, recursive: true }),
+    mkdir(temporary, { mode: 0o700, recursive: true }),
+    mkdir(outputRoot, { mode: 0o700 }),
+    mkdir(siblingHome, { mode: 0o700 }),
+    mkdir(siblingTemporary, { mode: 0o700 }),
+  ]);
+  const canary = Object.freeze({
+    homeRead: join(siblingHome, 'private.txt'),
+    homeWrite: join(siblingHome, 'write-denied.txt'),
+    temporaryRead: join(siblingTemporary, 'private.txt'),
+    temporaryWrite: join(siblingTemporary, 'write-denied.txt'),
+  });
+  await Promise.all([
+    writeFile(canary.homeRead, 'sibling home\n', { mode: 0o600 }),
+    writeFile(canary.temporaryRead, 'sibling temporary\n', { mode: 0o600 }),
+  ]);
+  const lockPath = guardedProductionGlobalLockPath(actualRepositoryRoot, fixtureRoot);
+  await mkdir(dirname(lockPath), { mode: 0o700, recursive: true });
+  await writeFile(lockPath, '', { flag: 'wx', mode: 0o600 });
+  configureAuthenticatedNodeSpawn(await createAuthenticatedNodeSpawnConfiguration({
+    nodePath,
+    snapshot: await snapshotArchitectureSource(actualRepositoryRoot),
+    sourceRoot: actualRepositoryRoot,
+  }));
+  const profile = createAuthenticatedNodeGuardedProductionSandboxProfile({
+    command: nodePath,
+    ...guardedProductionOuterSandboxConfiguration({
+      bootstrapRoot: dirname(dirname(nodePath)),
+      command: nodePath,
+      isolateRoot,
+      lockPath,
+      outputRoot,
+      repositoryRoot: actualRepositoryRoot,
+    }),
+  });
+  const result = await runGuardedProductionOuterSandboxCanary({
+    canary,
+    command: nodePath,
+    home,
+    inheritedFds: [],
+    profile,
+    repositoryRoot: actualRepositoryRoot,
+    temporary,
+  });
+  assert.deepEqual(result, {
+    authenticatedParentReexecDenied: true,
+    clangShimExecutionDenied: true,
+    cltClangByBasenameAllowed: true,
+    curlExecutionDenied: true,
+    loopbackDenied: true,
+    securityIdentityDenied: true,
+    siblingHomeReadDenied: true,
+    siblingHomeWriteDenied: true,
+    siblingTemporaryReadDenied: true,
+    siblingTemporaryWriteDenied: true,
+    xcrunExecutionDenied: true,
+  });
+});
+
 test('production command and Tauri hook are closed around the frozen authenticated path', async () => {
   const [packageJson, packageSource, hookSource, runnerSource, developmentSource] = await Promise.all([
     readFile(new URL('../../package.json', import.meta.url), 'utf8'),
@@ -697,7 +942,7 @@ test('production command and Tauri hook are closed around the frozen authenticat
   );
   assert.equal(
     JSON.parse(packageJson).scripts['tauri:build:production'],
-    'node scripts/build-production.mjs',
+    '/usr/bin/env -i PATH=/usr/bin:/bin LANG=en_AU.UTF-8 LC_ALL=en_AU.UTF-8 /usr/bin/ruby --disable-gems scripts/architecture-bootstrap.rb build',
   );
   assert.match(packageSource, /'--guarded-production-build': 'guarded-production'/u);
   assert.match(
@@ -711,6 +956,15 @@ test('production command and Tauri hook are closed around the frozen authenticat
   assert.match(hookSource, /snapshotArchitectureSource\(sourceRoot\)/u);
   assert.doesNotMatch(hookSource, /process\.env\.PIUI_PNPM_ENTRY/u);
   assert.match(runnerSource, /validateGateAndSource[\s\S]*?packageExecutor/u);
+  assert.match(runnerSource, /createAuthenticatedNodeGuardedProductionSandboxProfile/u);
+  assert.match(runnerSource, /sandboxProfile: profile/u);
+  assert.match(runnerSource, /HOME: isolate\.home/u);
+  assert.match(runnerSource, /TMPDIR: `\$\{isolate\.temporary\}\/`/u);
+  assert.match(runnerSource, /PIUI_GUARDED_PRODUCTION_PACKAGE_ISOLATE_FD/u);
+  assert.match(runnerSource, /PIUI_GUARDED_PRODUCTION_GLOBAL_LOCK_FD/u);
+  assert.match(packageSource, /assertGuardedPackageIsolateAuthority/u);
+  assert.match(packageSource, /assertGuardedGlobalLockAuthority/u);
+  assert.match(packageSource, /guardedPackageIsolateAuthority\?\.path/u);
   assert.match(runnerSource, /Copied production bundle fingerprint changed/u);
   assert.match(runnerSource, /\.incoming-/u);
   assert.match(runnerSource, /writeBuildRecord[\s\S]*?publicationRenamer/u);

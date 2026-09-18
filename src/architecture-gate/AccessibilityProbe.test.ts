@@ -1,14 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import {
-  A28_TRANSCRIPT,
-  A28_TRANSCRIPT_COUNT,
-  nextA28TranscriptIndex,
-} from './AccessibilityProbe';
-import {
-  A28_HUMAN_WITNESS_READY_EVENT,
-  assertA28HumanWitnessLease,
-} from './a28WitnessContract';
+import { A28_TRANSCRIPT, A28_TRANSCRIPT_COUNT, nextA28TranscriptIndex } from './AccessibilityProbe';
+import { A28_HUMAN_WITNESS_READY_EVENT, assertA28HumanWitnessLease } from './a28WitnessContract';
 
 describe('A.28 fixed transcript accessibility contract', () => {
   it('has exactly 100 stable, ordered and named rows', () => {
@@ -43,7 +36,7 @@ describe('A.28 fixed transcript accessibility contract', () => {
     expect(source).toContain('aria-setsize={A28_TRANSCRIPT_COUNT}');
     expect(source).toContain('Virtualised transcript');
     expect(source).toContain('Accessible transcript');
-    expect(source).toContain("setFocusedIndex(index)");
+    expect(source).toContain('setFocusedIndex(index)');
   });
 
   it('shows only a strict safe retained-human lease with a waiting indicator', () => {
@@ -67,8 +60,7 @@ describe('A.28 fixed transcript accessibility contract', () => {
       { ...lease, applicationPid: 1 },
       { ...lease, activationNonce: 'e'.repeat(64) },
     ]) {
-      expect(() => assertA28HumanWitnessLease(changed))
-        .toThrow('a28-human-witness-lease-rejected');
+      expect(() => assertA28HumanWitnessLease(changed)).toThrow('a28-human-witness-lease-rejected');
     }
 
     const source = readFileSync(new URL('./AccessibilityProbe.tsx', import.meta.url), 'utf8');

@@ -24,10 +24,10 @@ impl StderrRedactor {
         // Redact while line boundaries still exist so a personal path with
         // spaces cannot consume a following diagnostic line.
         let mut text = input.to_owned();
-        if let Some(home) = self.home.as_deref().and_then(Path::to_str) {
-            if !home.is_empty() {
-                text = text.replace(home, "<home>");
-            }
+        if let Some(home) = self.home.as_deref().and_then(Path::to_str)
+            && !home.is_empty()
+        {
+            text = text.replace(home, "<home>");
         }
         text = user_path_regex()
             .replace_all(&text, "<user-path>")

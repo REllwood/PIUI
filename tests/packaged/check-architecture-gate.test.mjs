@@ -26,6 +26,17 @@ import {
 } from './architecture-proof-fixtures.mjs';
 
 const sha = architectureSha;
+const PLAN_PREFIX = `# Plan
+
+### A.29 — Record and enforce the architecture gate decision
+- **Goal:** Prevent broad implementation from proceeding on an unproved architecture.
+`;
+const PLAN_SUFFIX = `
+## Phase B — Production foundations
+`;
+const PLAN_UNCHECKED = `${PLAN_PREFIX}- [ ] done\n${PLAN_SUFFIX}`;
+const PLAN_CHECKED = `${PLAN_PREFIX}- [x] done\n${PLAN_SUFFIX}`;
+
 function line(value) {
   return Buffer.from(`${canonicalArchitectureJson(value)}\n`, 'utf8');
 }
@@ -36,7 +47,11 @@ async function createRepository(t) {
   await mkdir(join(root, '.forge'), { recursive: true, mode: 0o700 });
   await mkdir(join(root, 'src-tauri'), { recursive: true, mode: 0o700 });
   for (const name of ['ARCHITECTURE-GATE', 'FORGE', 'PLAN', 'SPEC', 'UI-DESIGN']) {
-    await writeFile(join(root, '.forge', `${name}.md`), `${name}\n`, { mode: 0o600 });
+    await writeFile(
+      join(root, '.forge', `${name}.md`),
+      name === 'PLAN' ? PLAN_UNCHECKED : `${name}\n`,
+      { mode: 0o600 },
+    );
   }
   await writeFile(join(root, 'pnpm-lock.yaml'), 'lockfileVersion: 9\n', { mode: 0o600 });
   await writeFile(join(root, 'src-tauri', 'Cargo.lock'), 'version = 4\n', { mode: 0o600 });
@@ -140,6 +155,19 @@ test('accepts only the complete latest same-source architecture run', async (t) 
     sourceDigest: results.source.digest,
     target: 'aarch64-apple-darwin',
   });
+});
+
+test('accepts the exact post-record A.29 completion transition only', async (t) => {
+  const root = await createRepository(t);
+  const { results } = await recordPassingRun(root);
+
+  await writeFile(join(root, '.forge', 'PLAN.md'), PLAN_CHECKED, { mode: 0o600 });
+  const accepted = await validateLatestArchitectureGate(root);
+  assert.equal(accepted.decision, 'pass');
+  assert.equal(accepted.sourceDigest, results.source.digest);
+
+  await writeFile(join(root, '.forge', 'PLAN.md'), `${PLAN_CHECKED}x`, { mode: 0o600 });
+  await assert.rejects(validateLatestArchitectureGate(root), /proof source is stale/u);
 });
 
 test('rejects stale source and altered proof bytes', async (t) => {

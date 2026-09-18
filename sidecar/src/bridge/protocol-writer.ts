@@ -1,9 +1,6 @@
 import type { ProtocolEnvelope } from '@piui/protocol';
 
-export type ProtocolBufferSink = (
-  bytes: Buffer,
-  settled: (error?: Error | null) => void,
-) => void;
+export type ProtocolBufferSink = (bytes: Buffer, settled: (error?: Error | null) => void) => void;
 
 export type ProtocolEnvelopeWriter = ((envelope: ProtocolEnvelope) => void) & {
   readonly failed?: boolean;

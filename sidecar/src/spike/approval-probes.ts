@@ -40,18 +40,117 @@ function approvalCase(value: A25ApprovalCase): A25ApprovalCase {
 }
 
 export const A25_APPROVAL_CASES: readonly A25ApprovalCase[] = Object.freeze([
-  approvalCase({ id: 'routine-individual', generation: 1, turn: 1, tools: ['read', 'grep', 'find'], action: 'approve-one', risk: 'routine', groupEligible: true, approvedMember: 0 }),
-  approvalCase({ id: 'routine-group', generation: 1, turn: 2, tools: ['read', 'grep', 'find'], action: 'approve-group', risk: 'routine', groupEligible: true }),
-  approvalCase({ id: 'routine-deny', generation: 1, turn: 3, tools: ['read', 'grep', 'find'], action: 'deny', risk: 'routine', groupEligible: true }),
-  approvalCase({ id: 'destructive-individual', generation: 1, turn: 4, tools: ['read', 'bash', 'find'], action: 'approve-one', risk: 'destructive', groupEligible: false, approvedMember: 1 }),
-  approvalCase({ id: 'destructive-repeat', generation: 1, turn: 5, tools: ['read', 'bash', 'find'], action: 'deny', risk: 'destructive', groupEligible: false }),
-  approvalCase({ id: 'external-individual', generation: 1, turn: 6, tools: ['read', 'web_fetch', 'find'], action: 'approve-one', risk: 'external', groupEligible: false, approvedMember: 1 }),
-  approvalCase({ id: 'external-repeat', generation: 1, turn: 7, tools: ['read', 'web_fetch', 'find'], action: 'deny', risk: 'external', groupEligible: false }),
-  approvalCase({ id: 'routine-timeout', generation: 1, turn: 8, tools: ['read', 'grep', 'find'], action: 'timeout', risk: 'routine', groupEligible: true }),
-  approvalCase({ id: 'host-disconnect', generation: 2, turn: 9, tools: ['read', 'grep', 'find'], action: 'disconnect', risk: 'routine', groupEligible: true }),
-  approvalCase({ id: 'transport-cutoff', generation: 3, turn: 10, tools: ['read', 'grep', 'find'], action: 'transport-cutoff', risk: 'routine', groupEligible: true }),
-  approvalCase({ id: 'sidecar-death', generation: 4, turn: 11, tools: ['read', 'grep', 'find'], action: 'sidecar-death', risk: 'routine', groupEligible: true }),
-  approvalCase({ id: 'stale-replay', generation: 5, turn: 12, tools: ['read', 'grep', 'find'], action: 'stale-replay', risk: 'routine', groupEligible: true }),
+  approvalCase({
+    id: 'routine-individual',
+    generation: 1,
+    turn: 1,
+    tools: ['read', 'grep', 'find'],
+    action: 'approve-one',
+    risk: 'routine',
+    groupEligible: true,
+    approvedMember: 0,
+  }),
+  approvalCase({
+    id: 'routine-group',
+    generation: 1,
+    turn: 2,
+    tools: ['read', 'grep', 'find'],
+    action: 'approve-group',
+    risk: 'routine',
+    groupEligible: true,
+  }),
+  approvalCase({
+    id: 'routine-deny',
+    generation: 1,
+    turn: 3,
+    tools: ['read', 'grep', 'find'],
+    action: 'deny',
+    risk: 'routine',
+    groupEligible: true,
+  }),
+  approvalCase({
+    id: 'destructive-individual',
+    generation: 1,
+    turn: 4,
+    tools: ['read', 'bash', 'find'],
+    action: 'approve-one',
+    risk: 'destructive',
+    groupEligible: false,
+    approvedMember: 1,
+  }),
+  approvalCase({
+    id: 'destructive-repeat',
+    generation: 1,
+    turn: 5,
+    tools: ['read', 'bash', 'find'],
+    action: 'deny',
+    risk: 'destructive',
+    groupEligible: false,
+  }),
+  approvalCase({
+    id: 'external-individual',
+    generation: 1,
+    turn: 6,
+    tools: ['read', 'web_fetch', 'find'],
+    action: 'approve-one',
+    risk: 'external',
+    groupEligible: false,
+    approvedMember: 1,
+  }),
+  approvalCase({
+    id: 'external-repeat',
+    generation: 1,
+    turn: 7,
+    tools: ['read', 'web_fetch', 'find'],
+    action: 'deny',
+    risk: 'external',
+    groupEligible: false,
+  }),
+  approvalCase({
+    id: 'routine-timeout',
+    generation: 1,
+    turn: 8,
+    tools: ['read', 'grep', 'find'],
+    action: 'timeout',
+    risk: 'routine',
+    groupEligible: true,
+  }),
+  approvalCase({
+    id: 'host-disconnect',
+    generation: 2,
+    turn: 9,
+    tools: ['read', 'grep', 'find'],
+    action: 'disconnect',
+    risk: 'routine',
+    groupEligible: true,
+  }),
+  approvalCase({
+    id: 'transport-cutoff',
+    generation: 3,
+    turn: 10,
+    tools: ['read', 'grep', 'find'],
+    action: 'transport-cutoff',
+    risk: 'routine',
+    groupEligible: true,
+  }),
+  approvalCase({
+    id: 'sidecar-death',
+    generation: 4,
+    turn: 11,
+    tools: ['read', 'grep', 'find'],
+    action: 'sidecar-death',
+    risk: 'routine',
+    groupEligible: true,
+  }),
+  approvalCase({
+    id: 'stale-replay',
+    generation: 5,
+    turn: 12,
+    tools: ['read', 'grep', 'find'],
+    action: 'stale-replay',
+    risk: 'routine',
+    groupEligible: true,
+  }),
 ]);
 
 export const A25_EXPECTED_MATRIX_COUNTS = Object.freeze({
@@ -69,7 +168,9 @@ export function approvalCasesForGeneration(generation: number): readonly A25Appr
   if (!Number.isSafeInteger(generation) || generation < 1 || generation > 5) {
     throw new Error('approval-matrix-generation-rejected');
   }
-  return Object.freeze(A25_APPROVAL_CASES.filter((candidate) => candidate.generation === generation));
+  return Object.freeze(
+    A25_APPROVAL_CASES.filter((candidate) => candidate.generation === generation),
+  );
 }
 
 const EXPECTED_PLAN = Object.freeze({
@@ -88,9 +189,15 @@ function assertOwnerPrivateDirectory(path: string): string {
   const canonical = realpathSync(requested);
   const opened = lstatSync(canonical);
   const expectedUid = typeof process.getuid === 'function' ? process.getuid() : opened.uid;
-  if (requested !== canonical || item.isSymbolicLink() || !opened.isDirectory()
-    || item.dev !== opened.dev || item.ino !== opened.ino || opened.uid !== expectedUid
-    || (opened.mode & 0o777) !== 0o700) {
+  if (
+    requested !== canonical ||
+    item.isSymbolicLink() ||
+    !opened.isDirectory() ||
+    item.dev !== opened.dev ||
+    item.ino !== opened.ino ||
+    opened.uid !== expectedUid ||
+    (opened.mode & 0o777) !== 0o700
+  ) {
     throw new Error('approval-matrix-control-rejected');
   }
   return canonical;
@@ -102,8 +209,14 @@ function validatePlan(controlRoot: string): void {
   try {
     const item = fstatSync(descriptor);
     const expectedUid = typeof process.getuid === 'function' ? process.getuid() : item.uid;
-    if (!item.isFile() || item.nlink !== 1 || item.uid !== expectedUid
-      || (item.mode & 0o777) !== 0o400 || item.size < 2 || item.size > 512) {
+    if (
+      !item.isFile() ||
+      item.nlink !== 1 ||
+      item.uid !== expectedUid ||
+      (item.mode & 0o777) !== 0o400 ||
+      item.size < 2 ||
+      item.size > 512
+    ) {
       throw new Error('approval-matrix-control-rejected');
     }
     const bytes = readFileSync(descriptor);
@@ -120,8 +233,7 @@ function validatePlan(controlRoot: string): void {
 function createMarker(path: string, body: string): void {
   const descriptor = openSync(
     path,
-    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL
-      | constants.O_NOFOLLOW,
+    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
     0o600,
   );
   try {
@@ -151,8 +263,14 @@ function readPrivateFile(path: string, maximumBytes: number): Buffer {
   try {
     const item = fstatSync(descriptor);
     const expectedUid = typeof process.getuid === 'function' ? process.getuid() : item.uid;
-    if (!item.isFile() || item.nlink !== 1 || item.uid !== expectedUid
-      || (item.mode & 0o777) !== 0o600 || item.size < 2 || item.size > maximumBytes) {
+    if (
+      !item.isFile() ||
+      item.nlink !== 1 ||
+      item.uid !== expectedUid ||
+      (item.mode & 0o777) !== 0o600 ||
+      item.size < 2 ||
+      item.size > maximumBytes
+    ) {
       throw new Error('approval-matrix-witness-rejected');
     }
     const bytes = readFileSync(descriptor);
@@ -203,9 +321,10 @@ export class A25ApprovalWitness {
       const path = resolve(witnessRoot, nativeFrameName(kind));
       if (privateFileExists(path)) {
         const frame = witness.loadNativeFrame(kind);
-        if (frame.payload.method !== (kind === 'individual'
-          ? 'approval.resolve'
-          : 'approval.group-commit')) {
+        if (
+          frame.payload.method !==
+          (kind === 'individual' ? 'approval.resolve' : 'approval.group-commit')
+        ) {
           throw new Error('approval-matrix-witness-rejected');
         }
         witness.#capturedNativeFrames.add(kind);
@@ -240,7 +359,10 @@ export class A25ApprovalWitness {
     if (!Number.isSafeInteger(generation) || generation < 1 || generation > 5) {
       throw new Error('approval-matrix-witness-rejected');
     }
-    createMarker(resolve(this.#witnessRoot, `session-generation-${generation}.created`), 'created\n');
+    createMarker(
+      resolve(this.#witnessRoot, `session-generation-${generation}.created`),
+      'created\n',
+    );
   }
 
   caseReady(candidate: A25ApprovalCase): void {
@@ -266,22 +388,30 @@ export class A25ApprovalWitness {
 
   replayComplete(candidate: A25ApprovalCase): void {
     if (candidate.id !== 'stale-replay') throw new Error('approval-matrix-witness-rejected');
-    createMarker(resolve(this.#witnessRoot, `case-${candidate.id}.replay-complete`), 'replay-complete\n');
+    createMarker(
+      resolve(this.#witnessRoot, `case-${candidate.id}.replay-complete`),
+      'replay-complete\n',
+    );
   }
 
   captureNativeFrame(envelope: ProtocolEnvelope, rawFrame: Uint8Array): void {
     if (envelope.kind !== 'host-response') return;
     const method = envelope.payload.method;
-    const kind = method === 'approval.group-commit'
-      ? 'group'
-      : method === 'approval.resolve' && envelope.payload.decision === 'approved'
-        ? 'individual'
-        : undefined;
+    const kind =
+      method === 'approval.group-commit'
+        ? 'group'
+        : method === 'approval.resolve' && envelope.payload.decision === 'approved'
+          ? 'individual'
+          : undefined;
     if (!kind || this.#capturedNativeFrames.has(kind)) return;
     const bytes = Buffer.from(rawFrame);
     try {
-      if (bytes.length < 3 || bytes.length > 65_536
-        || bytes.at(-1) !== 0x0a || bytes.includes(0x0d)) {
+      if (
+        bytes.length < 3 ||
+        bytes.length > 65_536 ||
+        bytes.at(-1) !== 0x0a ||
+        bytes.includes(0x0d)
+      ) {
         throw new Error('approval-matrix-witness-rejected');
       }
       const parsed = JSON.parse(bytes.subarray(0, -1).toString('utf8')) as unknown;
@@ -315,10 +445,11 @@ export class A25ApprovalWitness {
         throw new Error('approval-matrix-witness-rejected');
       }
       const parsed = JSON.parse(bytes.subarray(0, -1).toString('utf8')) as ProtocolEnvelope;
-      if (parsed.kind !== 'host-response'
-        || parsed.payload.method !== (kind === 'individual'
-          ? 'approval.resolve'
-          : 'approval.group-commit')) {
+      if (
+        parsed.kind !== 'host-response' ||
+        parsed.payload.method !==
+          (kind === 'individual' ? 'approval.resolve' : 'approval.group-commit')
+      ) {
         throw new Error('approval-matrix-witness-rejected');
       }
       return parsed;
@@ -336,17 +467,25 @@ export class A25ApprovalWitness {
     context: unknown,
   ): void {
     const match = TOOL_CALL_ID.exec(toolCallId);
-    const caseId = params !== null && typeof params === 'object'
-      ? Object.getOwnPropertyDescriptor(params, 'caseId')?.value
-      : undefined;
-    const value = params !== null && typeof params === 'object'
-      ? Object.getOwnPropertyDescriptor(params, 'value')?.value
-      : undefined;
-    const exact = Boolean(match && typeof caseId === 'string' && MARKER_ID.test(caseId)
-      && value === 'fixed' && argumentCount === 5
-      && (signal === undefined || signal instanceof AbortSignal)
-      && (onUpdate === undefined || typeof onUpdate === 'function')
-      && context !== null && typeof context === 'object');
+    const caseId =
+      params !== null && typeof params === 'object'
+        ? Object.getOwnPropertyDescriptor(params, 'caseId')?.value
+        : undefined;
+    const value =
+      params !== null && typeof params === 'object'
+        ? Object.getOwnPropertyDescriptor(params, 'value')?.value
+        : undefined;
+    const exact = Boolean(
+      match &&
+        typeof caseId === 'string' &&
+        MARKER_ID.test(caseId) &&
+        value === 'fixed' &&
+        argumentCount === 5 &&
+        (signal === undefined || signal instanceof AbortSignal) &&
+        (onUpdate === undefined || typeof onUpdate === 'function') &&
+        context !== null &&
+        typeof context === 'object',
+    );
     if (!exact || !match) {
       this.#fiveArgumentViolations += 1;
       throw new Error('approval-matrix-delegate-rejected');
@@ -381,27 +520,29 @@ export function createApprovalProbeDefinitions(
     additionalProperties: false,
   }) as never;
   const names = ['read', 'grep', 'find', 'bash', 'web_fetch'] as const;
-  return Object.freeze(names.map((name): PublicToolDefinition => {
-    const execute: PublicToolDefinition['execute'] = async function (
-      toolCallId,
-      params,
-      signal,
-      onUpdate,
-      context,
-    ) {
-      witness.recordDelegate(toolCallId, params, arguments.length, signal, onUpdate, context);
-      return {
-        content: [{ type: 'text' as const, text: 'approved fixture result' }],
-        details: {},
+  return Object.freeze(
+    names.map((name): PublicToolDefinition => {
+      const execute: PublicToolDefinition['execute'] = async function (
+        toolCallId,
+        params,
+        signal,
+        onUpdate,
+        context,
+      ) {
+        witness.recordDelegate(toolCallId, params, arguments.length, signal, onUpdate, context);
+        return {
+          content: [{ type: 'text' as const, text: 'approved fixture result' }],
+          details: {},
+        };
       };
-    };
-    return {
-      name,
-      label: `A.25 ${name}`,
-      description: 'Fixed non-production approval architecture probe.',
-      parameters,
-      executionMode: 'parallel' as const,
-      execute,
-    } as PublicToolDefinition;
-  }));
+      return {
+        name,
+        label: `A.25 ${name}`,
+        description: 'Fixed non-production approval architecture probe.',
+        parameters,
+        executionMode: 'parallel' as const,
+        execute,
+      } as PublicToolDefinition;
+    }),
+  );
 }

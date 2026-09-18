@@ -11,9 +11,13 @@ const originalClose = closeSync.bind(undefined);
 const originalRandomBytes = randomBytes.bind(undefined);
 const originalCreateHmac = createHmac.bind(undefined);
 const originalFill = Uint8Array.prototype.fill;
-const zero = (value: Uint8Array) => { Reflect.apply(originalFill, value, [0]); };
+const zero = (value: Uint8Array) => {
+  Reflect.apply(originalFill, value, [0]);
+};
 const [snapshotRoot, agentRoot] = process.argv.slice(2);
-const projectEntrypoint = fileURLToPath(new URL('./trust-loader-project-thread.js', import.meta.url));
+const projectEntrypoint = fileURLToPath(
+  new URL('./trust-loader-project-thread.js', import.meta.url),
+);
 const CHALLENGE_FD = 3;
 const TRANSCRIPT_FD = 4;
 const CHALLENGE_BYTES = 32;
@@ -48,19 +52,21 @@ function exactPrivateMessage(value: unknown, phase: 'ready' | 'complete'): boole
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;
   const keys = Object.keys(record);
-  return keys.length === 2
-    && keys.includes('version')
-    && keys.includes('phase')
-    && record.version === 1
-    && record.phase === phase;
+  return (
+    keys.length === 2 &&
+    keys.includes('version') &&
+    keys.includes('phase') &&
+    record.version === 1 &&
+    record.phase === phase
+  );
 }
 
 if (
-  process.argv.length !== 4
-  || !snapshotRoot
-  || !agentRoot
-  || !isAbsolute(snapshotRoot)
-  || !isAbsolute(agentRoot)
+  process.argv.length !== 4 ||
+  !snapshotRoot ||
+  !agentRoot ||
+  !isAbsolute(snapshotRoot) ||
+  !isAbsolute(agentRoot)
 ) {
   terminate(64);
 } else {
@@ -104,8 +110,16 @@ if (
       if (deadline) clearTimeout(deadline);
       if (!success) {
         void projectWorker.terminate();
-        try { port1.close(); } catch { /* already closed */ }
-        try { originalClose(TRANSCRIPT_FD); } catch { /* already closed */ }
+        try {
+          port1.close();
+        } catch {
+          /* already closed */
+        }
+        try {
+          originalClose(TRANSCRIPT_FD);
+        } catch {
+          /* already closed */
+        }
         zero(challenge!);
         zero(nonce!);
         terminate(70);
@@ -162,7 +176,11 @@ if (
     }, PROJECT_TIMEOUT_MS);
     deadline.unref();
   } catch {
-    try { originalClose(TRANSCRIPT_FD); } catch { /* already closed */ }
+    try {
+      originalClose(TRANSCRIPT_FD);
+    } catch {
+      /* already closed */
+    }
     if (challenge) zero(challenge);
     if (nonce) zero(nonce);
     terminate(70);

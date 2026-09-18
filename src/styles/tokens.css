@@ -1,0 +1,42 @@
+:root {
+  --space-2: 2px;
+  --space-4: 4px;
+  --space-8: 8px;
+  --space-12: 12px;
+  --space-16: 16px;
+  --space-20: 20px;
+  --space-24: 24px;
+  --space-28: 28px;
+  --space-32: 32px;
+  --space-40: 40px;
+  --space-48: 48px;
+  --space-64: 64px;
+  --gutter: 6px;
+  --radius-control: 6px;
+  --radius-card: 10px;
+  --radius-plane: 14px;
+  --radius-large: 16px;
+  --target: 44px;
+  --duration-feedback: 120ms;
+  --duration-panel: 180ms;
+  --duration-sheet: 240ms;
+  --ease-standard: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --font-sans: Inter, -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif;
+  --font-mono: 'JetBrains Mono', 'SFMono-Regular', Consolas, ui-monospace, monospace;
+  --shadow-small: 0 1px 2px rgb(20 24 19 / 12%);
+  --shadow-large: 0 8px 24px rgb(20 24 19 / 14%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-feedback: 0ms;
+    --duration-panel: 0ms;
+    --duration-sheet: 0ms;
+  }
+}
+
+:root[data-motion='reduced'] {
+  --duration-feedback: 0ms;
+  --duration-panel: 0ms;
+  --duration-sheet: 0ms;
+}

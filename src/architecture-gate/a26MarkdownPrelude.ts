@@ -63,10 +63,12 @@ function isExpectedResource(url: string, expectedRasterUrl: string): boolean {
   if (url === expectedRasterUrl) return true;
   try {
     const candidate = new URL(url);
-    return candidate.protocol === window.location.protocol
-      && candidate.host === window.location.host
-      && candidate.username === ''
-      && candidate.password === '';
+    return (
+      candidate.protocol === window.location.protocol &&
+      candidate.host === window.location.host &&
+      candidate.username === '' &&
+      candidate.password === ''
+    );
   } catch {
     return false;
   }
@@ -81,16 +83,21 @@ export function installA26MarkdownPrelude(): A26MarkdownPrelude {
   let initialLocation = '';
   let expectedRasterUrl = '';
   let resourceBaseline = 0;
+  const preBeginCounters = blankCounters();
   let counters = blankCounters();
   let loadingIndicatorPresented = false;
   let codeLoadingIndicatorPresented = false;
   let contentObserver: MutationObserver | null = null;
 
+  const recordCounter = (key: keyof MutableCounters) => {
+    if (active) counters[key] += 1;
+    else if (!begun) preBeginCounters[key] += 1;
+  };
   const recordNetwork = () => {
-    if (active) counters.networkApiAttempts += 1;
+    recordCounter('networkApiAttempts');
   };
   const recordNavigation = () => {
-    if (active) counters.navigationApiAttempts += 1;
+    recordCounter('navigationApiAttempts');
   };
 
   const nativeFetch = window.fetch.bind(window);
@@ -143,7 +150,7 @@ export function installA26MarkdownPrelude(): A26MarkdownPrelude {
 
   const nativeOpen = window.open.bind(window);
   window.open = (...argumentsList) => {
-    if (active) counters.popupAttempts += 1;
+    recordCounter('popupAttempts');
     return nativeOpen(...argumentsList);
   };
 
@@ -161,17 +168,17 @@ export function installA26MarkdownPrelude(): A26MarkdownPrelude {
     window.addEventListener(eventName, recordNavigation);
   }
   window.addEventListener('error', () => {
-    if (active) counters.runtimeErrors += 1;
+    recordCounter('runtimeErrors');
   });
   window.addEventListener('unhandledrejection', () => {
-    if (active) counters.unhandledRejections += 1;
+    recordCounter('unhandledRejections');
   });
   document.addEventListener('securitypolicyviolation', () => {
-    if (active) counters.cspViolations += 1;
+    recordCounter('cspViolations');
   });
 
   const recordWasm = () => {
-    if (active) counters.wasmApiAttempts += 1;
+    recordCounter('wasmApiAttempts');
   };
   const nativeCompile = WebAssembly.compile.bind(WebAssembly);
   WebAssembly.compile = (...argumentsList) => {
@@ -236,12 +243,17 @@ export function installA26MarkdownPrelude(): A26MarkdownPrelude {
 
   const prelude: A26MarkdownPrelude = Object.freeze({
     begin(rasterUrl: string) {
-      if (active || begun || !/^piui-raster:\/\/localhost\/__piui_markdown_asset__\/[0-9a-f]{32}\.(?:png|jpg|webp)$/.test(rasterUrl)) {
+      if (
+        active ||
+        begun ||
+        !/^piui-raster:\/\/localhost\/__piui_markdown_asset__\/[0-9a-f]{32}\.(?:png|jpg|webp)$/.test(
+          rasterUrl,
+        )
+      ) {
         throw new Error('A.26 Markdown prelude rejected');
       }
       begun = true;
-      counters = blankCounters();
-      loadingIndicatorPresented = false;
+      counters = { ...preBeginCounters };
       codeLoadingIndicatorPresented = false;
       initialLocation = window.location.href;
       expectedRasterUrl = rasterUrl;
@@ -253,11 +265,9 @@ export function installA26MarkdownPrelude(): A26MarkdownPrelude {
         for (const record of records) {
           for (const node of record.addedNodes) {
             if (
-              node instanceof Element
-              && (
-                node.matches('.markdown__code-loading')
-                || node.querySelector('.markdown__code-loading')
-              )
+              node instanceof Element &&
+              (node.matches('.markdown__code-loading') ||
+                node.querySelector('.markdown__code-loading'))
             ) {
               codeLoadingIndicatorPresented = true;
               return;
@@ -268,7 +278,7 @@ export function installA26MarkdownPrelude(): A26MarkdownPrelude {
       contentObserver.observe(document.documentElement, { childList: true, subtree: true });
     },
     recordDisclosedExternalOpen() {
-      if (active) counters.disclosedExternalOpens += 1;
+      recordCounter('disclosedExternalOpens');
     },
     recordLoadingIndicator() {
       loadingIndicatorPresented = true;
@@ -288,7 +298,8 @@ export function installA26MarkdownPrelude(): A26MarkdownPrelude {
         unexpectedResourceEntries: resources.filter(
           (resource) => !isExpectedResource(resource, expectedRasterUrl),
         ).length,
-        rasterResourceEntries: resources.filter((resource) => resource === expectedRasterUrl).length,
+        rasterResourceEntries: resources.filter((resource) => resource === expectedRasterUrl)
+          .length,
         locationUnchanged: window.location.href === initialLocation,
         scriptCanaryExecuted: window.__PIUI_MARKDOWN_SCRIPT_EXECUTED__ === true,
         eventCanaryExecuted: window.__PIUI_MARKDOWN_EVENT_EXECUTED__ === true,

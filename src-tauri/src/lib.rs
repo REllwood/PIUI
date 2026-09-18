@@ -1,15 +1,20 @@
 use serde::Serialize;
+use tauri::Emitter;
 
 #[cfg(feature = "a23-credential-test")]
 #[doc(hidden)]
 pub mod a23_credential_maintenance;
 pub mod commands;
 pub mod credentials;
+pub mod diagnostics;
 pub mod domain;
+pub mod lifecycle;
 pub mod platform;
 pub mod protocol;
 pub mod security;
+pub mod storage;
 pub mod supervisor;
+pub mod updates;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -186,7 +191,9 @@ pub fn run() {
     let architecture_activation_for_setup = architecture_activation.clone();
     let a26_assets = std::sync::Arc::new(domain::assets::OpaqueAssetRegistry::default());
 
-    let app = tauri::Builder::default().plugin(security::navigation::init());
+    let app = tauri::Builder::default()
+        .plugin(security::navigation::init())
+        .plugin(tauri_plugin_notification::init());
     #[cfg(all(feature = "architecture-test", target_os = "macos"))]
     let app = match architecture_activation.as_ref() {
         Some(activation) => register_architecture_driver(app, activation.port),
@@ -197,6 +204,13 @@ pub fn run() {
         use tauri::Manager;
         let paths =
             supervisor::SupervisorPaths::from_app(app.handle()).map_err(std::io::Error::other)?;
+        let application_data_directory =
+            app.path().app_data_dir().map_err(std::io::Error::other)?;
+        app.manage(commands::application::AppStorageState::new(
+            application_data_directory,
+        ));
+        app.manage(platform::attachments::AttachmentRegistry::default());
+        platform::menu::install(app)?;
         let credential_proxy = app_credential_proxy()?;
         #[cfg(not(feature = "a23-credential-test"))]
         app.manage(commands::bridge::BridgeState::new_with_credentials(
@@ -249,12 +263,54 @@ pub fn run() {
     });
     let generated_handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
         host_status,
+        commands::application::app_state_load,
+        commands::application::app_state_save,
+        commands::application::diagnostics_snapshot,
+        commands::application::diagnostics_export,
+        commands::application::update_status,
+        commands::platform::open_disclosed_external,
+        commands::platform::attachment_select,
+        commands::platform::attachment_remove,
+        commands::platform::close_main_window,
+        commands::platform::window_current_state,
+        commands::platform::window_apply_state,
+        commands::platform::notification_send,
+        platform::menu::menu_set_enabled_state,
+        commands::product::product_list_providers,
+        commands::product::product_logout_provider,
+        commands::product::product_create_session,
+        commands::product::product_list_sessions,
+        commands::product::product_resume_session,
+        commands::product::product_fork_session,
+        commands::product::product_rename_session,
+        commands::product::product_inspect_session,
+        commands::product::product_trash_session,
+        commands::product::product_compact_session,
+        commands::product::product_list_changes,
+        commands::product::product_undo_change,
+        commands::product::product_reveal_change,
+        commands::product::product_list_settings,
+        commands::product::product_list_resources,
+        commands::product::product_set_resource_enabled,
+        commands::product::product_install_package,
+        commands::product::product_mutate_package,
+        commands::product::product_save_setting,
+        commands::product::product_preview_setting_reset,
+        commands::product::product_queue_follow_up,
+        commands::product::product_replace_follow_up_queue,
+        commands::product::product_auth_start,
+        commands::product::product_session_export,
+        commands::product::product_turn_start,
+        commands::product::product_turn_stop,
+        commands::product::product_diagnostics,
         commands::bridge::sidecar_start,
         commands::bridge::sidecar_status,
         commands::bridge::sidecar_restart,
         commands::bridge::sidecar_stop,
         commands::bridge::bridge_send,
         commands::credentials::present_credential_sheet,
+        commands::credentials::credential_import_inspect,
+        commands::credentials::credential_import_selected,
         #[cfg(feature = "a23-credential-test")]
         commands::credentials::credential_lifecycle_status,
         commands::approval::approval_pending,
@@ -267,6 +323,7 @@ pub fn run() {
         commands::workspace::workspace_authorise,
         commands::workspace::workspace_load_trusted,
         commands::workspace::workspace_revoke,
+        commands::workspace::workspace_discover_files,
         commands::stream::stream_probe,
         commands::stream::cancel_stream,
         #[cfg(feature = "a27-lifecycle-test")]
@@ -302,6 +359,16 @@ pub fn run() {
         commands::a27_lifecycle::a27_resume_after_reopen,
         commands::a27_lifecycle::a27_request_quit,
     ];
+    let app = app.on_menu_event(|app, event| {
+        use tauri::Emitter;
+        let id = event.id().as_ref();
+        if platform::menu::MENU_ROUTES
+            .iter()
+            .any(|route| route.id == id)
+        {
+            let _ = app.emit("piui://menu-command", id);
+        }
+    });
     let app = app.invoke_handler(move |invoke: tauri::ipc::Invoke<tauri::Wry>| {
         #[cfg(feature = "a23-credential-test")]
         {
@@ -421,6 +488,21 @@ pub fn run() {
             }
         }
         tauri::RunEvent::WindowEvent {
+            label,
+            event: tauri::WindowEvent::CloseRequested { .. },
+            ..
+        } if label == "main" => {
+            use tauri::Manager;
+            if let (Some(window), Some(storage)) = (
+                app_handle.get_webview_window("main"),
+                app_handle.try_state::<commands::application::AppStorageState>(),
+            ) && let Ok(record) = commands::platform::current_window_record(&window)
+                && storage.persist_window(record).is_err()
+            {
+                eprintln!("PIUI could not persist the final window state");
+            }
+        }
+        tauri::RunEvent::WindowEvent {
             event: tauri::WindowEvent::Destroyed,
             ..
         } => {
@@ -437,6 +519,18 @@ pub fn run() {
                         eprintln!("PIUI could not restore its main window");
                     }
                 }
+            }
+        }
+        tauri::RunEvent::WindowEvent {
+            label,
+            event: tauri::WindowEvent::Resized(_),
+            ..
+        } if label == "main" => {
+            use tauri::Manager;
+            if let Some(window) = app_handle.get_webview_window("main")
+                && let Ok(record) = commands::platform::current_window_record(&window)
+            {
+                let _ = app_handle.emit("piui://window-state", record);
             }
         }
         #[cfg(target_os = "macos")]

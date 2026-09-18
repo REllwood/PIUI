@@ -571,17 +571,15 @@ impl ApprovalRegistry {
         }
         if let Some(key) = group_key.as_ref()
             && let Some(group) = inner.groups.get(key)
-        {
-            if group.phase != GroupPhase::Collecting
+            && (group.phase != GroupPhase::Collecting
                 || group.cohort != *request.cohort.as_ref().unwrap()
                 || group.generation != request.generation
                 || group.session_id != request.session_id
                 || group.workspace_id != request.workspace_id
                 || group.workspace_revision != request.workspace_revision
-                || cohort_ordinal.is_none_or(|ordinal| group.members[ordinal].is_some())
-            {
-                return Err("approval cohort rejected".into());
-            }
+                || cohort_ordinal.is_none_or(|ordinal| group.members[ordinal].is_some()))
+        {
+            return Err("approval cohort rejected".into());
         }
 
         let mut reserved = HashSet::new();

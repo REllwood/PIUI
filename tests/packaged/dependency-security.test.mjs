@@ -5,6 +5,7 @@ import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
+import { assertCargoAuditReport } from '../../scripts/check-cargo-audit.mjs';
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const virtualStore = resolve(repositoryRoot, 'node_modules/.pnpm');
@@ -103,12 +104,40 @@ test('the WebdriverIO Mocha closure uses the fixed serializer line', async () =>
   assert.match(lockfile, /^\s{2}serialize-javascript@7\.0\.5:/mu);
 });
 
-test('the audit exception is limited to verified brace-expansion backports', async () => {
+test('the dependency audit has no advisory exception', async () => {
   const manifest = JSON.parse(await readFile(resolve(repositoryRoot, 'package.json'), 'utf8'));
-  assert.deepEqual(manifest.pnpm?.auditConfig?.ignoreGhsas, [
-    'GHSA-mh99-v99m-4gvg',
-  ]);
+  assert.equal(manifest.pnpm?.auditConfig, undefined);
   const workspace = await readFile(resolve(repositoryRoot, 'pnpm-workspace.yaml'), 'utf8');
-  assert.match(workspace, /1\.1\.18 and 2\.1\.4 releases are maintained security backports/u);
-  assert.match(workspace, /5\.0\.9 closes both known v5 mitigation bypasses/u);
+  assert.doesNotMatch(workspace, /ignoreGhsas|GHSA-/u);
+  assert.match(workspace, /zero-advisory dependency audit/u);
+});
+
+test('the Rust audit rejects vulnerabilities and target-active unsound warnings', () => {
+  const package_ = { name: 'example', version: '1.0.0' };
+  const base = {
+    vulnerabilities: { found: false, count: 0, list: [] },
+    warnings: {
+      unmaintained: [{ advisory: { id: 'RUSTSEC-TEST-0001' }, package: package_ }],
+      unsound: [],
+    },
+  };
+  const active = new Set(['example\u00001.0.0']);
+  assert.equal(assertCargoAuditReport(base, active).targetActive.length, 1);
+  assert.throws(
+    () => assertCargoAuditReport({
+      ...base,
+      warnings: {
+        ...base.warnings,
+        unsound: [{ advisory: { id: 'RUSTSEC-TEST-0002' }, package: package_ }],
+      },
+    }, active),
+    /target-active unsound advisory/u,
+  );
+  assert.throws(
+    () => assertCargoAuditReport({
+      ...base,
+      vulnerabilities: { found: true, count: 1, list: [{}] },
+    }, active),
+    /a vulnerability is present/u,
+  );
 });

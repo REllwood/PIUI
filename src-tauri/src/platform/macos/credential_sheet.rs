@@ -542,6 +542,7 @@ fn validation_for_value(value: &NSString) -> CredentialSecretValidation {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::{CredentialSecretValidation, NSString, SecretMaterial, validation_for_value};
 

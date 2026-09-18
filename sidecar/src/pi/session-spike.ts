@@ -259,12 +259,13 @@ export type DeterministicTurnEvidence = Readonly<{
   approvalHostCalls: 0;
 }>;
 
-export type SessionSpikeLease = SessionSpikeProof & Readonly<{
-  inspect(reference: string): SessionCapabilityView;
-  runDeterministicTurn(): Promise<DeterministicTurnEvidence>;
-  dispose(): Promise<void>;
-  [SESSION_SPIKE_TEST_OBSERVER](): SessionSpikeObservedEvidence;
-}>;
+export type SessionSpikeLease = SessionSpikeProof &
+  Readonly<{
+    inspect(reference: string): SessionCapabilityView;
+    runDeterministicTurn(): Promise<DeterministicTurnEvidence>;
+    dispose(): Promise<void>;
+    [SESSION_SPIKE_TEST_OBSERVER](): SessionSpikeObservedEvidence;
+  }>;
 
 type FileWitness = Readonly<{
   device: bigint;
@@ -316,24 +317,30 @@ function byteLength(value: string): number {
 }
 
 function validateInput(options: SessionSpikeOptions): number {
-  if (typeof options.fixturePath !== 'string'
-    || !isAbsolute(options.fixturePath)
-    || byteLength(options.fixturePath) === 0
-    || byteLength(options.fixturePath) > SESSION_SPIKE_LIMITS.maxPathBytes
-    || options.fixturePath.includes('\0')
-    || basename(options.fixturePath).length === 0
-    || !options.fixturePath.endsWith('.jsonl')) {
+  if (
+    typeof options.fixturePath !== 'string' ||
+    !isAbsolute(options.fixturePath) ||
+    byteLength(options.fixturePath) === 0 ||
+    byteLength(options.fixturePath) > SESSION_SPIKE_LIMITS.maxPathBytes ||
+    options.fixturePath.includes('\0') ||
+    basename(options.fixturePath).length === 0 ||
+    !options.fixturePath.endsWith('.jsonl')
+  ) {
     reject('session-input-rejected');
   }
-  if (typeof options.operationId !== 'string'
-    || byteLength(options.operationId) > SESSION_SPIKE_LIMITS.maxOperationIdBytes
-    || !OPERATION_ID.test(options.operationId)) {
+  if (
+    typeof options.operationId !== 'string' ||
+    byteLength(options.operationId) > SESSION_SPIKE_LIMITS.maxOperationIdBytes ||
+    !OPERATION_ID.test(options.operationId)
+  ) {
     reject('session-input-rejected');
   }
   const ordinal = options.selectedAssistantOrdinal ?? 0;
-  if (!Number.isSafeInteger(ordinal)
-    || ordinal < 0
-    || ordinal >= SESSION_SPIKE_LIMITS.maxBranchEntries) {
+  if (
+    !Number.isSafeInteger(ordinal) ||
+    ordinal < 0 ||
+    ordinal >= SESSION_SPIKE_LIMITS.maxBranchEntries
+  ) {
     reject('session-input-rejected');
   }
   return ordinal;
@@ -349,12 +356,14 @@ function statNoFollow(path: string): BigIntStats {
 
 function assertOwnerPrivateDirectory(path: string): BigIntStats {
   const stats = statNoFollow(path);
-  if (!stats.isDirectory()
-    || stats.isSymbolicLink()
-    || stats.nlink < 1n
-    || (stats.mode & 0o777n) !== 0o700n
-    || typeof process.getuid !== 'function'
-    || stats.uid !== BigInt(process.getuid())) {
+  if (
+    !stats.isDirectory() ||
+    stats.isSymbolicLink() ||
+    stats.nlink < 1n ||
+    (stats.mode & 0o777n) !== 0o700n ||
+    typeof process.getuid !== 'function' ||
+    stats.uid !== BigInt(process.getuid())
+  ) {
     reject('session-filesystem-rejected');
   }
   return stats;
@@ -362,12 +371,14 @@ function assertOwnerPrivateDirectory(path: string): BigIntStats {
 
 function assertRegularSingleLink(path: string, requirePrivateMode: boolean): BigIntStats {
   const stats = statNoFollow(path);
-  if (!stats.isFile()
-    || stats.isSymbolicLink()
-    || stats.nlink !== 1n
-    || (requirePrivateMode && (stats.mode & 0o777n) !== 0o600n)
-    || typeof process.getuid !== 'function'
-    || stats.uid !== BigInt(process.getuid())) {
+  if (
+    !stats.isFile() ||
+    stats.isSymbolicLink() ||
+    stats.nlink !== 1n ||
+    (requirePrivateMode && (stats.mode & 0o777n) !== 0o600n) ||
+    typeof process.getuid !== 'function' ||
+    stats.uid !== BigInt(process.getuid())
+  ) {
     reject('session-filesystem-rejected');
   }
   return stats;
@@ -378,9 +389,11 @@ function sameIdentity(left: Pick<FileWitness, 'device' | 'inode'>, right: BigInt
 }
 
 function assertSameIdentity(witness: FileWitness, stats: BigIntStats): void {
-  if (!sameIdentity(witness, stats)
-    || stats.nlink !== witness.links
-    || (stats.mode & 0o777n) !== witness.mode) {
+  if (
+    !sameIdentity(witness, stats) ||
+    stats.nlink !== witness.links ||
+    (stats.mode & 0o777n) !== witness.mode
+  ) {
     reject('session-filesystem-rejected');
   }
 }
@@ -393,8 +406,12 @@ function assertContained(root: string, target: string): void {
   const resolvedRoot = resolve(root);
   const resolvedTarget = resolve(target);
   const child = relative(resolvedRoot, resolvedTarget);
-  if (child === '' || child.startsWith('..') || isAbsolute(child)
-    || byteLength(resolvedTarget) > SESSION_SPIKE_LIMITS.maxPathBytes) {
+  if (
+    child === '' ||
+    child.startsWith('..') ||
+    isAbsolute(child) ||
+    byteLength(resolvedTarget) > SESSION_SPIKE_LIMITS.maxPathBytes
+  ) {
     reject('session-containment-rejected');
   }
   let canonicalParent: string;
@@ -467,7 +484,9 @@ function witnessFile(path: string, requirePrivateMode = true): FileWitness {
   });
 }
 
-function validateRepositoryFixture(path: string): Readonly<{ bytes: Buffer; witness: FileWitness }> {
+function validateRepositoryFixture(
+  path: string,
+): Readonly<{ bytes: Buffer; witness: FileWitness }> {
   let canonical: string;
   try {
     canonical = realpathSync(path);
@@ -513,27 +532,31 @@ function writeExclusivePrivate(path: string, bytes: Uint8Array): void {
 }
 
 function validateIdentifier(value: unknown): value is string {
-  return typeof value === 'string'
-    && byteLength(value) > 0
-    && byteLength(value) <= SESSION_SPIKE_LIMITS.maxIdentifierBytes
-    && ENTRY_ID.test(value);
+  return (
+    typeof value === 'string' &&
+    byteLength(value) > 0 &&
+    byteLength(value) <= SESSION_SPIKE_LIMITS.maxIdentifierBytes &&
+    ENTRY_ID.test(value)
+  );
 }
 
 function validateHeader(header: PublicSessionHeader | null): PublicSessionHeader {
-  if (!header
-    || header.type !== 'session'
-    || header.version !== PUBLIC_SESSION_VERSION
-    || !validateIdentifier(header.id)
-    || typeof header.timestamp !== 'string'
-    || byteLength(header.timestamp) > 64
-    || !Number.isFinite(Date.parse(header.timestamp))
-    || typeof header.cwd !== 'string'
-    || !isAbsolute(header.cwd)
-    || byteLength(header.cwd) > SESSION_SPIKE_LIMITS.maxPathBytes
-    || (header.parentSession !== undefined
-      && (typeof header.parentSession !== 'string'
-        || !isAbsolute(header.parentSession)
-        || byteLength(header.parentSession) > SESSION_SPIKE_LIMITS.maxPathBytes))) {
+  if (
+    !header ||
+    header.type !== 'session' ||
+    header.version !== PUBLIC_SESSION_VERSION ||
+    !validateIdentifier(header.id) ||
+    typeof header.timestamp !== 'string' ||
+    byteLength(header.timestamp) > 64 ||
+    !Number.isFinite(Date.parse(header.timestamp)) ||
+    typeof header.cwd !== 'string' ||
+    !isAbsolute(header.cwd) ||
+    byteLength(header.cwd) > SESSION_SPIKE_LIMITS.maxPathBytes ||
+    (header.parentSession !== undefined &&
+      (typeof header.parentSession !== 'string' ||
+        !isAbsolute(header.parentSession) ||
+        byteLength(header.parentSession) > SESSION_SPIKE_LIMITS.maxPathBytes))
+  ) {
     reject('session-malformed');
   }
   return header;
@@ -546,23 +569,27 @@ function validateManager(
 ): ValidatedManager {
   const header = validateHeader(manager.getHeader());
   const entries = manager.getEntries();
-  if (entries.length === 0
-    || entries.length > maximumEntries
-    || physicalFrames !== entries.length + 1) {
+  if (
+    entries.length === 0 ||
+    entries.length > maximumEntries ||
+    physicalFrames !== entries.length + 1
+  ) {
     reject('session-malformed');
   }
 
   const seen = new Set<string>();
   let roots = 0;
   for (const entry of entries) {
-    if (!ALLOWED_ENTRY_TYPES.has(entry.type)
-      || byteLength(entry.type) > 64
-      || !validateIdentifier(entry.id)
-      || (entry.parentId !== null && !validateIdentifier(entry.parentId))
-      || typeof entry.timestamp !== 'string'
-      || byteLength(entry.timestamp) > 64
-      || !Number.isFinite(Date.parse(entry.timestamp))
-      || seen.has(entry.id)) {
+    if (
+      !ALLOWED_ENTRY_TYPES.has(entry.type) ||
+      byteLength(entry.type) > 64 ||
+      !validateIdentifier(entry.id) ||
+      (entry.parentId !== null && !validateIdentifier(entry.parentId)) ||
+      typeof entry.timestamp !== 'string' ||
+      byteLength(entry.timestamp) > 64 ||
+      !Number.isFinite(Date.parse(entry.timestamp)) ||
+      seen.has(entry.id)
+    ) {
       reject('session-malformed');
     }
     if (entry.parentId === null) roots += 1;
@@ -607,11 +634,13 @@ function selectAssistant(
   if (!selected) reject('session-selection-rejected');
   const matches = branch.filter((entry) => entry.id === selected.id);
   const index = branch.findIndex((entry) => entry.id === selected.id);
-  if (matches.length !== 1
-    || index < 0
-    || index >= branch.length - 1
-    || selected.type !== 'message'
-    || selected.message.role !== 'assistant') {
+  if (
+    matches.length !== 1 ||
+    index < 0 ||
+    index >= branch.length - 1 ||
+    selected.type !== 'message' ||
+    selected.message.role !== 'assistant'
+  ) {
     reject('session-selection-rejected');
   }
   return Object.freeze({ entry: selected, prefix: branch.slice(0, index + 1) });
@@ -624,23 +653,34 @@ function markerDataMatches(data: unknown, operationId: string): boolean {
   const operation = Object.getOwnPropertyDescriptor(data, 'operationId');
   const version = Object.getOwnPropertyDescriptor(data, 'schemaVersion');
   const state = Object.getOwnPropertyDescriptor(data, 'state');
-  return operation?.value === operationId
-    && version?.value === 1
-    && state?.value === 'acknowledged';
+  return (
+    operation?.value === operationId && version?.value === 1 && state?.value === 'acknowledged'
+  );
 }
 
 function entryHasOperationId(entry: PublicSessionEntry, operationId: string): boolean {
-  if (entry.type !== 'custom' || entry.customType !== SESSION_ACKNOWLEDGEMENT_TYPE
-    || entry.data === null || typeof entry.data !== 'object' || Array.isArray(entry.data)) {
+  if (
+    entry.type !== 'custom' ||
+    entry.customType !== SESSION_ACKNOWLEDGEMENT_TYPE ||
+    entry.data === null ||
+    typeof entry.data !== 'object' ||
+    Array.isArray(entry.data)
+  ) {
     return false;
   }
   return Object.getOwnPropertyDescriptor(entry.data, 'operationId')?.value === operationId;
 }
 
-function matchingMarkers(entries: readonly PublicSessionEntry[], operationId: string): PublicSessionEntry[] {
-  return entries.filter((entry) => entry.type === 'custom'
-    && entry.customType === SESSION_ACKNOWLEDGEMENT_TYPE
-    && markerDataMatches(entry.data, operationId));
+function matchingMarkers(
+  entries: readonly PublicSessionEntry[],
+  operationId: string,
+): PublicSessionEntry[] {
+  return entries.filter(
+    (entry) =>
+      entry.type === 'custom' &&
+      entry.customType === SESSION_ACKNOWLEDGEMENT_TYPE &&
+      markerDataMatches(entry.data, operationId),
+  );
 }
 
 function mintOpaqueReference(issued: Set<string>): string {
@@ -696,9 +736,11 @@ function cleanupRoot(root: string, witness: Pick<FileWitness, 'device' | 'inode'
 
 function assertRepositoryUnchanged(path: string, witness: FileWitness): FileWitness {
   const current = witnessFile(path, false);
-  if (!sameIdentity(witness, assertRegularSingleLink(path, false))
-    || current.size !== witness.size
-    || current.hash !== witness.hash) {
+  if (
+    !sameIdentity(witness, assertRegularSingleLink(path, false)) ||
+    current.size !== witness.size ||
+    current.hash !== witness.hash
+  ) {
     reject('session-recovery-required');
   }
   return current;
@@ -711,13 +753,45 @@ function assertZeroToolSession(session: PublicAgentSession): void {
 }
 
 const EXPECTED_EMPTY_CREDENTIAL_PROVIDERS = new Set([
-  'a22-offline-provider', 'amazon-bedrock', 'ant-ling', 'anthropic', 'azure-openai-responses', 'cerebras',
-  'cloudflare-ai-gateway', 'cloudflare-workers-ai', 'deepseek', 'fireworks', 'github-copilot',
-  'google', 'google-vertex', 'groq', 'huggingface', 'kimi-coding', 'minimax', 'minimax-cn',
-  'mistral', 'moonshotai', 'moonshotai-cn', 'nvidia', 'openai', 'openai-codex', 'opencode',
-  'opencode-go', 'openrouter', 'qwen-token-plan', 'qwen-token-plan-cn', 'radius', 'together',
-  'vercel-ai-gateway', 'xai', 'xiaomi', 'xiaomi-token-plan-ams', 'xiaomi-token-plan-cn',
-  'xiaomi-token-plan-sgp', 'zai', 'zai-coding-cn',
+  'a22-offline-provider',
+  'amazon-bedrock',
+  'ant-ling',
+  'anthropic',
+  'azure-openai-responses',
+  'cerebras',
+  'cloudflare-ai-gateway',
+  'cloudflare-workers-ai',
+  'deepseek',
+  'fireworks',
+  'github-copilot',
+  'google',
+  'google-vertex',
+  'groq',
+  'huggingface',
+  'kimi-coding',
+  'minimax',
+  'minimax-cn',
+  'mistral',
+  'moonshotai',
+  'moonshotai-cn',
+  'nvidia',
+  'openai',
+  'openai-codex',
+  'opencode',
+  'opencode-go',
+  'openrouter',
+  'qwen-token-plan',
+  'qwen-token-plan-cn',
+  'radius',
+  'together',
+  'vercel-ai-gateway',
+  'xai',
+  'xiaomi',
+  'xiaomi-token-plan-ams',
+  'xiaomi-token-plan-cn',
+  'xiaomi-token-plan-sgp',
+  'zai',
+  'zai-coding-cn',
 ]);
 
 type CredentialCounters = {
@@ -831,9 +905,11 @@ export async function proveSessionResumeAndFork(
     assertContained(root, sourcePath);
     writeExclusivePrivate(sourcePath, repository.bytes);
     const workingZero = witnessFile(sourcePath);
-    if (sameIdentity(repository.witness, assertRegularSingleLink(sourcePath, true))
-      || workingZero.hash !== repository.witness.hash
-      || workingZero.size !== repository.witness.size) {
+    if (
+      sameIdentity(repository.witness, assertRegularSingleLink(sourcePath, true)) ||
+      workingZero.hash !== repository.witness.hash ||
+      workingZero.size !== repository.witness.size
+    ) {
       reject('session-filesystem-rejected');
     }
     const sourceFramesZero = validateFraming(readFileSync(sourcePath));
@@ -884,21 +960,25 @@ export async function proveSessionResumeAndFork(
       sessionManager,
       sessionStartEvent,
     }) => {
-      const reason = sessionStartEvent?.reason === 'resume'
-        ? 'resume'
-        : sessionStartEvent?.reason === 'fork'
-          ? 'fork'
-          : 'initial';
+      const reason =
+        sessionStartEvent?.reason === 'resume'
+          ? 'resume'
+          : sessionStartEvent?.reason === 'fork'
+            ? 'fork'
+            : 'initial';
 
       // A.17/A.18 construction ordering is explicit even for the empty set:
       // definitions are decorated before every AgentSession creation and the
       // exact returned session is bound immediately afterwards.
-      const gate = createApprovalGate(unreachableApprovalHost, Object.freeze({
-        generation: 1,
-        sessionId: sessionManager.getSessionId(),
-        workspaceId: 'workspace-a19-zero-tool',
-        workspaceRevision: 1,
-      }));
+      const gate = createApprovalGate(
+        unreachableApprovalHost,
+        Object.freeze({
+          generation: 1,
+          sessionId: sessionManager.getSessionId(),
+          workspaceId: 'workspace-a19-zero-tool',
+          workspaceRevision: 1,
+        }),
+      );
       const undecorated: readonly PublicToolDefinition[] = Object.freeze([]);
       const decorateSequence = nextConstructionSequence();
       const decorated = Object.freeze(undecorated.map(gate.decorateToolDefinition));
@@ -920,11 +1000,13 @@ export async function proveSessionResumeAndFork(
           appendSystemPrompt: [],
         },
       });
-      if (services.resourceLoader.getExtensions().extensions.length !== 0
-        || services.resourceLoader.getSkills().skills.length !== 0
-        || services.resourceLoader.getPrompts().prompts.length !== 0
-        || services.resourceLoader.getThemes().themes.length !== 0
-        || services.resourceLoader.getAgentsFiles().agentsFiles.length !== 0) {
+      if (
+        services.resourceLoader.getExtensions().extensions.length !== 0 ||
+        services.resourceLoader.getSkills().skills.length !== 0 ||
+        services.resourceLoader.getPrompts().prompts.length !== 0 ||
+        services.resourceLoader.getThemes().themes.length !== 0 ||
+        services.resourceLoader.getAgentsFiles().agentsFiles.length !== 0
+      ) {
         reject('session-operation-rejected');
       }
       const createSequence = nextConstructionSequence();
@@ -942,18 +1024,20 @@ export async function proveSessionResumeAndFork(
       assertZeroToolSession(exactSession);
       const allToolNames = Object.freeze(exactSession.getAllTools().map((tool) => tool.name));
       const activeToolNames = Object.freeze(exactSession.getActiveToolNames());
-      constructions.push(Object.freeze({
-        reason,
-        decorateSequence,
-        createSequence,
-        bindSequence,
-        session: exactSession,
-        sessionId: exactSession.sessionId,
-        allToolNames,
-        activeToolNames,
-        boundExactFactorySession: exactSession === created.session,
-        modelAvailable: modelRuntime.getAvailableSnapshot().length !== 0,
-      }));
+      constructions.push(
+        Object.freeze({
+          reason,
+          decorateSequence,
+          createSequence,
+          bindSequence,
+          session: exactSession,
+          sessionId: exactSession.sessionId,
+          allToolNames,
+          activeToolNames,
+          boundExactFactorySession: exactSession === created.session,
+          modelAvailable: modelRuntime.getAvailableSnapshot().length !== 0,
+        }),
+      );
       return { ...created, services, diagnostics: services.diagnostics };
     };
 
@@ -985,16 +1069,21 @@ export async function proveSessionResumeAndFork(
     if (switched.cancelled || !switchCallback) reject('session-operation-rejected');
     const sourceSession = runtime.session;
     const activeSourceManager = sourceSession.sessionManager;
-    const sourceState = validateManager(activeSourceManager, sourceFramesZero,
-      SESSION_SPIKE_LIMITS.maxBranchEntries - 1);
-    if (sourceState.header.id !== preflightState.header.id
-      || sourceState.leafId !== preflightState.leafId
-      || !samePublicBranch(sourceState.branch, preflightState.branch)
-      || switchCallback.sessionId !== sourceState.header.id
-      || !isDeepStrictEqual(switchCallback.branchIds, branchIds(sourceState.branch))
-      || !switchCallback.exactManager
-      || rebound.length !== 1
-      || rebound[0] !== sourceSession) {
+    const sourceState = validateManager(
+      activeSourceManager,
+      sourceFramesZero,
+      SESSION_SPIKE_LIMITS.maxBranchEntries - 1,
+    );
+    if (
+      sourceState.header.id !== preflightState.header.id ||
+      sourceState.leafId !== preflightState.leafId ||
+      !samePublicBranch(sourceState.branch, preflightState.branch) ||
+      switchCallback.sessionId !== sourceState.header.id ||
+      !isDeepStrictEqual(switchCallback.branchIds, branchIds(sourceState.branch)) ||
+      !switchCallback.exactManager ||
+      rebound.length !== 1 ||
+      rebound[0] !== sourceSession
+    ) {
       reject('session-operation-rejected');
     }
 
@@ -1038,16 +1127,18 @@ export async function proveSessionResumeAndFork(
     const acknowledgement = reopenedAfterAppend.getEntry(acknowledgementId);
     const markers = matchingMarkers(afterAppendState.entries, options.operationId);
     const markersOnBranch = matchingMarkers(afterAppendState.branch, options.operationId);
-    if (!acknowledgement
-      || acknowledgement.type !== 'custom'
-      || acknowledgement.id !== acknowledgementId
-      || acknowledgement.parentId !== sourceState.leafId
-      || runtime.session.sessionManager.getLeafId() !== acknowledgementId
-      || afterAppendState.leafId !== acknowledgementId
-      || afterAppendState.entries.length !== sourceState.entries.length + 1
-      || markers.length !== 1
-      || markers[0].id !== acknowledgementId
-      || markersOnBranch.length !== 1) {
+    if (
+      !acknowledgement ||
+      acknowledgement.type !== 'custom' ||
+      acknowledgement.id !== acknowledgementId ||
+      acknowledgement.parentId !== sourceState.leafId ||
+      runtime.session.sessionManager.getLeafId() !== acknowledgementId ||
+      afterAppendState.leafId !== acknowledgementId ||
+      afterAppendState.entries.length !== sourceState.entries.length + 1 ||
+      markers.length !== 1 ||
+      markers[0].id !== acknowledgementId ||
+      markersOnBranch.length !== 1
+    ) {
       reject('session-recovery-required');
     }
 
@@ -1058,9 +1149,11 @@ export async function proveSessionResumeAndFork(
 
     if (options.testFault === 'replace-before-fork') replaceIdentityWithSameBytes(sourcePath);
     const immediatelyBeforeFork = witnessFile(sourcePath);
-    if (!sameIdentity(workingOne, assertRegularSingleLink(sourcePath, true))
-      || immediatelyBeforeFork.hash !== workingOne.hash
-      || immediatelyBeforeFork.size !== workingOne.size) {
+    if (
+      !sameIdentity(workingOne, assertRegularSingleLink(sourcePath, true)) ||
+      immediatelyBeforeFork.hash !== workingOne.hash ||
+      immediatelyBeforeFork.size !== workingOne.size
+    ) {
       reject('session-recovery-required');
     }
     assertContained(root, sourcePath);
@@ -1101,9 +1194,11 @@ export async function proveSessionResumeAndFork(
     }
 
     const workingTwo = witnessFile(sourcePath);
-    if (!sameIdentity(workingOne, assertRegularSingleLink(sourcePath, true))
-      || workingTwo.hash !== workingOne.hash
-      || workingTwo.size !== workingOne.size) {
+    if (
+      !sameIdentity(workingOne, assertRegularSingleLink(sourcePath, true)) ||
+      workingTwo.hash !== workingOne.hash ||
+      workingTwo.size !== workingOne.size
+    ) {
       reject('session-recovery-required');
     }
     const sourceFramesTwo = validateFraming(readFileSync(sourcePath));
@@ -1114,36 +1209,41 @@ export async function proveSessionResumeAndFork(
     const forkFrames = validateFraming(readFileSync(forkPath));
     const reopenedFork = PublicSessionManager.open(forkPath, sessionDirectory);
     const forkState = validateManager(reopenedFork, forkFrames);
-    if (finalSourceState.header.id !== sourceSessionId
-      || finalSourceState.leafId !== acknowledgementId
-      || matchingMarkers(finalSourceState.entries, options.operationId).length !== 1
-      || forkState.header.id === sourceSessionId
-      || runtime.session.sessionId !== forkState.header.id
-      || runtime.session.sessionManager !== forkSession.sessionManager
-      || forkState.header.parentSession !== sourcePath
-      || forkState.leafId !== selection.entry.id
-      || forkState.entries.length !== selection.prefix.length
-      || !samePublicBranch(forkState.branch, selection.prefix)
-      || forkState.entries.some((entry) => entry.id === acknowledgementId)
-      || matchingMarkers(forkState.entries, options.operationId).length !== 0
-      || forkState.entries.length >= finalSourceState.entries.length
-      || forkCallback.sessionId !== forkState.header.id
-      || !isDeepStrictEqual(forkCallback.branchIds, branchIds(forkState.branch))
-      || !forkCallback.exactManager
-      || Number(rebound.length) !== 2
-      || rebound[1] !== forkSession
-      || constructions.length !== 3
-      || constructions.some((record) => record.decorateSequence >= record.createSequence
-        || record.createSequence >= record.bindSequence
-        || record.sessionId !== record.session.sessionId
-        || record.allToolNames.length !== 0
-        || record.activeToolNames.length !== 0
-        || !record.boundExactFactorySession
-        || record.modelAvailable)
-      || credentialCounters.modifies !== 0
-      || credentialCounters.deletes !== 0
-      || credentialCounters.unexpectedProviderIds.size !== 0
-      || approvalHostCalls !== 0) {
+    if (
+      finalSourceState.header.id !== sourceSessionId ||
+      finalSourceState.leafId !== acknowledgementId ||
+      matchingMarkers(finalSourceState.entries, options.operationId).length !== 1 ||
+      forkState.header.id === sourceSessionId ||
+      runtime.session.sessionId !== forkState.header.id ||
+      runtime.session.sessionManager !== forkSession.sessionManager ||
+      forkState.header.parentSession !== sourcePath ||
+      forkState.leafId !== selection.entry.id ||
+      forkState.entries.length !== selection.prefix.length ||
+      !samePublicBranch(forkState.branch, selection.prefix) ||
+      forkState.entries.some((entry) => entry.id === acknowledgementId) ||
+      matchingMarkers(forkState.entries, options.operationId).length !== 0 ||
+      forkState.entries.length >= finalSourceState.entries.length ||
+      forkCallback.sessionId !== forkState.header.id ||
+      !isDeepStrictEqual(forkCallback.branchIds, branchIds(forkState.branch)) ||
+      !forkCallback.exactManager ||
+      Number(rebound.length) !== 2 ||
+      rebound[1] !== forkSession ||
+      constructions.length !== 3 ||
+      constructions.some(
+        (record) =>
+          record.decorateSequence >= record.createSequence ||
+          record.createSequence >= record.bindSequence ||
+          record.sessionId !== record.session.sessionId ||
+          record.allToolNames.length !== 0 ||
+          record.activeToolNames.length !== 0 ||
+          !record.boundExactFactorySession ||
+          record.modelAvailable,
+      ) ||
+      credentialCounters.modifies !== 0 ||
+      credentialCounters.deletes !== 0 ||
+      credentialCounters.unexpectedProviderIds.size !== 0 ||
+      approvalHostCalls !== 0
+    ) {
       reject('session-recovery-required');
     }
 
@@ -1191,7 +1291,8 @@ export async function proveSessionResumeAndFork(
         reference,
         role: record.role,
         active: record.role === 'fork' && runtime?.session.sessionId === state.header.id,
-        writable: record.role === 'fork' && runtime?.session.sessionManager === forkSession.sessionManager,
+        writable:
+          record.role === 'fork' && runtime?.session.sessionManager === forkSession.sessionManager,
         entries: state.entries.length,
         activeBranchEntries: state.branch.length,
         acknowledgementMarkers: markerCount,
@@ -1217,9 +1318,11 @@ export async function proveSessionResumeAndFork(
         return reject('session-operation-rejected');
       }
       const sourceAfterTurn = witnessFile(sourcePath);
-      if (!sameIdentity(workingOne, assertRegularSingleLink(sourcePath, true))
-        || sourceAfterTurn.hash !== workingOne.hash
-        || sourceAfterTurn.size !== workingOne.size) {
+      if (
+        !sameIdentity(workingOne, assertRegularSingleLink(sourcePath, true)) ||
+        sourceAfterTurn.hash !== workingOne.hash ||
+        sourceAfterTurn.size !== workingOne.size
+      ) {
         reject('session-recovery-required');
       }
       assertRepositoryUnchanged(options.fixturePath, repository.witness);
@@ -1284,19 +1387,24 @@ export async function proveSessionResumeAndFork(
           activeRuntimeSessionId: runtime!.session.sessionId,
           activeRuntimeBranchIds: branchIds(currentRuntimeBranch),
         }),
-        constructions: Object.freeze(constructions.map((record) => Object.freeze({
-          reason: record.reason,
-          decorateSequence: record.decorateSequence,
-          createSequence: record.createSequence,
-          bindSequence: record.bindSequence,
-          sessionId: record.sessionId,
-          allToolNames: record.allToolNames,
-          activeToolNames: record.activeToolNames,
-          boundExactFactorySession: record.session === constructions.find(
-            (candidate) => candidate.sessionId === record.sessionId,
-          )?.session,
-          modelAvailable: record.modelAvailable,
-        }))),
+        constructions: Object.freeze(
+          constructions.map((record) =>
+            Object.freeze({
+              reason: record.reason,
+              decorateSequence: record.decorateSequence,
+              createSequence: record.createSequence,
+              bindSequence: record.bindSequence,
+              sessionId: record.sessionId,
+              allToolNames: record.allToolNames,
+              activeToolNames: record.activeToolNames,
+              boundExactFactorySession:
+                record.session ===
+                constructions.find((candidate) => candidate.sessionId === record.sessionId)
+                  ?.session,
+              modelAvailable: record.modelAvailable,
+            }),
+          ),
+        ),
         isolatedCredentialWrites: credentialCounters.modifies + credentialCounters.deletes,
         approvalHostCalls,
       });

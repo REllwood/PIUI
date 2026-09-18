@@ -7,6 +7,10 @@ import {
   measureTwinDeltaSnapshots,
 } from '../../scripts/measured-twin-delta.mjs';
 import { sha256Bytes } from '../../scripts/architecture-gate-schema.mjs';
+import {
+  automationHostSigningPolicy,
+  inspectAppleDevelopmentSignatureBytes,
+} from '../../scripts/automation-host-signing.mjs';
 
 const sha = (character) => character.repeat(64);
 
@@ -71,9 +75,10 @@ function signedMachO(unsignedBytes, {
       const wrapper = Buffer.alloc(cmsPayload ? 9 : 8);
       wrapper.writeUInt32BE(0xfade0b01, 0);
       wrapper.writeUInt32BE(wrapper.length, 4);
+      if (cmsPayload) wrapper[8] = typeof cmsPayload === 'number' ? cmsPayload : 1;
       return wrapper;
     }
-    const blob = Buffer.alloc(12);
+    const blob = Buffer.alloc(automationHostSigningPolicy.requirementsBytes);
     blob.writeUInt32BE(0xfade0c01, 0);
     blob.writeUInt32BE(blob.length, 4);
     return blob;
@@ -159,8 +164,8 @@ function snapshot({
   fingerprint,
   hostBytes,
   infoPlist,
+  hostSigningIdentity,
   preSignHostBytes: suppliedPreSignHostBytes,
-  reproducedFinalHostBytes,
   signatureVerified = true,
   uuid,
 }) {
@@ -190,8 +195,33 @@ function snapshot({
     hostBytes: heldHostBytes,
     preSignHostBytes,
     finalSignatureVerified: signatureVerified,
+    hostSigningIdentity,
     preSignSignatureVerified: true,
-    reproducedFinalHostBytes,
+  };
+}
+
+function automationSigningEvidence(bytes) {
+  const signature = inspectAppleDevelopmentSignatureBytes(bytes);
+  return {
+    bundleIdentifier: automationHostSigningPolicy.bundleIdentifier,
+    cdHash: signature.cdHash,
+    certificateSha1: automationHostSigningPolicy.certificateSha1,
+    certificateSha256: automationHostSigningPolicy.certificateSha256,
+    cmsBytes: signature.cmsBytes,
+    cmsSha256: signature.cmsSha256,
+    codeDirectoryFlags: signature.codeDirectoryFlags,
+    codeDirectorySha256: signature.codeDirectorySha256,
+    designatedRequirement: automationHostSigningPolicy.designatedRequirement,
+    entitlements: 'none',
+    executableBytes: bytes.length,
+    executableSha256: signature.executableSha256,
+    nonCmsSignatureSha256: signature.nonCmsSignatureSha256,
+    requirementsSha256: signature.requirementsSha256,
+    schemaVersion: 1,
+    signature: 'apple-development',
+    signatureContainerBytes: signature.signatureContainerBytes,
+    signatureSlots: signature.signatureSlots,
+    teamIdentifier: automationHostSigningPolicy.teamIdentifier,
   };
 }
 
@@ -279,7 +309,8 @@ function automationFixture() {
     flags: 0x20002,
     slots: [0],
   });
-  const twinFinal = signedMachO(rawTwin);
+  const twinFinal = signedMachO(rawTwin, { cmsPayload: 1, flags: 0 });
+  const repeatFinal = signedMachO(rawTwin, { cmsPayload: 2, flags: 0 });
   return {
     appliedVariant: architectureVariantDefinition('automation-twin'),
     kind: 'automation-twin',
@@ -287,17 +318,17 @@ function automationFixture() {
     twin: snapshot({
       finalHostBytes: twinFinal,
       fingerprint: sha('4'),
+      hostSigningIdentity: automationSigningEvidence(twinFinal),
       infoPlist: twinPlist,
       preSignHostBytes: twinPreSign,
-      reproducedFinalHostBytes: twinFinal,
       signatureVerified: true,
     }),
     twinRepeat: snapshot({
-      finalHostBytes: twinFinal,
-      fingerprint: sha('4'),
+      finalHostBytes: repeatFinal,
+      fingerprint: sha('5'),
+      hostSigningIdentity: automationSigningEvidence(repeatFinal),
       infoPlist: twinPlist,
       preSignHostBytes: twinPreSign,
-      reproducedFinalHostBytes: twinFinal,
       signatureVerified: true,
     }),
   };
@@ -319,13 +350,22 @@ test('hashes a complete measured and repeatable twin delta', () => {
   assert.match(measured.record.changes[1].loadCommandContractSha256, /^[0-9a-f]{64}$/u);
 });
 
-test('binds an automation delta to an exact verified ad-hoc signature policy', () => {
+test('binds an automation delta to an exact verified Apple Development signature policy', () => {
   const measured = measureTwinDeltaSnapshots(automationFixture());
   const host = measured.record.changes[1];
   assert.equal(host.baseSignature, 'adhoc');
-  assert.equal(host.twinSignature, 'adhoc');
+  assert.equal(host.twinSignature, 'cms');
+  assert.equal(host.postSignCertificateSha1, automationHostSigningPolicy.certificateSha1);
+  assert.equal(host.postSignCertificateSha256, automationHostSigningPolicy.certificateSha256);
+  assert.equal(host.postSignCodeDirectoryFlags, 0);
+  assert.equal(host.postSignDesignatedRequirement, automationHostSigningPolicy.designatedRequirement);
+  assert.equal(host.postSignTeamIdentifier, automationHostSigningPolicy.teamIdentifier);
   assert.match(host.postSignCodeDirectorySha256, /^[0-9a-f]{64}$/u);
   assert.deepEqual(host.postSignSlots.map(({ slot }) => slot), [0, 2, 0x10000]);
+  assert.equal(host.postSignCodeDirectorySha256, host.repeatPostSignCodeDirectorySha256);
+  assert.equal(host.postSignNonCmsSignatureSha256, host.repeatPostSignNonCmsSignatureSha256);
+  assert.notEqual(host.postSignCmsSha256, host.repeatPostSignCmsSha256);
+  assert.notEqual(host.twinSha256, host.repeatTwinSha256);
   assert.equal(host.baseUuid, '01'.repeat(16));
   assert.equal(host.twinUuid, '04'.repeat(16));
   assert.equal(host.repeatTwinUuid, '04'.repeat(16));
@@ -406,7 +446,7 @@ test('rejects a non-reproducible twin host or changed Mach-O contract', () => {
   });
   assert.throws(
     () => measureTwinDeltaSnapshots(changedPayload),
-    /not reproducible|differs from its pre-explicit-sign bytes/u,
+    /not reproducible|pre-sign host bytes are not exact|differs from its pre-explicit-sign bytes/u,
   );
 
   const changedSdk = fixture();
@@ -417,7 +457,7 @@ test('rejects a non-reproducible twin host or changed Mach-O contract', () => {
   });
   assert.throws(
     () => measureTwinDeltaSnapshots(changedSdk),
-    /differs from its pre-explicit-sign bytes|structure or repeat build/u,
+    /pre-sign host bytes are not exact|differs from its pre-explicit-sign bytes|structure or repeat build/u,
   );
 });
 
@@ -463,6 +503,16 @@ test('binds plist semantics and repeat checks to the exact inventoried bytes', (
 });
 
 test('rejects wrong signing states and non-canonical signature slots', () => {
+  const substitutedRepeatIdentity = automationFixture();
+  substitutedRepeatIdentity.twinRepeat.hostSigningIdentity = {
+    ...substitutedRepeatIdentity.twinRepeat.hostSigningIdentity,
+    certificateSha256: '0'.repeat(64),
+  };
+  assert.throws(
+    () => measureTwinDeltaSnapshots(substitutedRepeatIdentity),
+    /signing evidence is invalid/u,
+  );
+
   const substitutedFinal = automationFixture();
   const substitutedBytes = signedMachO(machO({
     payload: 'substituted-final-host',
@@ -476,7 +526,7 @@ test('rejects wrong signing states and non-canonical signature slots', () => {
   }
   assert.throws(
     () => measureTwinDeltaSnapshots(substitutedFinal),
-    /does not match an exact signing reproduction/u,
+    /signing evidence is invalid|not an exact verified Apple Development signature/u,
   );
 
   const unsignedAutomation = automationFixture();
@@ -488,7 +538,7 @@ test('rejects wrong signing states and non-canonical signature slots', () => {
   }
   assert.throws(
     () => measureTwinDeltaSnapshots(unsignedAutomation),
-    /signing reproduction|post-sign identity|explicit ad-hoc signature/u,
+    /Apple Development signature|post-sign identity|linker signature/u,
   );
 
   const signedCredential = fixture();
@@ -523,7 +573,7 @@ test('rejects wrong signing states and non-canonical signature slots', () => {
     }
     assert.throws(
       () => measureTwinDeltaSnapshots(nonCanonical),
-      /signing reproduction|signature|accepted arm64 Mach-O/u,
+      /Apple Development signature|signature|accepted arm64 Mach-O/u,
     );
   }
 
@@ -540,7 +590,7 @@ test('rejects wrong signing states and non-canonical signature slots', () => {
   }
   assert.throws(
     () => measureTwinDeltaSnapshots(cms),
-    /signing reproduction|accepted arm64 Mach-O/u,
+    /Apple Development host signature policy|Apple Development signature|accepted arm64 Mach-O/u,
   );
 });
 

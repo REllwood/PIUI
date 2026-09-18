@@ -24,7 +24,7 @@ describe('Markdown static containment', () => {
       ['HTML fragment parser', 'createContextual' + 'Fragment'],
       ['Shiki HTML API', 'codeTo' + 'Html'],
       ['Tauri API import', '@tauri-apps/' + 'api'],
-      ['generic native invocation', 'invo' + "ke("],
+      ['generic native invocation', 'invo' + 'ke('],
       ['browser popup', 'window.' + 'open'],
     ] as const;
     for (const [label, value] of forbidden) {

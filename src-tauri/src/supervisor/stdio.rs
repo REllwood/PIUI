@@ -9,7 +9,7 @@ use std::sync::{
     mpsc::{SyncSender, TrySendError},
 };
 use std::thread::{self, JoinHandle};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use zeroize::Zeroizing;
 
 pub(super) type FailureSignal = Arc<Mutex<Option<String>>>;
@@ -144,6 +144,10 @@ impl GenerationControl {
         {
             *state = Some(message.to_string());
         }
+        // One choke point for every generation-fatal reason, including
+        // `fail_generation` and the dispatcher's `fatal`. Reasons are fixed
+        // host strings, so no path or payload can reach the log.
+        report_sidecar_failure(message);
         unsafe {
             libc::kill(-self.process_group, libc::SIGKILL);
         }
@@ -170,9 +174,70 @@ impl GenerationControl {
     }
 }
 
+/// Records one generation-fatal reason on stderr so a packaged run can be
+/// explained without a debugger. Only fixed host reason strings are emitted;
+/// paths, identifiers and payloads are never included.
+pub(crate) fn report_sidecar_failure(reason: &str) {
+    eprintln!("PIUI_SIDECAR_FAILURE reason={reason}");
+}
+
 pub(super) enum RawFrame {
     Line(Zeroizing<Vec<u8>>),
     Failure(String),
+}
+
+/// How long the reader may wait for the dispatcher to take one frame before the
+/// dispatcher is treated as wedged rather than merely behind.
+pub(super) const RAW_QUEUE_STALL_DEADLINE: Duration = Duration::from_secs(5);
+const RAW_QUEUE_STALL_SLICE: Duration = Duration::from_millis(1);
+
+pub(super) enum RawAdmission {
+    /// The dispatcher stopped receiving, so this generation has already ended.
+    Retired,
+    /// The dispatcher accepted nothing for the whole deadline.
+    Stalled,
+}
+
+/// Hands one framed line to the dispatcher, waiting for room rather than
+/// discarding it.
+///
+/// The sidecar legitimately answers a single request with a burst far larger
+/// than the queue: the first `product.providers.list` alone emits one
+/// credential probe per provider, several hundred frames in one flush. A full
+/// queue therefore means the one dispatcher thread is momentarily behind the
+/// reader, not that the generation is unsound, so the reader waits and lets the
+/// operating system pipe be the outer buffer. Nothing is buffered beyond the
+/// queue's existing bound, and a dispatcher that accepts nothing for the whole
+/// deadline is still fatal.
+pub(super) fn admit_raw_frame(
+    frame: RawFrame,
+    sender: &SyncSender<RawFrame>,
+    control: &Arc<GenerationControl>,
+    stall_deadline: Duration,
+) -> Result<(), RawAdmission> {
+    let expiry = Instant::now() + stall_deadline;
+    let mut pending = frame;
+    loop {
+        match sender.try_send(pending) {
+            Ok(()) => return Ok(()),
+            Err(TrySendError::Disconnected(held)) => {
+                drop(held);
+                return Err(RawAdmission::Retired);
+            }
+            Err(TrySendError::Full(held)) => {
+                if !control.is_active() {
+                    drop(held);
+                    return Err(RawAdmission::Retired);
+                }
+                if Instant::now() >= expiry {
+                    drop(held);
+                    return Err(RawAdmission::Stalled);
+                }
+                pending = held;
+                thread::sleep(RAW_QUEUE_STALL_SLICE);
+            }
+        }
+    }
 }
 
 /// The sole OS-level stdout consumer. It performs only bounded LF framing;
@@ -208,15 +273,16 @@ pub(super) fn stdout_reader(
                     );
                     return;
                 }
-                Ok(_) => match sender.try_send(RawFrame::Line(line)) {
+                Ok(_) => match admit_raw_frame(
+                    RawFrame::Line(line),
+                    &sender,
+                    &control,
+                    RAW_QUEUE_STALL_DEADLINE,
+                ) {
                     Ok(()) => {}
-                    Err(TrySendError::Full(frame)) => {
-                        drop(frame);
-                        fail_generation("sidecar stdout queue overflow", &control, Some(&sender));
-                        return;
-                    }
-                    Err(TrySendError::Disconnected(frame)) => {
-                        drop(frame);
+                    Err(RawAdmission::Retired) => return,
+                    Err(RawAdmission::Stalled) => {
+                        fail_generation("sidecar stdout dispatch stalled", &control, Some(&sender));
                         return;
                     }
                 },
@@ -271,4 +337,137 @@ pub(super) fn stderr_reader(
             ring.push_back(text);
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::supervisor::dispatcher::RAW_QUEUE_CAPACITY;
+    use std::io::Write;
+    use std::os::unix::process::CommandExt;
+    use std::process::{Child, Command, Stdio};
+    use std::sync::mpsc::sync_channel;
+
+    /// Every control in these tests owns a real, dedicated process group, so an
+    /// invalidation can only ever signal that one child and never the test
+    /// runner's own group.
+    fn grouped_child() -> (Child, Arc<GenerationControl>) {
+        let child = Command::new("/bin/cat")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .spawn()
+            .expect("grouped child spawns");
+        let control = Arc::new(GenerationControl::new(
+            child.id() as i32,
+            Arc::new(Mutex::new(None)),
+        ));
+        (child, control)
+    }
+
+    fn line(index: usize) -> RawFrame {
+        RawFrame::Line(Zeroizing::new(format!("{index}\n").into_bytes()))
+    }
+
+    /// The boot burst the sidecar emits for one `product.providers.list` is far
+    /// larger than the queue. A full queue must make the reader wait for the
+    /// dispatcher rather than end the generation under it.
+    #[test]
+    fn a_full_raw_queue_waits_for_the_dispatcher_instead_of_ending_the_generation() {
+        let (mut child, control) = grouped_child();
+        let (sender, receiver) = sync_channel(RAW_QUEUE_CAPACITY);
+        for index in 0..RAW_QUEUE_CAPACITY {
+            assert!(sender.try_send(line(index)).is_ok(), "queue accepts");
+        }
+        // The dispatcher only reaches the next frame once the reader is already
+        // waiting, which is exactly the ordering that used to be fatal.
+        let drain = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(50));
+            receiver.recv().expect("dispatcher takes one frame");
+            receiver
+        });
+        let admitted = admit_raw_frame(
+            line(RAW_QUEUE_CAPACITY),
+            &sender,
+            &control,
+            RAW_QUEUE_STALL_DEADLINE,
+        );
+        assert!(admitted.is_ok());
+        assert!(control.is_active());
+        drop(drain.join().expect("drain thread"));
+        control.deactivate();
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    /// The bound itself is unchanged: a dispatcher that accepts nothing for the
+    /// whole deadline still ends the generation.
+    #[test]
+    fn a_dispatcher_that_never_drains_still_ends_the_generation() {
+        let (mut child, control) = grouped_child();
+        let (sender, receiver) = sync_channel(RAW_QUEUE_CAPACITY);
+        for index in 0..RAW_QUEUE_CAPACITY {
+            assert!(sender.try_send(line(index)).is_ok(), "queue accepts");
+        }
+        let admitted = admit_raw_frame(
+            line(RAW_QUEUE_CAPACITY),
+            &sender,
+            &control,
+            Duration::from_millis(40),
+        );
+        assert!(matches!(admitted, Err(RawAdmission::Stalled)));
+        assert!(control.is_active());
+        drop(receiver);
+        control.deactivate();
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    /// End to end over a real pipe: one flush many times the queue's size must
+    /// arrive whole and in order while the dispatcher is behind.
+    #[test]
+    fn a_boot_sized_flush_survives_a_dispatcher_that_starts_late() {
+        const FRAMES: usize = RAW_QUEUE_CAPACITY * 16;
+        let (mut child, control) = grouped_child();
+        let mut stdin = child.stdin.take().expect("child stdin");
+        let stdout = child.stdout.take().expect("child stdout");
+        let (sender, receiver) = sync_channel(RAW_QUEUE_CAPACITY);
+        // The writer hands the pipe back rather than closing it, so no end of
+        // input can retire the generation while the frames are being checked.
+        let writer = thread::spawn(move || {
+            let padding = "p".repeat(1_024);
+            for index in 0..FRAMES {
+                writeln!(stdin, "{index}:{padding}").expect("burst is written");
+            }
+            stdin.flush().expect("burst is flushed");
+            stdin
+        });
+        let handle = stdout_reader(stdout, sender, Arc::clone(&control));
+        // Nothing drains yet, so the pipe and the queue both fill and the
+        // reader is left waiting on a dispatcher that has not started.
+        thread::sleep(Duration::from_millis(100));
+        let mut observed = Vec::with_capacity(FRAMES);
+        while observed.len() < FRAMES {
+            match receiver
+                .recv_timeout(Duration::from_secs(20))
+                .expect("frame arrives")
+            {
+                RawFrame::Line(frame) => {
+                    let text = String::from_utf8_lossy(&frame).to_string();
+                    let index = text.split(':').next().expect("frame index").to_owned();
+                    observed.push(index.parse::<usize>().expect("frame index parses"));
+                }
+                RawFrame::Failure(reason) => panic!("unexpected generation failure: {reason}"),
+            }
+        }
+        assert_eq!(observed, (0..FRAMES).collect::<Vec<_>>());
+        assert!(control.is_active());
+        let stdin = writer.join().expect("writer thread");
+        control.deactivate();
+        drop(stdin);
+        drop(receiver);
+        let _ = child.wait();
+        handle.join().expect("reader thread");
+    }
 }

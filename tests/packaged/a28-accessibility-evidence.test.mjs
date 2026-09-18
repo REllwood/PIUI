@@ -15,6 +15,13 @@ import {
   parseA28VoiceOverCompletion,
   parseA28VoiceOverEvidence,
 } from '../../scripts/a28-accessibility-evidence.mjs';
+import {
+  APPLE_TOOLCHAIN_PATHS,
+  appleToolchainBuildEnvironment,
+  captureAppleToolchainAuthority,
+  releaseAppleToolchainAuthority,
+  revalidateAppleToolchainAuthority,
+} from '../../scripts/apple-toolchain-trust.mjs';
 
 const root = resolve(import.meta.dirname, '../..');
 const sha = (character) => character.repeat(64);
@@ -231,19 +238,34 @@ test('the native helper compiles against the macOS accessibility frameworks', as
     const { rm } = await import('node:fs/promises');
     await rm(output, { force: true });
   });
-  const result = spawnSync('/usr/bin/clang', [
-    '-std=c17',
-    '-Wall',
-    '-Wextra',
-    '-Werror',
-    '-framework',
-    'ApplicationServices',
-    '-framework',
-    'CoreFoundation',
-    source,
-    '-o',
-    output,
-  ], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin' } });
+  const authority = captureAppleToolchainAuthority();
+  let result;
+  try {
+    result = spawnSync(APPLE_TOOLCHAIN_PATHS.clang, [
+      '-std=c17',
+      '-Wall',
+      '-Wextra',
+      '-Werror',
+      '-isysroot',
+      APPLE_TOOLCHAIN_PATHS.sdk,
+      '-framework',
+      'ApplicationServices',
+      '-framework',
+      'CoreFoundation',
+      source,
+      '-o',
+      output,
+    ], {
+      encoding: 'utf8',
+      env: {
+        ...appleToolchainBuildEnvironment(),
+        PATH: `${APPLE_TOOLCHAIN_PATHS.bin}:/usr/bin:/bin`,
+      },
+    });
+    revalidateAppleToolchainAuthority(authority);
+  } finally {
+    releaseAppleToolchainAuthority(authority);
+  }
   assert.equal(result.status, 0, result.stderr);
   const bytes = await readFile(output);
   assert.ok(bytes.length > 8_192);

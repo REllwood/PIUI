@@ -56,7 +56,8 @@ function cloneCanonical(value: unknown, depth: number, state: CanonicalState): u
     return value;
   }
   if (typeof value === 'number') {
-    if (!Number.isSafeInteger(value) || Object.is(value, -0) || Math.abs(value) > MAX_SAFE_INTEGER) reject();
+    if (!Number.isSafeInteger(value) || Object.is(value, -0) || Math.abs(value) > MAX_SAFE_INTEGER)
+      reject();
     return value;
   }
   if (typeof value !== 'object' || state.ancestors.has(value)) reject();
@@ -70,9 +71,12 @@ function cloneCanonical(value: unknown, depth: number, state: CanonicalState): u
     if (Array.isArray(value)) {
       const keys = ownKeys.filter((key): key is string => key !== 'length');
       if (
-        keys.length !== value.length
-        || keys.some((key, index) => key !== String(index) || !Object.hasOwn(descriptors[key], 'value'))
-      ) reject();
+        keys.length !== value.length ||
+        keys.some(
+          (key, index) => key !== String(index) || !Object.hasOwn(descriptors[key], 'value'),
+        )
+      )
+        reject();
       const output: unknown[] = [];
       for (let index = 0; index < value.length; index += 1) {
         output.push(cloneCanonical(descriptors[String(index)].value, depth + 1, state));
@@ -82,7 +86,8 @@ function cloneCanonical(value: unknown, depth: number, state: CanonicalState): u
 
     if (!isPlainObject(value)) reject();
     const keys = ownKeys as string[];
-    if (keys.some((key) => !hasValidUnicode(key) || !Object.hasOwn(descriptors[key], 'value'))) reject();
+    if (keys.some((key) => !hasValidUnicode(key) || !Object.hasOwn(descriptors[key], 'value')))
+      reject();
     keys.sort(utf8KeyCompare);
     const output: Record<string, unknown> = Object.create(null);
     for (const key of keys) output[key] = cloneCanonical(descriptors[key].value, depth + 1, state);
@@ -97,13 +102,27 @@ function quoted(value: string): string {
   for (const character of value) {
     const codePoint = character.codePointAt(0)!;
     switch (character) {
-      case '"': output += '\\"'; break;
-      case '\\': output += '\\\\'; break;
-      case '\b': output += '\\b'; break;
-      case '\f': output += '\\f'; break;
-      case '\n': output += '\\n'; break;
-      case '\r': output += '\\r'; break;
-      case '\t': output += '\\t'; break;
+      case '"':
+        output += '\\"';
+        break;
+      case '\\':
+        output += '\\\\';
+        break;
+      case '\b':
+        output += '\\b';
+        break;
+      case '\f':
+        output += '\\f';
+        break;
+      case '\n':
+        output += '\\n';
+        break;
+      case '\r':
+        output += '\\r';
+        break;
+      case '\t':
+        output += '\\t';
+        break;
       default:
         output += codePoint <= 0x1f ? `\\u${codePoint.toString(16).padStart(4, '0')}` : character;
     }
@@ -141,7 +160,8 @@ function emitCanonical(value: unknown, output: string[]): void {
 
 export function deepFreezeApprovalValue<T>(value: T): T {
   if (value !== null && typeof value === 'object') {
-    for (const entry of Object.values(value as Record<string, unknown>)) deepFreezeApprovalValue(entry);
+    for (const entry of Object.values(value as Record<string, unknown>))
+      deepFreezeApprovalValue(entry);
     Object.freeze(value);
   }
   return value;
@@ -149,7 +169,10 @@ export function deepFreezeApprovalValue<T>(value: T): T {
 
 export function canonicaliseApprovalInput(input: unknown): CanonicalApprovalInput {
   if (!isPlainObject(input)) reject();
-  const value = cloneCanonical(input, 0, { nodes: 0, ancestors: new Set() }) as Record<string, unknown>;
+  const value = cloneCanonical(input, 0, { nodes: 0, ancestors: new Set() }) as Record<
+    string,
+    unknown
+  >;
   const segments: string[] = [];
   emitCanonical(value, segments);
   const bytes = Buffer.from(segments.join(''), 'utf8');

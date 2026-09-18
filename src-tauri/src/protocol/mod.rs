@@ -1,5 +1,6 @@
 pub(crate) mod approval;
 mod envelope;
+pub(crate) mod product;
 pub(crate) mod workspace;
 
 pub(crate) const AUTHENTICATED_INTERNAL_SNAPSHOT_CORRELATION: &str =

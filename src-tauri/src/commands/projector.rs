@@ -726,7 +726,7 @@ fn reconstruct_safe_projection(
             let payload = reconstruct_stream_event(&envelope.payload)?;
             let terminal = matches!(
                 payload.get("eventType").and_then(Value::as_str),
-                Some("stream.complete" | "stream.cancelled")
+                Some("stream.complete" | "stream.cancelled" | "stream.failed")
             );
             let action = if terminal {
                 CommitAction::CompleteStream(raw_correlation_id.to_owned())
@@ -798,7 +798,7 @@ fn reconstruct_safe_projection(
 }
 
 fn reconstruct_stream_event(payload: &Map<String, Value>) -> Result<Map<String, Value>, String> {
-    if payload.len() != 2 {
+    if !(2..=4).contains(&payload.len()) {
         return Err(PROJECTION_REJECTED.into());
     }
     let event_type = payload
@@ -808,13 +808,39 @@ fn reconstruct_stream_event(payload: &Map<String, Value>) -> Result<Map<String, 
     let mut safe = Map::new();
     safe.insert("eventType".into(), Value::String(event_type.into()));
     match event_type {
-        "stream.delta" => {
+        "stream.delta" | "tool.activity" => {
             let text = payload
                 .get("text")
                 .and_then(Value::as_str)
                 .filter(|text| text.encode_utf16().count() <= MAX_STREAM_TEXT_UTF16)
                 .ok_or_else(|| PROJECTION_REJECTED.to_string())?;
             safe.insert("text".into(), Value::String(text.into()));
+            if event_type == "tool.activity" {
+                if payload.len() != 4 {
+                    return Err(PROJECTION_REJECTED.into());
+                }
+                let code = payload
+                    .get("code")
+                    .and_then(Value::as_str)
+                    .filter(|code| matches!(*code, "started" | "complete" | "failed"))
+                    .ok_or_else(|| PROJECTION_REJECTED.to_string())?;
+                safe.insert("code".into(), Value::String(code.into()));
+                let tool_call_id = payload
+                    .get("toolCallId")
+                    .and_then(Value::as_str)
+                    .filter(|identifier| {
+                        !identifier.is_empty()
+                            && identifier.len() <= 160
+                            && identifier.bytes().all(|byte| {
+                                byte.is_ascii_alphanumeric()
+                                    || matches!(byte, b'.' | b'_' | b':' | b'-')
+                            })
+                    })
+                    .ok_or_else(|| PROJECTION_REJECTED.to_string())?;
+                safe.insert("toolCallId".into(), Value::String(tool_call_id.into()));
+            } else if payload.len() != 2 {
+                return Err(PROJECTION_REJECTED.into());
+            }
         }
         "stream.complete" | "stream.cancelled" => {
             let terminal = payload
@@ -828,6 +854,27 @@ fn reconstruct_stream_event(payload: &Map<String, Value>) -> Result<Map<String, 
                 })
                 .ok_or_else(|| PROJECTION_REJECTED.to_string())?;
             safe.insert("terminal".into(), Value::String(terminal.into()));
+        }
+        "stream.failed" => {
+            let terminal = payload
+                .get("terminal")
+                .and_then(Value::as_str)
+                .filter(|terminal| *terminal == "failed")
+                .ok_or_else(|| PROJECTION_REJECTED.to_string())?;
+            let code = payload
+                .get("code")
+                .and_then(Value::as_str)
+                .filter(|code| {
+                    !code.is_empty()
+                        && code.len() <= 128
+                        && code.bytes().enumerate().all(|(index, byte)| {
+                            byte.is_ascii_alphanumeric()
+                                || (index > 0 && matches!(byte, b'.' | b'_' | b':' | b'-'))
+                        })
+                })
+                .ok_or_else(|| PROJECTION_REJECTED.to_string())?;
+            safe.insert("terminal".into(), Value::String(terminal.into()));
+            safe.insert("code".into(), Value::String(code.into()));
         }
         _ => return Err(PROJECTION_REJECTED.into()),
     }

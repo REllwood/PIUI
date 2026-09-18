@@ -1,0 +1,57 @@
+.piui {
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 20px;
+  letter-spacing: -0.006em;
+}
+
+.piui h1,
+.piui h2,
+.piui h3,
+.piui h4,
+.piui p {
+  margin-block-start: 0;
+}
+
+.piui h1 {
+  margin-block-end: 12px;
+  font-size: 28px;
+  font-weight: 600;
+  line-height: 34px;
+  letter-spacing: -0.035em;
+}
+
+.piui h2 {
+  margin-block-end: 10px;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 28px;
+  letter-spacing: -0.02em;
+}
+
+.piui h3 {
+  margin-block-end: 8px;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 22px;
+}
+
+.piui .ui-label {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 16px;
+  letter-spacing: 0.01em;
+}
+
+.piui .ui-prose {
+  max-inline-size: 70ch;
+  font-size: 16px;
+  line-height: 26px;
+}
+
+.piui .ui-mono {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  line-height: 20px;
+}

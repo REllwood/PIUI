@@ -59,13 +59,12 @@ export class PiCredentialStore implements PublicCredentialStore {
       CREDENTIAL_PROXY_LIMITS.maxProviderQueues,
     );
     this.#maxQueuedOperationsPerProvider = validateLimit(
-      options.maxQueuedOperationsPerProvider
-        ?? CREDENTIAL_PROXY_LIMITS.maxQueuedOperationsPerProvider,
+      options.maxQueuedOperationsPerProvider ??
+        CREDENTIAL_PROXY_LIMITS.maxQueuedOperationsPerProvider,
       CREDENTIAL_PROXY_LIMITS.maxQueuedOperationsPerProvider,
     );
     this.#maxQueuedOperationsTotal = validateLimit(
-      options.maxQueuedOperationsTotal
-        ?? CREDENTIAL_PROXY_LIMITS.maxQueuedOperationsTotal,
+      options.maxQueuedOperationsTotal ?? CREDENTIAL_PROXY_LIMITS.maxQueuedOperationsTotal,
       CREDENTIAL_PROXY_LIMITS.maxQueuedOperationsTotal,
     );
     this.#host = host;
@@ -117,9 +116,9 @@ export class PiCredentialStore implements PublicCredentialStore {
     const current = this.#queues.get(providerId);
     const queue = current?.generation === generation ? current : undefined;
     if (
-      (!queue && this.#queues.size >= this.#maxProviderQueues)
-      || (queue?.count ?? 0) >= this.#maxQueuedOperationsPerProvider
-      || this.#queuedOperationCount >= this.#maxQueuedOperationsTotal
+      (!queue && this.#queues.size >= this.#maxProviderQueues) ||
+      (queue?.count ?? 0) >= this.#maxQueuedOperationsPerProvider ||
+      this.#queuedOperationCount >= this.#maxQueuedOperationsTotal
     ) {
       return Promise.reject(new HostRequestError('credential-host-capacity'));
     }
@@ -149,9 +148,9 @@ export class PiCredentialStore implements PublicCredentialStore {
         state.count -= 1;
         this.#queuedOperationCount -= 1;
         if (
-          state.count === 0
-          && state.tail === operation
-          && this.#queues.get(providerId) === state
+          state.count === 0 &&
+          state.tail === operation &&
+          this.#queues.get(providerId) === state
         ) {
           this.#queues.delete(providerId);
         }

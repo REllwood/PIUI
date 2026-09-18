@@ -52,7 +52,7 @@ test('derives closed production and controlled-twin artefact records', () => {
 
   const automation = architectureArtifactFromBundle(bundle({
     fingerprint: sha('4'),
-    hostSignature: 'adhoc',
+    hostSignature: 'apple-development',
   }), {
     appliedVariant: automationVariant,
     baseProductionFingerprint: production.fingerprint,
@@ -113,7 +113,7 @@ test('rejects a declared delta that differs from the exact applied build variant
   );
   assert.throws(() => architectureArtifactFromBundle(bundle({
     fingerprint: sha('4'),
-    hostSignature: 'adhoc',
+    hostSignature: 'apple-development',
   }), {
     appliedVariant: applied,
     baseProductionFingerprint: sha('1'),
@@ -131,6 +131,9 @@ test('rejects measured-record substitutions even when their digest is recomputed
     (record) => { record.variantDefinitionSha256 = sha('f'); },
     (record) => { record.baseFingerprint = sha('e'); },
     (record) => { record.changes[1].postSignSlots[0].sha256 = sha('d'); },
+    (record) => {
+      record.changes[1].repeatPostSignDeterministicIdentitySha256 = sha('d');
+    },
     (record) => { record.changes[0].twinSha256 = record.changes[0].baseSha256; },
     (record) => { record.changes[1].twinSha256 = record.changes[1].baseSha256; },
     (record) => {
@@ -150,7 +153,7 @@ test('rejects measured-record substitutions even when their digest is recomputed
     ));
     assert.throws(() => architectureArtifactFromBundle(bundle({
       fingerprint: sha('4'),
-      hostSignature: 'adhoc',
+      hostSignature: 'apple-development',
     }), {
       appliedVariant,
       baseProductionFingerprint: sha('1'),

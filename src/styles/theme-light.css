@@ -1,0 +1,28 @@
+:root[data-theme='light'] {
+  --canvas: #f2f4ef;
+  --surface: #ffffff;
+  --surface-raised: #e8ece6;
+  --surface-highlight: #f8faf6;
+  --text: #171a17;
+  --text-muted: #586157;
+  --divider: #cbd1c9;
+  --control-border: #6d786a;
+  --accent: #4d6500;
+  --accent-on: #ffffff;
+  --work: #6c42b8;
+  --work-on: #ffffff;
+  --info: #155e84;
+  --success: #23643b;
+  --warning: #765100;
+  --danger: #982c2c;
+  --primary: #171a17;
+  --primary-on: #ffffff;
+  --focus: #006edb;
+  --canvas-glow: rgb(108 66 184 / 8%);
+  --accent-surface: rgb(77 101 0 / 10%);
+  --work-surface: rgb(108 66 184 / 10%);
+  --info-surface: rgb(21 94 132 / 10%);
+  --warning-surface: rgb(118 81 0 / 10%);
+  --danger-surface: rgb(152 44 44 / 10%);
+  --selection: rgb(108 66 184 / 16%);
+}

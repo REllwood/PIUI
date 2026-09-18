@@ -25,7 +25,12 @@ import {
   parseLifecycleEvidence,
   parseNativeLifecycleEvidence,
 } from '../../scripts/assert-process-cleanup.mjs';
-import { terminateFailedRuntime } from '../../scripts/run-packaged-lifecycle-probe.mjs';
+import {
+  terminateFailedRuntime,
+  waitForA27GenerationProcess,
+  waitForA27HostOnlyProcess,
+  waitForA27IdlePhase,
+} from '../../scripts/run-packaged-lifecycle-probe.mjs';
 
 function line(value) {
   return Buffer.from(`${JSON.stringify(value)}\n`);
@@ -141,6 +146,146 @@ test('A.27 topology rejects duplicate hosts, duplicate sidecars and unrelated de
       { message: 'A.27 packaged lifecycle probe rejected' },
     );
   }
+});
+
+test('A.27 process transition waits permanently reject a forbidden sample', async () => {
+  const hostPath = '/Applications/PIUI.app/Contents/MacOS/piui';
+  const nodePath = '/Applications/PIUI.app/Contents/MacOS/piui-node';
+  const host = {
+    pid: 201,
+    ppid: 1,
+    pgid: 201,
+    state: 'S',
+    start: 'Mon Jul 28 11:00:00 2026',
+    command: hostPath,
+    executable: hostPath,
+  };
+  const sidecar = (pid, second) => ({
+    pid,
+    ppid: host.pid,
+    pgid: pid,
+    state: 'S',
+    start: `Mon Jul 28 11:00:${String(second).padStart(2, '0')} 2026`,
+    command: `${nodePath} index.js`,
+    executable: nodePath,
+  });
+  const first = sidecar(202, 1);
+  const second = sidecar(203, 2);
+  const identity = (entry) => `${entry.pid}:${entry.pgid}:${entry.start}:${entry.command}`;
+  const observation = {
+    observe(live, expectedSidecars) {
+      return assertLifecycleTopology({
+        live,
+        hostPath,
+        nodePath,
+        hostPid: host.pid,
+        expectedSidecars,
+      });
+    },
+    observeGeneration(status, live) {
+      const observed = this.observe(live, 1);
+      assert.equal(status.pid, live.find((entry) => entry.executable === nodePath)?.pid);
+      return observed;
+    },
+  };
+  const common = {
+    generation: 2,
+    maxSamples: 4,
+    nodePath,
+    now: () => 0,
+    observation,
+    pause: async () => {},
+    timeoutMs: 100,
+  };
+
+  let samples = 0;
+  await assert.rejects(
+    waitForA27GenerationProcess({
+      ...common,
+      observedSidecarIdentities: new Set([identity(first)]),
+      sample: async () => {
+        samples += 1;
+        return samples === 1 ? [host, first, second] : [host, second];
+      },
+    }),
+    { message: 'A.27 packaged lifecycle probe rejected' },
+  );
+  assert.equal(samples, 1, 'a duplicate sample must not be retried into success');
+
+  samples = 0;
+  const networkFailure = new Error('forbidden-network-descriptor');
+  await assert.rejects(
+    waitForA27GenerationProcess({
+      ...common,
+      observedSidecarIdentities: new Set([identity(first)]),
+      sample: async () => {
+        samples += 1;
+        if (samples === 1) throw networkFailure;
+        return [host, second];
+      },
+    }),
+    networkFailure,
+  );
+  assert.equal(samples, 1, 'a network-policy failure must remain terminal');
+
+  samples = 0;
+  const observed = new Set([identity(first)]);
+  await waitForA27GenerationProcess({
+    ...common,
+    observedSidecarIdentities: observed,
+    sample: async () => {
+      samples += 1;
+      return samples === 1 ? [host, first] : [host, second];
+    },
+  });
+  assert.equal(samples, 2);
+  assert.equal(observed.has(identity(second)), true);
+
+  samples = 0;
+  await waitForA27HostOnlyProcess({
+    maxSamples: 5,
+    nodePath,
+    now: () => 0,
+    observation,
+    observedSidecarIdentities: new Set([identity(second)]),
+    pause: async () => {},
+    sample: async () => {
+      samples += 1;
+      return samples === 1 ? [host, second] : [host];
+    },
+    stableSamples: 3,
+    timeoutMs: 100,
+  });
+  assert.equal(samples, 4);
+});
+
+test('A.27 UI wait propagates malformed evidence instead of retrying it', async () => {
+  let samples = 0;
+  const malformed = new Error('malformed-lifecycle-snapshot');
+  await assert.rejects(
+    waitForA27IdlePhase({
+      async snapshot() {
+        samples += 1;
+        if (samples === 1) throw malformed;
+        return {
+          schemaVersion: 1,
+          phase: 'running',
+          busy: false,
+          message: 'Ready',
+          buttonLabel: 'Verify crash recovery',
+          buttonDisabled: false,
+          progressVisible: false,
+        };
+      },
+    }, 'running', 'Verify crash recovery', undefined, {
+      maxSamples: 2,
+      now: () => 0,
+      pause: async () => {},
+      timeoutMs: 100,
+    }),
+    malformed,
+  );
+  assert.equal(samples, 1);
 });
 
 test('A.27 permits only the declared host loopback driver and no sidecar socket', () => {

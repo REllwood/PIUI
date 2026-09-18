@@ -3,8 +3,15 @@ use serde::{Deserialize, Deserializer, Serialize, de};
 use std::fmt::Formatter;
 use tauri::WebviewWindow;
 
+pub mod attachments;
+pub mod deep_link;
+pub mod finder;
 #[cfg(target_os = "macos")]
 mod macos;
+pub mod menu;
+pub mod notifications;
+pub mod opener;
+pub mod trash;
 
 pub const INVALID_CREDENTIAL_INPUT: &str = "invalid-credential-input";
 pub const CREDENTIAL_SHEET_BUSY: &str = "credential-sheet-busy";
@@ -12,6 +19,10 @@ pub const CREDENTIAL_SHEET_UNAVAILABLE: &str = "credential-sheet-unavailable";
 pub const NATIVE_CREDENTIAL_SHEET_UNSUPPORTED: &str = "native-credential-sheet-unsupported";
 pub const NATIVE_FOLDER_PICKER_UNAVAILABLE: &str = "native-folder-picker-unavailable";
 pub const NATIVE_FOLDER_PICKER_UNSUPPORTED: &str = "native-folder-picker-unsupported";
+pub const NATIVE_ATTACHMENT_PICKER_UNAVAILABLE: &str = "native-attachment-picker-unavailable";
+pub const NATIVE_ATTACHMENT_PICKER_UNSUPPORTED: &str = "native-attachment-picker-unsupported";
+pub const NATIVE_EXPORT_PICKER_UNAVAILABLE: &str = "native-export-picker-unavailable";
+pub const NATIVE_EXPORT_PICKER_UNSUPPORTED: &str = "native-export-picker-unsupported";
 
 #[derive(Clone, Copy)]
 pub(crate) struct NativeFolderPickerError(&'static str);
@@ -26,6 +37,40 @@ impl NativeFolderPickerError {
         Self(NATIVE_FOLDER_PICKER_UNSUPPORTED)
     }
 
+    pub(crate) const fn code(self) -> &'static str {
+        self.0
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct NativeAttachmentPickerError(&'static str);
+
+impl NativeAttachmentPickerError {
+    pub(crate) const fn unavailable() -> Self {
+        Self(NATIVE_ATTACHMENT_PICKER_UNAVAILABLE)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    const fn unsupported() -> Self {
+        Self(NATIVE_ATTACHMENT_PICKER_UNSUPPORTED)
+    }
+
+    pub(crate) const fn code(self) -> &'static str {
+        self.0
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct NativeExportPickerError(&'static str);
+
+impl NativeExportPickerError {
+    pub(crate) const fn unavailable() -> Self {
+        Self(NATIVE_EXPORT_PICKER_UNAVAILABLE)
+    }
+    #[cfg(not(target_os = "macos"))]
+    const fn unsupported() -> Self {
+        Self(NATIVE_EXPORT_PICKER_UNSUPPORTED)
+    }
     pub(crate) const fn code(self) -> &'static str {
         self.0
     }
@@ -345,6 +390,36 @@ pub(crate) async fn present_native_folder_picker(
     window: WebviewWindow,
 ) -> Result<Option<std::path::PathBuf>, NativeFolderPickerError> {
     macos::folder_picker::present(window).await
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) async fn present_native_attachment_picker(
+    window: WebviewWindow,
+) -> Result<Option<std::path::PathBuf>, NativeAttachmentPickerError> {
+    macos::image_picker::present(window).await
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) async fn present_native_export_picker(
+    window: WebviewWindow,
+    default_name: String,
+) -> Result<Option<std::path::PathBuf>, NativeExportPickerError> {
+    macos::export_picker::present(window, default_name).await
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) async fn present_native_export_picker(
+    _window: WebviewWindow,
+    _default_name: String,
+) -> Result<Option<std::path::PathBuf>, NativeExportPickerError> {
+    Err(NativeExportPickerError::unsupported())
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) async fn present_native_attachment_picker(
+    _window: WebviewWindow,
+) -> Result<Option<std::path::PathBuf>, NativeAttachmentPickerError> {
+    Err(NativeAttachmentPickerError::unsupported())
 }
 
 #[cfg(not(target_os = "macos"))]

@@ -10,6 +10,7 @@ import {
   classifyA28AccessibilityHelperResult,
   parseA28AccessibilityEvidence,
   parseA28DomEvidence,
+  runAuthoritativeA28Command,
   validateA28ActivationEnvironment,
 } from '../../scripts/run-packaged-accessibility-probe.mjs';
 import {
@@ -85,11 +86,17 @@ function aggregateEvidence() {
       focusedRowOrdinal: 51,
     },
     voiceOver: {
+      architectureGateRunContextSha256: sha('e'),
+      attestationSha256: sha('f'),
+      challengeRequestSha256: sha('1'),
+      comparisonReceiptSha256: sha('2'),
       evidenceValidated: true,
-      checksumsValidated: true,
+      expectedContextSha256: sha('3'),
+      gateContextCompared: true,
       humanWitnessed: true,
       modesChecked: 4,
       blockingDefects: 0,
+      publishedReceiptSha256: sha('4'),
     },
     limitations: {
       automationConformanceEquivalence: 'not-claimed',
@@ -265,6 +272,14 @@ test('preserves only the exact package child blocked result as A.28 blocked', ()
   }), accepted);
 });
 
+test('refuses standalone A.28 before starting a package run', async () => {
+  await assert.rejects(
+    runAuthoritativeA28Command(),
+    (error) => error instanceof A28AccessibilityBlockedError
+      && error.reason.includes('pnpm gate:architecture:record'),
+  );
+});
+
 test('pins the exact A.28 lease inode and canonical bytes', () => {
   const observation = {
     bytes: Buffer.from('{"schemaVersion":1}\n', 'utf8'),
@@ -312,15 +327,27 @@ test('uses only the exact embedded service and ordinary WebDriver surface', asyn
   assert.match(runner, /PIUI_A28_HUMAN_EVIDENCE_ROOT/);
   assert.match(runner, /createHumanWitnessLease/);
   assert.match(runner, /assertExactRetainedHumanWitnessHost/);
-  assert.match(runner, /parseA28VoiceOverCompletion/);
-  assert.match(runner, /voiceOverSha256: sha256Bytes\(voiceOverBytes\)/);
+  assert.match(runner, /createA28FinalConsumerContext/);
+  assert.match(runner, /createA28InstalledWitnessCeremony/);
+  assert.match(runner, /executeA28FinalConsumerCeremony/);
+  assert.match(runner, /assertA28ComparedVoiceOverEvidence/);
   assert.match(runner, /timeoutMs: 35 \* 60_000/);
-  assert.match(manual, /pnpm spike:packaged:accessibility/);
-  assert.match(manual, /Create `completion\.json` last/);
-  assert.match(manual, /Do not create `checksums\.json` yourself/);
+  assert.match(
+    runner,
+    /function runnerRuntimeFiles[\s\S]*?captureAppleToolchainAuthority\(\)[\s\S]*?spawnSync\(APPLE_TOOLCHAIN_PATHS\.otool[\s\S]*?revalidateAppleToolchainAuthority\(authority\)[\s\S]*?releaseAppleToolchainAuthority\(authority\)/u,
+  );
+  assert.match(
+    runner,
+    /async function compileAccessibilityHelper[\s\S]*?captureAppleToolchainAuthority\(\)[\s\S]*?command: APPLE_TOOLCHAIN_PATHS\.clang[\s\S]*?APPLE_TOOLCHAIN_PATHS\.sdk[\s\S]*?revalidateAppleToolchainAuthority\(authority\)[\s\S]*?releaseAppleToolchainAuthority\(authority\)/u,
+  );
+  assert.doesNotMatch(runner, /(?:spawnSync|command:)\(?['"]\/usr\/bin\/(?:clang|otool)/u);
+  assert.match(manual, /pnpm gate:architecture:record/);
+  assert.match(manual, /installed native witness/);
+  assert.match(manual, /comparison receipt/);
   assert.match(manual, /times out after 30 minutes/);
-  assert.equal(runner.indexOf('voiceOver = await waitForHumanWitness({')
+  assert.equal(runner.indexOf('voiceOver = await executeA28FinalConsumerCeremony({')
     < runner.indexOf('await publishAxRelease(axReleasePath, nonce)'), true);
+  assert.equal(runner.includes('voiceOver = await waitForHumanWitness({'), false);
   assert.equal(runner.indexOf('const identity = Object.freeze({')
     < runner.indexOf('const observed = await executeWdioObservation('), true);
   for (const source of [configuration, spec]) {

@@ -2,6 +2,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { ProtocolDecoder, encodeEnvelope } from '../src/codec';
+import { PROTOCOL_LIMITS } from '../src/index';
 import type { ProtocolEnvelope } from '../src/types';
 
 const fixtureRoot = resolve(import.meta.dirname, '../fixtures');
@@ -15,6 +16,14 @@ function fixtureLines(name: string): Buffer[] {
   const text = raw.toString('utf8');
   if (!text.endsWith('\n')) return [raw];
   return text.slice(0, -1).split('\n').map((line) => Buffer.from(`${line}\n`));
+}
+
+function eventEnvelope(id: string, payload: Record<string, unknown> = { eventType: 'sidecar.status', status: 'ready' }): ProtocolEnvelope {
+  return { version: 1, kind: 'event', id, sequence: 1, payload };
+}
+
+function line(value: unknown): Buffer {
+  return Buffer.from(`${JSON.stringify(value)}\n`, 'utf8');
 }
 
 describe('private protocol codec', () => {
@@ -91,5 +100,96 @@ describe('private protocol codec', () => {
       id: 'rust-workspace-schema-extra',
       payload: { ...request.payload, path: '/private/canary' },
     }))).toThrow('Envelope failed schema validation');
+  });
+
+  it('rejects malformed framing and invalid UTF-8 deterministically', () => {
+    const valid = encodeEnvelope(eventEnvelope('framing-valid'));
+    const cases: Array<[string, Uint8Array | string, string]> = [
+      ['empty input', new Uint8Array(), 'one LF-delimited line'],
+      ['missing LF', valid.subarray(0, -1), 'one LF-delimited line'],
+      ['CRLF', Buffer.from(`${Buffer.from(valid).toString('utf8').trimEnd()}\r\n`), 'one LF-delimited line'],
+      ['two JSON lines', Buffer.concat([Buffer.from(valid), Buffer.from(valid)]), 'Invalid JSON'],
+      ['invalid UTF-8', Uint8Array.from([0x7b, 0x22, 0x78, 0x22, 0x3a, 0xc3, 0x28, 0x7d, 0x0a]), 'Invalid UTF-8'],
+      ['invalid JSON', '{"version":1,}\n', 'Invalid JSON'],
+    ];
+
+    for (const [name, input, message] of cases) {
+      expect(() => new ProtocolDecoder().decode(input), name).toThrow(message);
+    }
+  });
+
+  it('enforces line, payload and JSON-depth resource limits', () => {
+    const oversizedLine = Buffer.alloc(PROTOCOL_LIMITS.maxLineBytes + 1, 0x20);
+    oversizedLine[oversizedLine.length - 1] = 0x0a;
+    expect(() => new ProtocolDecoder().decode(oversizedLine)).toThrow('Line limit exceeded');
+
+    const oversizedPayload = eventEnvelope('oversized-payload', {
+      eventType: 'sidecar.status',
+      detail: 'x'.repeat(PROTOCOL_LIMITS.maxPayloadBytes),
+    });
+    expect(() => new ProtocolDecoder().decode(line(oversizedPayload))).toThrow('Payload limit exceeded');
+
+    let nested: Record<string, unknown> = { terminal: true };
+    for (let depth = 0; depth <= PROTOCOL_LIMITS.maxDepth; depth += 1) nested = { child: nested };
+    expect(() => new ProtocolDecoder().decode(line(eventEnvelope('excessive-depth', {
+      eventType: 'future.deep-event',
+      nested,
+    })))).toThrow('JSON depth limit exceeded');
+  });
+
+  it('bounds pending IDs and reclaims acknowledged IDs', () => {
+    const decoder = new ProtocolDecoder();
+    for (let index = 0; index < PROTOCOL_LIMITS.maxPendingIds; index += 1) {
+      decoder.decode(encodeEnvelope(eventEnvelope(`pending-${index}`)));
+    }
+    expect(() => decoder.decode(encodeEnvelope(eventEnvelope('pending-overflow')))).toThrow('Pending ID limit exceeded');
+
+    decoder.acknowledge('pending-0');
+    expect(decoder.decode(encodeEnvelope(eventEnvelope('pending-reclaimed'))).id).toBe('pending-reclaimed');
+    expect(() => decoder.decode(encodeEnvelope(eventEnvelope('pending-reclaimed')))).toThrow('Duplicate envelope ID');
+  });
+
+  it('redacts unknown events to bounded non-secret diagnostics', () => {
+    const payload: Record<string, unknown> = {
+      eventType: `future.${'x'.repeat(121)}`,
+      apiToken: 'must-not-survive',
+    };
+    for (let index = 0; index < 40; index += 1) payload[`safeKey${String(index).padStart(2, '0')}`] = index;
+
+    expect(() => new ProtocolDecoder().decode(line(eventEnvelope('secret-unknown', payload)))).toThrow(
+      'Secret-shaped diagnostic field rejected',
+    );
+
+    delete payload.apiToken;
+    const result = new ProtocolDecoder().decode(line(eventEnvelope('bounded-unknown', payload)));
+    expect(result.payload).toMatchObject({ eventType: 'unknown-event', redacted: true });
+    expect(String(result.payload.originalEventType)).toHaveLength(128);
+    expect(result.payload.keys).toHaveLength(32);
+    expect(JSON.stringify(result.payload)).not.toContain('must-not-survive');
+  });
+
+  it('rejects a deterministic mutation corpus without weakening valid envelopes', () => {
+    const base = eventEnvelope('mutation-base');
+    const mutations: unknown[] = [
+      { ...base, version: 2 },
+      { ...base, kind: 'notification' },
+      { ...base, id: '' },
+      { ...base, id: '../escape' },
+      { ...base, sequence: -1 },
+      { ...base, sequence: 1.25 },
+      { ...base, payload: [] },
+      { ...base, payload: {} },
+      { ...base, unexpected: true },
+      { ...base, error: { category: 'other', message: 'no' } },
+      { ...base, error: { category: 'internal', message: '' } },
+      null,
+      [],
+      'event',
+    ];
+
+    for (const [index, mutation] of mutations.entries()) {
+      expect(() => new ProtocolDecoder().decode(line(mutation)), `mutation ${index}`).toThrow();
+    }
+    expect(new ProtocolDecoder().decode(encodeEnvelope(base))).toEqual(base);
   });
 });

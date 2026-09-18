@@ -9,35 +9,28 @@ function productionModule(relativePath: string): string {
   return pathToFileURL(resolve(process.cwd(), relativePath)).href;
 }
 
-const [
-  runtime,
-  approvalHook,
-  aiPublicSdk,
-  publicSdk,
-  hostRequests,
-  router,
-  approvalCanonical,
-] = await Promise.all([
-  import(productionModule('dist/runtime.js')) as Promise<typeof import('../runtime.js')>,
-  import(productionModule('dist/pi/approval-hook.js')) as Promise<
-    typeof import('../pi/approval-hook.js')
-  >,
-  import(productionModule('dist/pi/ai-public-sdk.js')) as Promise<
-    typeof import('../pi/ai-public-sdk.js')
-  >,
-  import(productionModule('dist/pi/public-sdk.js')) as Promise<
-    typeof import('../pi/public-sdk.js')
-  >,
-  import(productionModule('dist/bridge/host-requests.js')) as Promise<
-    typeof import('../bridge/host-requests.js')
-  >,
-  import(productionModule('dist/bridge/router.js')) as Promise<
-    typeof import('../bridge/router.js')
-  >,
-  import(productionModule('dist/pi/approval-canonical.js')) as Promise<
-    typeof import('../pi/approval-canonical.js')
-  >,
-]);
+const [runtime, approvalHook, aiPublicSdk, publicSdk, hostRequests, router, approvalCanonical] =
+  await Promise.all([
+    import(productionModule('dist/runtime.js')) as Promise<typeof import('../runtime.js')>,
+    import(productionModule('dist/pi/approval-hook.js')) as Promise<
+      typeof import('../pi/approval-hook.js')
+    >,
+    import(productionModule('dist/pi/ai-public-sdk.js')) as Promise<
+      typeof import('../pi/ai-public-sdk.js')
+    >,
+    import(productionModule('dist/pi/public-sdk.js')) as Promise<
+      typeof import('../pi/public-sdk.js')
+    >,
+    import(productionModule('dist/bridge/host-requests.js')) as Promise<
+      typeof import('../bridge/host-requests.js')
+    >,
+    import(productionModule('dist/bridge/router.js')) as Promise<
+      typeof import('../bridge/router.js')
+    >,
+    import(productionModule('dist/pi/approval-canonical.js')) as Promise<
+      typeof import('../pi/approval-canonical.js')
+    >,
+  ]);
 
 const dependencies: A25ApprovalDependencies = Object.freeze({
   createApprovalGate: approvalHook.createApprovalGate,

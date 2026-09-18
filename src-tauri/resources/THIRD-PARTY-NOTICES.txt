@@ -1,0 +1,3070 @@
+PIUI THIRD-PARTY NOTICES
+
+This deterministic inventory covers production JavaScript and Rust dependencies.
+Refer to each upstream project for its complete licence text and attribution terms.
+
+adler2 2.0.1 [cargo]
+Licence: 0BSD OR MIT OR Apache-2.0
+Upstream: https://github.com/oyvindln/adler2
+
+aes 0.8.4 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/RustCrypto/block-ciphers
+
+aho-corasick 1.1.4 [cargo]
+Licence: Unlicense OR MIT
+Upstream: https://github.com/BurntSushi/aho-corasick
+
+alloc-no-stdlib 2.0.4 [cargo]
+Licence: BSD-3-Clause
+Upstream: https://github.com/dropbox/rust-alloc-no-stdlib
+
+alloc-stdlib 0.2.4 [cargo]
+Licence: BSD-3-Clause
+Upstream: https://github.com/dropbox/rust-alloc-no-stdlib
+
+android_system_properties 0.1.5 [cargo]
+Licence: MIT/Apache-2.0
+Upstream: https://github.com/nical/android_system_properties
+
+anyhow 1.0.104 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/dtolnay/anyhow
+
+apple-native-keyring-store 1.0.1 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/open-source-cooperative/keyring-rs/wiki/Keyring
+
+async-broadcast 0.7.2 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/smol-rs/async-broadcast
+
+async-channel 2.5.0 [cargo]
+Licence: Apache-2.0 OR MIT
+Upstream: https://github.com/smol-rs/async-channel
+
+async-executor 1.14.0 [cargo]
+Licence: Apache-2.0 OR MIT
+Upstream: https://github.com/smol-rs/async-executor
+
+async-io 2.6.0 [cargo]
+Licence: Apache-2.0 OR MIT
+Upstream: https://github.com/smol-rs/async-io
+
+async-lock 3.4.2 [cargo]
+Licence: Apache-2.0 OR MIT
+Upstream: https://github.com/smol-rs/async-lock
+
+async-process 2.5.0 [cargo]
+Licence: Apache-2.0 OR MIT
+Upstream: https://github.com/smol-rs/async-process
+
+async-recursion 1.1.1 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/dcchut/async-recursion
+
+async-signal 0.2.14 [cargo]
+Licence: Apache-2.0 OR MIT
+Upstream: https://github.com/smol-rs/async-signal
+
+async-task 4.7.1 [cargo]
+Licence: Apache-2.0 OR MIT
+Upstream: https://github.com/smol-rs/async-task
+
+async-trait 0.1.91 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/dtolnay/async-trait
+
+atk-sys 0.18.2 [cargo]
+Licence: MIT
+Upstream: https://gtk-rs.org/
+
+atk 0.18.2 [cargo]
+Licence: MIT
+Upstream: https://gtk-rs.org/
+
+atomic-waker 1.1.2 [cargo]
+Licence: Apache-2.0 OR MIT
+Upstream: https://github.com/smol-rs/atomic-waker
+
+autocfg 1.5.1 [cargo]
+Licence: Apache-2.0 OR MIT
+Upstream: https://github.com/cuviper/autocfg
+
+base64 0.21.7 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/marshallpierce/rust-base64
+
+base64 0.22.1 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/marshallpierce/rust-base64
+
+bit-set 0.8.0 [cargo]
+Licence: Apache-2.0 OR MIT
+Upstream: https://github.com/contain-rs/bit-set
+
+bit-vec 0.8.0 [cargo]
+Licence: Apache-2.0 OR MIT
+Upstream: https://github.com/contain-rs/bit-vec
+
+bitflags 1.3.2 [cargo]
+Licence: MIT/Apache-2.0
+Upstream: https://github.com/bitflags/bitflags
+
+bitflags 2.13.1 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/bitflags/bitflags
+
+block-buffer 0.10.4 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/RustCrypto/utils
+
+block-buffer 0.12.1 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/RustCrypto/utils
+
+block-padding 0.3.3 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/RustCrypto/utils
+
+block2 0.6.2 [cargo]
+Licence: MIT
+Upstream: https://github.com/madsmtm/objc2
+
+blocking 1.6.2 [cargo]
+Licence: Apache-2.0 OR MIT
+Upstream: https://github.com/smol-rs/blocking
+
+brotli-decompressor 5.0.3 [cargo]
+Licence: BSD-3-Clause/MIT
+Upstream: https://github.com/dropbox/rust-brotli-decompressor
+
+brotli 8.0.4 [cargo]
+Licence: BSD-3-Clause AND MIT
+Upstream: https://github.com/dropbox/rust-brotli
+
+bs58 0.5.1 [cargo]
+Licence: MIT/Apache-2.0
+Upstream: https://github.com/Nullus157/bs58-rs
+
+bumpalo 3.20.3 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/fitzgen/bumpalo
+
+bytemuck 1.25.2 [cargo]
+Licence: Zlib OR Apache-2.0 OR MIT
+Upstream: https://github.com/Lokathor/bytemuck
+
+byteorder 1.5.0 [cargo]
+Licence: Unlicense OR MIT
+Upstream: https://github.com/BurntSushi/byteorder
+
+bytes 1.12.1 [cargo]
+Licence: MIT
+Upstream: https://github.com/tokio-rs/bytes
+
+cairo-rs 0.18.5 [cargo]
+Licence: MIT
+Upstream: https://gtk-rs.org/
+
+cairo-sys-rs 0.18.2 [cargo]
+Licence: MIT
+Upstream: https://gtk-rs.org/
+
+camino 1.2.4 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/camino-rs/camino
+
+cargo_metadata 0.19.2 [cargo]
+Licence: MIT
+Upstream: https://github.com/oli-obk/cargo_metadata
+
+cargo_toml 0.22.3 [cargo]
+Licence: Apache-2.0 OR MIT
+Upstream: https://lib.rs/cargo_toml
+
+cargo-platform 0.1.9 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/rust-lang/cargo
+
+cbc 0.1.2 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/RustCrypto/block-modes
+
+cc 1.4.0 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/rust-lang/cc-rs
+
+cesu8 1.1.0 [cargo]
+Licence: Apache-2.0/MIT
+Upstream: https://github.com/emk/cesu8-rs
+
+cfb 0.7.3 [cargo]
+Licence: MIT
+Upstream: https://github.com/mdsteele/rust-cfb
+
+cfg-expr 0.15.8 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/EmbarkStudios/cfg-expr
+
+cfg-if 1.0.4 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/rust-lang/cfg-if
+
+chrono 0.4.45 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/chronotope/chrono
+
+cipher 0.4.4 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/RustCrypto/traits
+
+combine 4.6.7 [cargo]
+Licence: MIT
+Upstream: https://github.com/Marwes/combine
+
+concurrent-queue 2.5.0 [cargo]
+Licence: Apache-2.0 OR MIT
+Upstream: https://github.com/smol-rs/concurrent-queue
+
+cookie 0.18.1 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/SergioBenitez/cookie-rs
+
+core-foundation-sys 0.8.7 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/servo/core-foundation-rs
+
+core-foundation 0.10.1 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/servo/core-foundation-rs
+
+core-graphics-types 0.2.0 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/servo/core-foundation-rs
+
+core-graphics 0.25.0 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/servo/core-foundation-rs
+
+cpufeatures 0.2.17 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/RustCrypto/utils
+
+cpufeatures 0.3.0 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/RustCrypto/utils
+
+crc32fast 1.5.0 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/srijs/rust-crc32fast
+
+crossbeam-channel 0.5.16 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/crossbeam-rs/crossbeam/tree/master/crossbeam-channel
+
+crossbeam-utils 0.8.22 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/crossbeam-rs/crossbeam/tree/master/crossbeam-utils
+
+crypto-common 0.1.7 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/RustCrypto/traits
+
+crypto-common 0.2.2 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/RustCrypto/traits
+
+cssparser-macros 0.6.1 [cargo]
+Licence: MPL-2.0
+Upstream: https://github.com/servo/rust-cssparser
+
+cssparser 0.36.0 [cargo]
+Licence: MPL-2.0
+Upstream: https://github.com/servo/rust-cssparser
+
+ctor-proc-macro 0.0.7 [cargo]
+Licence: Apache-2.0 OR MIT
+Upstream: https://github.com/mmastrac/rust-ctor
+
+ctor 0.8.0 [cargo]
+Licence: Apache-2.0 OR MIT
+Upstream: https://github.com/mmastrac/rust-ctor
+
+curve25519-dalek-derive 0.1.1 [cargo]
+Licence: MIT/Apache-2.0
+Upstream: https://github.com/dalek-cryptography/curve25519-dalek
+
+curve25519-dalek 5.0.0 [cargo]
+Licence: BSD-3-Clause
+Upstream: https://github.com/dalek-cryptography/curve25519-dalek
+
+darling_core 0.23.0 [cargo]
+Licence: MIT
+Upstream: https://github.com/TedDriggs/darling
+
+darling_macro 0.23.0 [cargo]
+Licence: MIT
+Upstream: https://github.com/TedDriggs/darling
+
+darling 0.23.0 [cargo]
+Licence: MIT
+Upstream: https://github.com/TedDriggs/darling
+
+dbus 0.9.12 [cargo]
+Licence: Apache-2.0/MIT
+Upstream: https://github.com/diwic/dbus-rs
+
+deranged 0.5.8 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/jhpratt/deranged
+
+derive_more-impl 2.1.1 [cargo]
+Licence: MIT
+Upstream: https://github.com/JelteF/derive_more
+
+derive_more 2.1.1 [cargo]
+Licence: MIT
+Upstream: https://github.com/JelteF/derive_more
+
+digest 0.10.7 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/RustCrypto/traits
+
+digest 0.11.3 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/RustCrypto/traits
+
+dirs-sys 0.5.0 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/dirs-dev/dirs-sys-rs
+
+dirs 6.0.0 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/soc/dirs-rs
+
+dispatch2 0.3.1 [cargo]
+Licence: Zlib OR Apache-2.0 OR MIT
+Upstream: https://github.com/madsmtm/objc2
+
+displaydoc 0.2.6 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/yaahc/displaydoc
+
+dlopen2_derive 0.4.3 [cargo]
+Licence: MIT
+Upstream: https://github.com/OpenByteDev/dlopen2
+
+dlopen2 0.8.2 [cargo]
+Licence: MIT
+Upstream: https://github.com/OpenByteDev/dlopen2
+
+dom_query 0.27.0 [cargo]
+Licence: MIT
+Upstream: https://github.com/niklak/dom_query
+
+dpi 0.1.2 [cargo]
+Licence: Apache-2.0 AND MIT
+Upstream: https://github.com/rust-windowing/winit
+
+dtoa-short 0.3.5 [cargo]
+Licence: MPL-2.0
+Upstream: https://github.com/upsuper/dtoa-short
+
+dtoa 1.0.11 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/dtolnay/dtoa
+
+dtor-proc-macro 0.0.6 [cargo]
+Licence: Apache-2.0 OR MIT
+Upstream: https://github.com/mmastrac/rust-ctor
+
+dtor 0.3.0 [cargo]
+Licence: Apache-2.0 OR MIT
+Upstream: https://github.com/mmastrac/rust-ctor
+
+dunce 1.0.5 [cargo]
+Licence: CC0-1.0 OR MIT-0 OR Apache-2.0
+Upstream: https://lib.rs/crates/dunce
+
+dyn-clone 1.0.20 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/dtolnay/dyn-clone
+
+ed25519-dalek 3.0.0 [cargo]
+Licence: BSD-3-Clause
+Upstream: https://github.com/dalek-cryptography/curve25519-dalek
+
+ed25519 3.0.0 [cargo]
+Licence: Apache-2.0 OR MIT
+Upstream: https://github.com/RustCrypto/signatures/tree/master/ed25519
+
+embed_plist 1.2.2 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/nvzqz/embed-plist-rs
+
+embed-resource 3.0.11 [cargo]
+Licence: MIT
+Upstream: https://github.com/nabijaczleweli/rust-embed-resource
+
+endi 1.1.1 [cargo]
+Licence: MIT
+Upstream: https://github.com/zeenix/endi
+
+enumflags2_derive 0.7.12 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/meithecatte/enumflags2
+
+enumflags2 0.7.12 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/meithecatte/enumflags2
+
+equivalent 1.0.2 [cargo]
+Licence: Apache-2.0 OR MIT
+Upstream: https://github.com/indexmap-rs/equivalent
+
+erased-serde 0.4.10 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/dtolnay/erased-serde
+
+errno 0.3.14 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/lambda-fairy/rust-errno
+
+event-listener-strategy 0.5.4 [cargo]
+Licence: Apache-2.0 OR MIT
+Upstream: https://github.com/smol-rs/event-listener-strategy
+
+event-listener 5.4.2 [cargo]
+Licence: Apache-2.0 OR MIT
+Upstream: https://github.com/smol-rs/event-listener
+
+fastrand 2.5.0 [cargo]
+Licence: Apache-2.0 OR MIT
+Upstream: https://github.com/smol-rs/fastrand
+
+fdeflate 0.3.7 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/image-rs/fdeflate
+
+fiat-crypto 0.3.0 [cargo]
+Licence: MIT OR Apache-2.0 OR BSD-1-Clause
+Upstream: https://github.com/mit-plv/fiat-crypto
+
+field-offset 0.3.6 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/Diggsey/rust-field-offset
+
+find-msvc-tools 0.1.9 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/rust-lang/cc-rs
+
+flate2 1.1.9 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/rust-lang/flate2-rs
+
+fnv 1.0.7 [cargo]
+Licence: Apache-2.0 / MIT
+Upstream: https://github.com/servo/rust-fnv
+
+foldhash 0.2.0 [cargo]
+Licence: Zlib
+Upstream: https://github.com/orlp/foldhash
+
+foreign-types-macros 0.2.4 [cargo]
+Licence: MIT/Apache-2.0
+Upstream: https://github.com/sfackler/foreign-types
+
+foreign-types-shared 0.3.1 [cargo]
+Licence: MIT/Apache-2.0
+Upstream: https://github.com/sfackler/foreign-types
+
+foreign-types 0.5.0 [cargo]
+Licence: MIT/Apache-2.0
+Upstream: https://github.com/sfackler/foreign-types
+
+form_urlencoded 1.2.2 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/servo/rust-url
+
+futures-channel 0.3.33 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://rust-lang.github.io/futures-rs
+
+futures-core 0.3.33 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://rust-lang.github.io/futures-rs
+
+futures-executor 0.3.33 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://rust-lang.github.io/futures-rs
+
+futures-io 0.3.33 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://rust-lang.github.io/futures-rs
+
+futures-lite 2.6.1 [cargo]
+Licence: Apache-2.0 OR MIT
+Upstream: https://github.com/smol-rs/futures-lite
+
+futures-macro 0.3.33 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://rust-lang.github.io/futures-rs
+
+futures-sink 0.3.33 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://rust-lang.github.io/futures-rs
+
+futures-task 0.3.33 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://rust-lang.github.io/futures-rs
+
+futures-util 0.3.33 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://rust-lang.github.io/futures-rs
+
+gdk-pixbuf-sys 0.18.0 [cargo]
+Licence: MIT
+Upstream: https://gtk-rs.org/
+
+gdk-pixbuf 0.18.5 [cargo]
+Licence: MIT
+Upstream: https://gtk-rs.org/
+
+gdk-sys 0.18.2 [cargo]
+Licence: MIT
+Upstream: https://gtk-rs.org/
+
+gdk 0.18.2 [cargo]
+Licence: MIT
+Upstream: https://gtk-rs.org/
+
+gdkwayland-sys 0.18.2 [cargo]
+Licence: MIT
+Upstream: https://gtk-rs.org/
+
+gdkx11-sys 0.18.2 [cargo]
+Licence: MIT
+Upstream: https://gtk-rs.org/
+
+gdkx11 0.18.2 [cargo]
+Licence: MIT
+Upstream: https://gtk-rs.org/
+
+generic-array 0.14.7 [cargo]
+Licence: MIT
+Upstream: https://github.com/fizyk20/generic-array.git
+
+getrandom 0.2.17 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/rust-random/getrandom
+
+getrandom 0.3.4 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/rust-random/getrandom
+
+getrandom 0.4.3 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/rust-random/getrandom
+
+gio-sys 0.18.1 [cargo]
+Licence: MIT
+Upstream: https://gtk-rs.org/
+
+gio 0.18.4 [cargo]
+Licence: MIT
+Upstream: https://gtk-rs.org/
+
+glib-macros 0.18.5 [cargo]
+Licence: MIT
+Upstream: https://gtk-rs.org/
+
+glib-sys 0.18.1 [cargo]
+Licence: MIT
+Upstream: https://gtk-rs.org/
+
+glib 0.18.5 [cargo]
+Licence: MIT
+Upstream: https://gtk-rs.org/
+
+glob 0.3.4 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/rust-lang/glob
+
+gobject-sys 0.18.0 [cargo]
+Licence: MIT
+Upstream: https://gtk-rs.org/
+
+gtk-sys 0.18.2 [cargo]
+Licence: MIT
+Upstream: https://gtk-rs.org/
+
+gtk 0.18.2 [cargo]
+Licence: MIT
+Upstream: https://gtk-rs.org/
+
+gtk3-macros 0.18.2 [cargo]
+Licence: MIT
+Upstream: https://gtk-rs.org/
+
+hashbrown 0.12.3 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/rust-lang/hashbrown
+
+hashbrown 0.17.1 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/rust-lang/hashbrown
+
+heck 0.4.1 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/withoutboats/heck
+
+heck 0.5.0 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/withoutboats/heck
+
+hermit-abi 0.5.2 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/hermit-os/hermit-rs
+
+hex 0.4.3 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/KokaKiwi/rust-hex
+
+hkdf 0.12.4 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/RustCrypto/KDFs/
+
+hmac 0.12.1 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/RustCrypto/MACs
+
+html5ever 0.38.0 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/servo/html5ever
+
+http-body-util 0.1.4 [cargo]
+Licence: MIT
+Upstream: https://github.com/hyperium/http-body
+
+http-body 1.1.0 [cargo]
+Licence: MIT
+Upstream: https://github.com/hyperium/http-body
+
+http 1.4.2 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/hyperium/http
+
+httparse 1.10.1 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/seanmonstar/httparse
+
+hybrid-array 0.4.14 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/RustCrypto/hybrid-array
+
+hyper-util 0.1.20 [cargo]
+Licence: MIT
+Upstream: https://hyper.rs
+
+hyper 1.11.0 [cargo]
+Licence: MIT
+Upstream: https://hyper.rs
+
+iana-time-zone-haiku 0.1.2 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/strawlab/iana-time-zone
+
+iana-time-zone 0.1.65 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/strawlab/iana-time-zone
+
+ico 0.5.0 [cargo]
+Licence: MIT
+Upstream: https://github.com/mdsteele/rust-ico
+
+icu_collections 2.2.0 [cargo]
+Licence: Unicode-3.0
+Upstream: https://icu4x.unicode.org
+
+icu_locale_core 2.2.0 [cargo]
+Licence: Unicode-3.0
+Upstream: https://icu4x.unicode.org
+
+icu_normalizer_data 2.2.0 [cargo]
+Licence: Unicode-3.0
+Upstream: https://icu4x.unicode.org
+
+icu_normalizer 2.2.0 [cargo]
+Licence: Unicode-3.0
+Upstream: https://icu4x.unicode.org
+
+icu_properties_data 2.2.0 [cargo]
+Licence: Unicode-3.0
+Upstream: https://icu4x.unicode.org
+
+icu_properties 2.2.0 [cargo]
+Licence: Unicode-3.0
+Upstream: https://icu4x.unicode.org
+
+icu_provider 2.2.0 [cargo]
+Licence: Unicode-3.0
+Upstream: https://icu4x.unicode.org
+
+ident_case 1.0.1 [cargo]
+Licence: MIT/Apache-2.0
+Upstream: https://github.com/TedDriggs/ident_case
+
+idna_adapter 1.2.2 [cargo]
+Licence: Apache-2.0 OR MIT
+Upstream: https://docs.rs/crate/idna_adapter/latest
+
+idna 1.1.0 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/servo/rust-url/
+
+indexmap 1.9.3 [cargo]
+Licence: Apache-2.0 OR MIT
+Upstream: https://github.com/bluss/indexmap
+
+indexmap 2.14.0 [cargo]
+Licence: Apache-2.0 OR MIT
+Upstream: https://github.com/indexmap-rs/indexmap
+
+infer 0.19.0 [cargo]
+Licence: MIT
+Upstream: https://github.com/bojand/infer
+
+inout 0.1.4 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/RustCrypto/utils
+
+ipnet 2.12.0 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/krisprice/ipnet
+
+itoa 1.0.18 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/dtolnay/itoa
+
+javascriptcore-rs-sys 1.1.1 [cargo]
+Licence: MIT
+Upstream: https://github.com/tauri-apps/javascriptcore-rs
+
+javascriptcore-rs 1.1.2 [cargo]
+Licence: MIT
+Upstream: https://github.com/tauri-apps/javascriptcore-rs
+
+jni-sys-macros 0.4.1 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/jni-rs/jni-sys
+
+jni-sys 0.3.1 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/jni-rs/jni-sys
+
+jni-sys 0.4.1 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/jni-rs/jni-sys
+
+jni 0.21.1 [cargo]
+Licence: MIT/Apache-2.0
+Upstream: https://github.com/jni-rs/jni-rs
+
+js-sys 0.3.103 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://wasm-bindgen.github.io/wasm-bindgen/
+
+json-patch 3.0.1 [cargo]
+Licence: MIT/Apache-2.0
+Upstream: https://github.com/idubrov/json-patch
+
+jsonptr 0.6.3 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/chanced/jsonptr
+
+keyboard-types 0.7.0 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/pyfisch/keyboard-types
+
+keyring-core 1.0.0 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/open-source-cooperative/keyring-core
+
+keyring 4.1.5 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/open-source-cooperative/keyring-rs/wiki/Keyring
+
+libappindicator-sys 0.9.0 [cargo]
+Licence: Apache-2.0 OR MIT
+
+libappindicator 0.9.0 [cargo]
+Licence: Apache-2.0 OR MIT
+
+libc 0.2.189 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/rust-lang/libc
+
+libdbus-sys 0.2.7 [cargo]
+Licence: Apache-2.0/MIT
+Upstream: https://github.com/diwic/dbus-rs
+
+libloading 0.7.4 [cargo]
+Licence: ISC
+Upstream: https://github.com/nagisa/rust_libloading/
+
+libredox 0.1.18 [cargo]
+Licence: MIT
+Upstream: https://gitlab.redox-os.org/redox-os/libredox.git
+
+linux-raw-sys 0.12.1 [cargo]
+Licence: Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+Upstream: https://github.com/sunfishcode/linux-raw-sys
+
+litemap 0.8.2 [cargo]
+Licence: Unicode-3.0
+Upstream: https://github.com/unicode-org/icu4x
+
+lock_api 0.4.14 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/Amanieu/parking_lot
+
+log 0.4.33 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/rust-lang/log
+
+mac-notification-sys 0.6.15 [cargo]
+Licence: MIT/Apache-2.0
+Upstream: https://github.com/h4llow3En/mac-notification-sys
+
+markup5ever 0.38.0 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/servo/html5ever
+
+memchr 2.8.3 [cargo]
+Licence: Unlicense OR MIT
+Upstream: https://github.com/BurntSushi/memchr
+
+memoffset 0.9.1 [cargo]
+Licence: MIT
+Upstream: https://github.com/Gilnaa/memoffset
+
+mime 0.3.17 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/hyperium/mime
+
+miniz_oxide 0.8.9 [cargo]
+Licence: MIT OR Zlib OR Apache-2.0
+Upstream: https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide
+
+mio 1.2.2 [cargo]
+Licence: MIT
+Upstream: https://github.com/tokio-rs/mio
+
+muda 0.19.3 [cargo]
+Licence: Apache-2.0 OR MIT
+Upstream: https://github.com/tauri-apps/muda
+
+ndk-sys 0.6.0+11769913 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/rust-mobile/ndk
+
+ndk 0.9.0 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/rust-mobile/ndk
+
+new_debug_unreachable 1.0.6 [cargo]
+Licence: MIT
+Upstream: https://github.com/mbrubeck/rust-debug-unreachable
+
+notify-rust 4.18.0 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/hoodie/notify-rust
+
+num_enum_derive 0.7.6 [cargo]
+Licence: BSD-3-Clause OR MIT OR Apache-2.0
+Upstream: https://github.com/illicitonion/num_enum
+
+num_enum 0.7.6 [cargo]
+Licence: BSD-3-Clause OR MIT OR Apache-2.0
+Upstream: https://github.com/illicitonion/num_enum
+
+num-bigint 0.4.8 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/rust-num/num-bigint
+
+num-complex 0.4.6 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/rust-num/num-complex
+
+num-conv 0.2.2 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/jhpratt/num-conv
+
+num-integer 0.1.46 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/rust-num/num-integer
+
+num-iter 0.1.46 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/rust-num/num-iter
+
+num-rational 0.4.2 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/rust-num/num-rational
+
+num-traits 0.2.19 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/rust-num/num-traits
+
+num 0.4.3 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/rust-num/num
+
+objc2-app-kit 0.3.2 [cargo]
+Licence: Zlib OR Apache-2.0 OR MIT
+Upstream: https://github.com/madsmtm/objc2
+
+objc2-cloud-kit 0.3.2 [cargo]
+Licence: Zlib OR Apache-2.0 OR MIT
+Upstream: https://github.com/madsmtm/objc2
+
+objc2-core-data 0.3.2 [cargo]
+Licence: Zlib OR Apache-2.0 OR MIT
+Upstream: https://github.com/madsmtm/objc2
+
+objc2-core-foundation 0.3.2 [cargo]
+Licence: Zlib OR Apache-2.0 OR MIT
+Upstream: https://github.com/madsmtm/objc2
+
+objc2-core-graphics 0.3.2 [cargo]
+Licence: Zlib OR Apache-2.0 OR MIT
+Upstream: https://github.com/madsmtm/objc2
+
+objc2-core-image 0.3.2 [cargo]
+Licence: Zlib OR Apache-2.0 OR MIT
+Upstream: https://github.com/madsmtm/objc2
+
+objc2-core-location 0.3.2 [cargo]
+Licence: Zlib OR Apache-2.0 OR MIT
+Upstream: https://github.com/madsmtm/objc2
+
+objc2-core-text 0.3.2 [cargo]
+Licence: Zlib OR Apache-2.0 OR MIT
+Upstream: https://github.com/madsmtm/objc2
+
+objc2-encode 4.1.0 [cargo]
+Licence: MIT
+Upstream: https://github.com/madsmtm/objc2
+
+objc2-exception-helper 0.1.1 [cargo]
+Licence: Zlib OR Apache-2.0 OR MIT
+Upstream: https://github.com/madsmtm/objc2
+
+objc2-foundation 0.3.2 [cargo]
+Licence: MIT
+Upstream: https://github.com/madsmtm/objc2
+
+objc2-io-surface 0.3.2 [cargo]
+Licence: Zlib OR Apache-2.0 OR MIT
+Upstream: https://github.com/madsmtm/objc2
+
+objc2-quartz-core 0.3.2 [cargo]
+Licence: Zlib OR Apache-2.0 OR MIT
+Upstream: https://github.com/madsmtm/objc2
+
+objc2-ui-kit 0.3.2 [cargo]
+Licence: Zlib OR Apache-2.0 OR MIT
+Upstream: https://github.com/madsmtm/objc2
+
+objc2-user-notifications 0.3.2 [cargo]
+Licence: Zlib OR Apache-2.0 OR MIT
+Upstream: https://github.com/madsmtm/objc2
+
+objc2-web-kit 0.3.2 [cargo]
+Licence: Zlib OR Apache-2.0 OR MIT
+Upstream: https://github.com/madsmtm/objc2
+
+objc2 0.6.4 [cargo]
+Licence: MIT
+Upstream: https://github.com/madsmtm/objc2
+
+once_cell 1.21.4 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/matklad/once_cell
+
+option-ext 0.2.0 [cargo]
+Licence: MPL-2.0
+Upstream: https://github.com/soc/option-ext
+
+ordered-stream 0.2.0 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/danieldg/ordered-stream
+
+pango-sys 0.18.0 [cargo]
+Licence: MIT
+Upstream: https://gtk-rs.org/
+
+pango 0.18.3 [cargo]
+Licence: MIT
+Upstream: https://gtk-rs.org/
+
+parking_lot_core 0.9.12 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/Amanieu/parking_lot
+
+parking_lot 0.12.5 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/Amanieu/parking_lot
+
+parking 2.2.1 [cargo]
+Licence: Apache-2.0 OR MIT
+Upstream: https://github.com/smol-rs/parking
+
+percent-encoding 2.3.2 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/servo/rust-url/
+
+phf_codegen 0.13.1 [cargo]
+Licence: MIT
+Upstream: https://github.com/rust-phf/rust-phf
+
+phf_generator 0.13.1 [cargo]
+Licence: MIT
+Upstream: https://github.com/rust-phf/rust-phf
+
+phf_macros 0.13.1 [cargo]
+Licence: MIT
+Upstream: https://github.com/rust-phf/rust-phf
+
+phf_shared 0.13.1 [cargo]
+Licence: MIT
+Upstream: https://github.com/rust-phf/rust-phf
+
+phf 0.13.1 [cargo]
+Licence: MIT
+Upstream: https://github.com/rust-phf/rust-phf
+
+pin-project-lite 0.2.17 [cargo]
+Licence: Apache-2.0 OR MIT
+Upstream: https://github.com/taiki-e/pin-project-lite
+
+piper 0.2.5 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/smol-rs/piper
+
+pkg-config 0.3.33 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/rust-lang/pkg-config-rs
+
+plist 1.10.0 [cargo]
+Licence: MIT
+Upstream: https://github.com/ebarnard/rust-plist/
+
+png 0.17.16 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/image-rs/image-png
+
+png 0.18.1 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/image-rs/image-png
+
+polling 3.11.0 [cargo]
+Licence: Apache-2.0 OR MIT
+Upstream: https://github.com/smol-rs/polling
+
+potential_utf 0.1.5 [cargo]
+Licence: Unicode-3.0
+Upstream: https://icu4x.unicode.org
+
+powerfmt 0.2.0 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/jhpratt/powerfmt
+
+ppv-lite86 0.2.21 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/cryptocorrosion/cryptocorrosion
+
+precomputed-hash 0.1.1 [cargo]
+Licence: MIT
+Upstream: https://github.com/emilio/precomputed-hash
+
+proc-macro-crate 1.3.1 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/bkchr/proc-macro-crate
+
+proc-macro-crate 2.0.2 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/bkchr/proc-macro-crate
+
+proc-macro-crate 3.5.0 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/bkchr/proc-macro-crate
+
+proc-macro-error-attr 1.0.4 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://gitlab.com/CreepySkeleton/proc-macro-error
+
+proc-macro-error 1.0.4 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://gitlab.com/CreepySkeleton/proc-macro-error
+
+proc-macro2 1.0.107 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/dtolnay/proc-macro2
+
+quick-xml 0.41.0 [cargo]
+Licence: MIT
+Upstream: https://github.com/tafia/quick-xml
+
+quote 1.0.47 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/dtolnay/quote
+
+r-efi 5.3.0 [cargo]
+Licence: MIT OR Apache-2.0 OR LGPL-2.1-or-later
+Upstream: https://github.com/r-efi/r-efi/wiki
+
+r-efi 6.0.0 [cargo]
+Licence: MIT OR Apache-2.0 OR LGPL-2.1-or-later
+Upstream: https://github.com/r-efi/r-efi/wiki
+
+rand_chacha 0.9.0 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://rust-random.github.io/book
+
+rand_core 0.9.5 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://rust-random.github.io/book
+
+rand 0.9.5 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://rust-random.github.io/book
+
+raw-window-handle 0.6.2 [cargo]
+Licence: MIT OR Apache-2.0 OR Zlib
+Upstream: https://github.com/rust-windowing/raw-window-handle
+
+redox_syscall 0.5.18 [cargo]
+Licence: MIT
+Upstream: https://gitlab.redox-os.org/redox-os/syscall
+
+redox_users 0.5.2 [cargo]
+Licence: MIT
+Upstream: https://gitlab.redox-os.org/redox-os/users
+
+ref-cast-impl 1.0.26 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/dtolnay/ref-cast
+
+ref-cast 1.0.26 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/dtolnay/ref-cast
+
+regex-automata 0.4.16 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/rust-lang/regex/tree/master/regex-automata
+
+regex-syntax 0.8.11 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/rust-lang/regex/tree/master/regex-syntax
+
+regex 1.13.1 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/rust-lang/regex
+
+reqwest 0.13.4 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/seanmonstar/reqwest
+
+rustc_version 0.4.1 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/djc/rustc-version-rs
+
+rustc-hash 2.1.3 [cargo]
+Licence: Apache-2.0 OR MIT
+Upstream: https://github.com/rust-lang/rustc-hash
+
+rustix 1.1.4 [cargo]
+Licence: Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+Upstream: https://github.com/bytecodealliance/rustix
+
+rustversion 1.0.23 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/dtolnay/rustversion
+
+same-file 1.0.6 [cargo]
+Licence: Unlicense/MIT
+Upstream: https://github.com/BurntSushi/same-file
+
+schemars_derive 0.8.22 [cargo]
+Licence: MIT
+Upstream: https://graham.cool/schemars/
+
+schemars 0.8.22 [cargo]
+Licence: MIT
+Upstream: https://graham.cool/schemars/
+
+schemars 0.9.0 [cargo]
+Licence: MIT
+Upstream: https://graham.cool/schemars/
+
+schemars 1.2.1 [cargo]
+Licence: MIT
+Upstream: https://graham.cool/schemars/
+
+scopeguard 1.2.0 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/bluss/scopeguard
+
+secret-service 5.1.0 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/hwchen/secret-service-rs.git
+
+security-framework-sys 2.17.0 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://lib.rs/crates/security-framework-sys
+
+security-framework 3.7.0 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://lib.rs/crates/security_framework
+
+selectors 0.36.1 [cargo]
+Licence: MPL-2.0
+Upstream: https://github.com/servo/stylo
+
+semver 1.0.28 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/dtolnay/semver
+
+serde_core 1.0.228 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://serde.rs
+
+serde_derive_internals 0.29.1 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://serde.rs
+
+serde_derive 1.0.228 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://serde.rs
+
+serde_json 1.0.149 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/serde-rs/json
+
+serde_repr 0.1.21 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/dtolnay/serde-repr
+
+serde_spanned 0.6.9 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/toml-rs/toml
+
+serde_spanned 1.1.1 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/toml-rs/toml
+
+serde_with_macros 3.21.0 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/jonasbb/serde_with/
+
+serde_with 3.21.0 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/jonasbb/serde_with/
+
+serde-untagged 0.1.9 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/dtolnay/serde-untagged
+
+serde 1.0.228 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://serde.rs
+
+serialize-to-javascript-impl 0.1.2 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/chippers/serialize-to-javascript
+
+serialize-to-javascript 0.1.2 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/chippers/serialize-to-javascript
+
+servo_arc 0.4.3 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/servo/stylo
+
+sha2 0.10.9 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/RustCrypto/hashes
+
+sha2 0.11.0 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/RustCrypto/hashes
+
+shlex 2.0.1 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/comex/rust-shlex
+
+signal-hook-registry 1.4.8 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/vorner/signal-hook
+
+signature 3.0.0 [cargo]
+Licence: Apache-2.0 OR MIT
+Upstream: https://github.com/RustCrypto/traits
+
+simd-adler32 0.3.10 [cargo]
+Licence: MIT
+Upstream: https://github.com/mcountryman/simd-adler32
+
+siphasher 1.0.3 [cargo]
+Licence: MIT/Apache-2.0
+Upstream: https://docs.rs/siphasher
+
+slab 0.4.12 [cargo]
+Licence: MIT
+Upstream: https://github.com/tokio-rs/slab
+
+smallvec 1.15.2 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/servo/rust-smallvec
+
+socket2 0.6.5 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/rust-lang/socket2
+
+softbuffer 0.4.8 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/rust-windowing/softbuffer
+
+soup3-sys 0.5.0 [cargo]
+Licence: MIT
+Upstream: https://gtk-rs.org
+
+soup3 0.5.0 [cargo]
+Licence: MIT
+Upstream: https://gitlab.gnome.org/World/Rust/soup3-rs
+
+stable_deref_trait 1.2.1 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/storyyeller/stable_deref_trait
+
+string_cache_codegen 0.6.1 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/servo/string-cache
+
+string_cache 0.9.0 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/servo/string-cache
+
+strsim 0.11.1 [cargo]
+Licence: MIT
+Upstream: https://github.com/rapidfuzz/strsim-rs
+
+subtle 2.6.1 [cargo]
+Licence: BSD-3-Clause
+Upstream: https://dalek.rs/
+
+swift-rs 1.0.7 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/Brendonovich/swift-rs
+
+syn 1.0.109 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/dtolnay/syn
+
+syn 2.0.119 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/dtolnay/syn
+
+syn 3.0.3 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/dtolnay/syn
+
+sync_wrapper 1.0.2 [cargo]
+Licence: Apache-2.0
+Upstream: https://docs.rs/sync_wrapper
+
+synstructure 0.13.2 [cargo]
+Licence: MIT
+Upstream: https://github.com/mystor/synstructure
+
+system-deps 6.2.2 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/gdesmott/system-deps
+
+tao-macros 0.1.3 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/tauri-apps/tao
+
+tao 0.35.3 [cargo]
+Licence: Apache-2.0
+Upstream: https://github.com/tauri-apps/tao
+
+target-lexicon 0.12.16 [cargo]
+Licence: Apache-2.0 WITH LLVM-exception
+Upstream: https://github.com/bytecodealliance/target-lexicon
+
+tauri-build 2.6.3 [cargo]
+Licence: Apache-2.0 OR MIT
+Upstream: https://tauri.app/
+
+tauri-codegen 2.6.3 [cargo]
+Licence: Apache-2.0 OR MIT
+Upstream: https://tauri.app/
+
+tauri-macros 2.6.3 [cargo]
+Licence: Apache-2.0 OR MIT
+Upstream: https://tauri.app/
+
+tauri-plugin-notification 2.3.3 [cargo]
+Licence: Apache-2.0 OR MIT
+Upstream: https://github.com/tauri-apps/plugins-workspace
+
+tauri-plugin 2.6.3 [cargo]
+Licence: Apache-2.0 OR MIT
+Upstream: https://tauri.app/
+
+tauri-runtime-wry 2.11.4 [cargo]
+Licence: Apache-2.0 OR MIT
+Upstream: https://tauri.app/
+
+tauri-runtime 2.11.3 [cargo]
+Licence: Apache-2.0 OR MIT
+Upstream: https://tauri.app/
+
+tauri-utils 2.9.3 [cargo]
+Licence: Apache-2.0 OR MIT
+Upstream: https://tauri.app/
+
+tauri-winres 0.3.6 [cargo]
+Licence: MIT
+Upstream: https://github.com/tauri-apps/winres
+
+tauri-winrt-notification 0.7.3 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/tauri-apps/winrt-notification
+
+tauri 2.11.5 [cargo]
+Licence: Apache-2.0 OR MIT
+Upstream: https://tauri.app/
+
+tempfile 3.27.0 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://stebalien.com/projects/tempfile-rs/
+
+tendril 0.5.1 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/servo/html5ever
+
+thiserror-impl 1.0.69 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/dtolnay/thiserror
+
+thiserror-impl 2.0.19 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/dtolnay/thiserror
+
+thiserror 1.0.69 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/dtolnay/thiserror
+
+thiserror 2.0.19 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/dtolnay/thiserror
+
+time-core 0.1.9 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/time-rs/time
+
+time-macros 0.2.32 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/time-rs/time
+
+time 0.3.54 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://time-rs.github.io
+
+tinystr 0.8.3 [cargo]
+Licence: Unicode-3.0
+Upstream: https://github.com/unicode-org/icu4x
+
+tinyvec_macros 0.1.1 [cargo]
+Licence: MIT OR Apache-2.0 OR Zlib
+Upstream: https://github.com/Soveu/tinyvec_macros
+
+tinyvec 1.12.0 [cargo]
+Licence: Zlib OR Apache-2.0 OR MIT
+Upstream: https://github.com/Lokathor/tinyvec
+
+tokio-util 0.7.19 [cargo]
+Licence: MIT
+Upstream: https://tokio.rs
+
+tokio 1.53.1 [cargo]
+Licence: MIT
+Upstream: https://tokio.rs
+
+toml_datetime 0.6.3 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/toml-rs/toml
+
+toml_datetime 0.7.5+spec-1.1.0 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/toml-rs/toml
+
+toml_datetime 1.1.1+spec-1.1.0 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/toml-rs/toml
+
+toml_edit 0.19.15 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/toml-rs/toml
+
+toml_edit 0.20.2 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/toml-rs/toml
+
+toml_edit 0.25.13+spec-1.1.0 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/toml-rs/toml
+
+toml_parser 1.1.2+spec-1.1.0 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/toml-rs/toml
+
+toml_writer 1.1.2+spec-1.1.0 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/toml-rs/toml
+
+toml 0.8.2 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/toml-rs/toml
+
+toml 0.9.12+spec-1.1.0 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/toml-rs/toml
+
+toml 1.1.3+spec-1.1.0 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/toml-rs/toml
+
+tower-http 0.6.11 [cargo]
+Licence: MIT
+Upstream: https://github.com/tower-rs/tower-http
+
+tower-layer 0.3.3 [cargo]
+Licence: MIT
+Upstream: https://github.com/tower-rs/tower
+
+tower-service 0.3.3 [cargo]
+Licence: MIT
+Upstream: https://github.com/tower-rs/tower
+
+tower 0.5.3 [cargo]
+Licence: MIT
+Upstream: https://github.com/tower-rs/tower
+
+tracing-attributes 0.1.31 [cargo]
+Licence: MIT
+Upstream: https://tokio.rs
+
+tracing-core 0.1.36 [cargo]
+Licence: MIT
+Upstream: https://tokio.rs
+
+tracing 0.1.44 [cargo]
+Licence: MIT
+Upstream: https://tokio.rs
+
+tray-icon 0.24.1 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/tauri-apps/tray-icon
+
+try-lock 0.2.5 [cargo]
+Licence: MIT
+Upstream: https://github.com/seanmonstar/try-lock
+
+typeid 1.0.3 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/dtolnay/typeid
+
+typenum 1.20.1 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/paholg/typenum
+
+uds_windows 1.2.1 [cargo]
+Licence: MIT
+Upstream: https://github.com/haraldh/rust_uds_windows
+
+unic-char-property 0.9.0 [cargo]
+Licence: MIT/Apache-2.0
+Upstream: https://github.com/open-i18n/rust-unic/
+
+unic-char-range 0.9.0 [cargo]
+Licence: MIT/Apache-2.0
+Upstream: https://github.com/open-i18n/rust-unic/
+
+unic-common 0.9.0 [cargo]
+Licence: MIT/Apache-2.0
+Upstream: https://github.com/open-i18n/rust-unic/
+
+unic-ucd-ident 0.9.0 [cargo]
+Licence: MIT/Apache-2.0
+Upstream: https://github.com/open-i18n/rust-unic/
+
+unic-ucd-version 0.9.0 [cargo]
+Licence: MIT/Apache-2.0
+Upstream: https://github.com/open-i18n/rust-unic/
+
+unicode-ident 1.0.24 [cargo]
+Licence: (MIT OR Apache-2.0) AND Unicode-3.0
+Upstream: https://github.com/dtolnay/unicode-ident
+
+unicode-segmentation 1.13.3 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/unicode-rs/unicode-segmentation
+
+url 2.5.8 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/servo/rust-url
+
+urlpattern 0.3.0 [cargo]
+Licence: MIT
+Upstream: https://github.com/denoland/rust-urlpattern
+
+utf8_iter 1.0.4 [cargo]
+Licence: Apache-2.0 OR MIT
+Upstream: https://docs.rs/utf8_iter/
+
+uuid 1.24.0 [cargo]
+Licence: Apache-2.0 OR MIT
+Upstream: https://github.com/uuid-rs/uuid
+
+version_check 0.9.5 [cargo]
+Licence: MIT/Apache-2.0
+Upstream: https://github.com/SergioBenitez/version_check
+
+version-compare 0.2.1 [cargo]
+Licence: MIT
+Upstream: https://timvisee.com/projects/version-compare/
+
+vswhom-sys 0.1.3 [cargo]
+Licence: MIT
+Upstream: https://github.com/nabijaczleweli/vswhom-sys.rs
+
+vswhom 0.1.0 [cargo]
+Licence: MIT
+Upstream: https://github.com/nabijaczleweli/vswhom.rs
+
+walkdir 2.5.0 [cargo]
+Licence: Unlicense/MIT
+Upstream: https://github.com/BurntSushi/walkdir
+
+want 0.3.1 [cargo]
+Licence: MIT
+Upstream: https://github.com/seanmonstar/want
+
+wasi 0.11.1+wasi-snapshot-preview1 [cargo]
+Licence: Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+Upstream: https://github.com/bytecodealliance/wasi
+
+wasip2 1.0.4+wasi-0.2.12 [cargo]
+Licence: Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+Upstream: https://github.com/bytecodealliance/wasi-rs
+
+wasm-bindgen-futures 0.4.76 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://wasm-bindgen.github.io/wasm-bindgen/
+
+wasm-bindgen-macro-support 0.2.126 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://wasm-bindgen.github.io/wasm-bindgen/
+
+wasm-bindgen-macro 0.2.126 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://wasm-bindgen.github.io/wasm-bindgen/
+
+wasm-bindgen-shared 0.2.126 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://wasm-bindgen.github.io/wasm-bindgen/
+
+wasm-bindgen 0.2.126 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://wasm-bindgen.github.io/wasm-bindgen
+
+wasm-streams 0.5.0 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/MattiasBuelens/wasm-streams/
+
+web_atoms 0.2.5 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/servo/html5ever
+
+web-sys 0.3.103 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://wasm-bindgen.github.io/wasm-bindgen/web-sys/index.html
+
+webkit2gtk-sys 2.0.2 [cargo]
+Licence: MIT
+Upstream: https://github.com/tauri-apps/webkit2gtk-rs
+
+webkit2gtk 2.0.2 [cargo]
+Licence: MIT
+Upstream: https://github.com/tauri-apps/webkit2gtk-rs
+
+webview2-com-macros 0.8.1 [cargo]
+Licence: MIT
+Upstream: https://github.com/wravery/webview2-rs
+
+webview2-com-sys 0.38.2 [cargo]
+Licence: MIT
+Upstream: https://github.com/wravery/webview2-rs
+
+webview2-com 0.38.2 [cargo]
+Licence: MIT
+Upstream: https://github.com/wravery/webview2-rs
+
+winapi-i686-pc-windows-gnu 0.4.0 [cargo]
+Licence: MIT/Apache-2.0
+Upstream: https://github.com/retep998/winapi-rs
+
+winapi-util 0.1.11 [cargo]
+Licence: Unlicense OR MIT
+Upstream: https://github.com/BurntSushi/winapi-util
+
+winapi-x86_64-pc-windows-gnu 0.4.0 [cargo]
+Licence: MIT/Apache-2.0
+Upstream: https://github.com/retep998/winapi-rs
+
+winapi 0.3.9 [cargo]
+Licence: MIT/Apache-2.0
+Upstream: https://github.com/retep998/winapi-rs
+
+window-vibrancy 0.6.0 [cargo]
+Licence: Apache-2.0 OR MIT
+Upstream: https://github.com/tauri-apps/tauri-plugin-vibrancy
+
+windows_aarch64_gnullvm 0.42.2 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/microsoft/windows-rs
+
+windows_aarch64_gnullvm 0.52.6 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/microsoft/windows-rs
+
+windows_aarch64_msvc 0.42.2 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/microsoft/windows-rs
+
+windows_aarch64_msvc 0.52.6 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/microsoft/windows-rs
+
+windows_i686_gnu 0.42.2 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/microsoft/windows-rs
+
+windows_i686_gnu 0.52.6 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/microsoft/windows-rs
+
+windows_i686_gnullvm 0.52.6 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/microsoft/windows-rs
+
+windows_i686_msvc 0.42.2 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/microsoft/windows-rs
+
+windows_i686_msvc 0.52.6 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/microsoft/windows-rs
+
+windows_x86_64_gnu 0.42.2 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/microsoft/windows-rs
+
+windows_x86_64_gnu 0.52.6 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/microsoft/windows-rs
+
+windows_x86_64_gnullvm 0.42.2 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/microsoft/windows-rs
+
+windows_x86_64_gnullvm 0.52.6 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/microsoft/windows-rs
+
+windows_x86_64_msvc 0.42.2 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/microsoft/windows-rs
+
+windows_x86_64_msvc 0.52.6 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/microsoft/windows-rs
+
+windows-collections 0.2.0 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/microsoft/windows-rs
+
+windows-core 0.61.2 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/microsoft/windows-rs
+
+windows-core 0.62.2 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/microsoft/windows-rs
+
+windows-future 0.2.1 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/microsoft/windows-rs
+
+windows-implement 0.60.2 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/microsoft/windows-rs
+
+windows-interface 0.59.3 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/microsoft/windows-rs
+
+windows-link 0.1.3 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/microsoft/windows-rs
+
+windows-link 0.2.1 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/microsoft/windows-rs
+
+windows-native-keyring-store 1.1.0 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/open-source-cooperative/keyring-rs/wiki/Keyring
+
+windows-numerics 0.2.0 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/microsoft/windows-rs
+
+windows-result 0.3.4 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/microsoft/windows-rs
+
+windows-result 0.4.1 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/microsoft/windows-rs
+
+windows-strings 0.4.2 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/microsoft/windows-rs
+
+windows-strings 0.5.1 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/microsoft/windows-rs
+
+windows-sys 0.45.0 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/microsoft/windows-rs
+
+windows-sys 0.59.0 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/microsoft/windows-rs
+
+windows-sys 0.61.2 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/microsoft/windows-rs
+
+windows-targets 0.42.2 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/microsoft/windows-rs
+
+windows-targets 0.52.6 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/microsoft/windows-rs
+
+windows-threading 0.1.0 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/microsoft/windows-rs
+
+windows-version 0.1.7 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/microsoft/windows-rs
+
+windows 0.61.3 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/microsoft/windows-rs
+
+winnow 0.5.40 [cargo]
+Licence: MIT
+Upstream: https://github.com/winnow-rs/winnow
+
+winnow 0.7.15 [cargo]
+Licence: MIT
+Upstream: https://github.com/winnow-rs/winnow
+
+winnow 1.0.4 [cargo]
+Licence: MIT
+Upstream: https://github.com/winnow-rs/winnow
+
+winreg 0.55.0 [cargo]
+Licence: MIT
+Upstream: https://github.com/gentoo90/winreg-rs
+
+wit-bindgen 0.57.1 [cargo]
+Licence: Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+Upstream: https://github.com/bytecodealliance/wit-bindgen
+
+writeable 0.6.3 [cargo]
+Licence: Unicode-3.0
+Upstream: https://github.com/unicode-org/icu4x
+
+wry 0.55.1 [cargo]
+Licence: Apache-2.0 OR MIT
+Upstream: https://github.com/tauri-apps/wry
+
+x11-dl 2.21.0 [cargo]
+Licence: MIT
+Upstream: https://github.com/AltF02/x11-rs.git
+
+x11 2.21.0 [cargo]
+Licence: MIT
+Upstream: https://github.com/AltF02/x11-rs.git
+
+yoke-derive 0.8.2 [cargo]
+Licence: Unicode-3.0
+Upstream: https://github.com/unicode-org/icu4x
+
+yoke 0.8.3 [cargo]
+Licence: Unicode-3.0
+Upstream: https://github.com/unicode-org/icu4x
+
+zbus_macros 5.18.0 [cargo]
+Licence: MIT
+Upstream: https://github.com/z-galaxy/zbus/
+
+zbus_names 4.3.4 [cargo]
+Licence: MIT
+Upstream: https://github.com/z-galaxy/zbus/
+
+zbus-secret-service-keyring-store 1.0.0 [cargo]
+Licence: MIT OR Apache-2.0
+Upstream: https://github.com/open-source-cooperative/keyring-rs/wiki/Keyring
+
+zbus 5.18.0 [cargo]
+Licence: MIT
+Upstream: https://github.com/z-galaxy/zbus/
+
+zerocopy-derive 0.8.55 [cargo]
+Licence: BSD-2-Clause OR Apache-2.0 OR MIT
+Upstream: https://github.com/google/zerocopy
+
+zerocopy 0.8.55 [cargo]
+Licence: BSD-2-Clause OR Apache-2.0 OR MIT
+Upstream: https://github.com/google/zerocopy
+
+zerofrom-derive 0.1.7 [cargo]
+Licence: Unicode-3.0
+Upstream: https://github.com/unicode-org/icu4x
+
+zerofrom 0.1.8 [cargo]
+Licence: Unicode-3.0
+Upstream: https://github.com/unicode-org/icu4x
+
+zeroize 1.9.0 [cargo]
+Licence: Apache-2.0 OR MIT
+Upstream: https://github.com/RustCrypto/utils
+
+zerotrie 0.2.4 [cargo]
+Licence: Unicode-3.0
+Upstream: https://icu4x.unicode.org
+
+zerovec-derive 0.11.3 [cargo]
+Licence: Unicode-3.0
+Upstream: https://github.com/unicode-org/icu4x
+
+zerovec 0.11.6 [cargo]
+Licence: Unicode-3.0
+Upstream: https://github.com/unicode-org/icu4x
+
+zmij 1.0.23 [cargo]
+Licence: MIT
+Upstream: https://github.com/dtolnay/zmij
+
+zvariant_derive 5.13.1 [cargo]
+Licence: MIT
+Upstream: https://github.com/z-galaxy/zbus/
+
+zvariant_utils 3.5.0 [cargo]
+Licence: MIT
+Upstream: https://github.com/z-galaxy/zbus/
+
+zvariant 5.13.1 [cargo]
+Licence: MIT
+Upstream: https://github.com/z-galaxy/zbus/
+
+@anthropic-ai/sdk 0.91.1 [npm]
+Licence: MIT
+Upstream: https://github.com/anthropics/anthropic-sdk-typescript#readme
+
+@aws-crypto/sha256-browser 5.2.0 [npm]
+Licence: Apache-2.0
+Upstream: https://github.com/aws/aws-sdk-js-crypto-helpers/tree/master/packages/sha256-browser
+
+@aws-crypto/sha256-js 5.2.0 [npm]
+Licence: Apache-2.0
+Upstream: https://github.com/aws/aws-sdk-js-crypto-helpers/tree/master/packages/sha256-js
+
+@aws-crypto/supports-web-crypto 5.2.0 [npm]
+Licence: Apache-2.0
+Upstream: https://github.com/aws/aws-sdk-js-crypto-helpers/tree/master/packages/supports-web-crypto
+
+@aws-crypto/util 5.2.0 [npm]
+Licence: Apache-2.0
+Upstream: https://github.com/aws/aws-sdk-js-crypto-helpers/tree/master/packages/util
+
+@aws-sdk/client-bedrock-runtime 3.1048.0 [npm]
+Licence: Apache-2.0
+Upstream: https://github.com/aws/aws-sdk-js-v3/tree/main/clients/client-bedrock-runtime
+
+@aws-sdk/core 3.977.1 [npm]
+Licence: Apache-2.0
+Upstream: https://github.com/aws/aws-sdk-js-v3/tree/main/packages-internal/core
+
+@aws-sdk/credential-provider-env 3.972.61 [npm]
+Licence: Apache-2.0
+Upstream: https://github.com/aws/aws-sdk-js-v3/tree/main/packages-internal/credential-provider-env
+
+@aws-sdk/credential-provider-http 3.972.63 [npm]
+Licence: Apache-2.0
+Upstream: https://github.com/aws/aws-sdk-js-v3/tree/main/packages-internal/credential-provider-http
+
+@aws-sdk/credential-provider-ini 3.973.6 [npm]
+Licence: Apache-2.0
+Upstream: https://github.com/aws/aws-sdk-js-v3/tree/main/packages-internal/credential-provider-ini
+
+@aws-sdk/credential-provider-login 3.972.68 [npm]
+Licence: Apache-2.0
+Upstream: https://github.com/aws/aws-sdk-js-v3/tree/main/packages-internal/credential-provider-login
+
+@aws-sdk/credential-provider-node 3.972.72 [npm]
+Licence: Apache-2.0
+Upstream: https://github.com/aws/aws-sdk-js-v3/tree/main/packages-internal/credential-provider-node
+
+@aws-sdk/credential-provider-process 3.972.61 [npm]
+Licence: Apache-2.0
+Upstream: https://github.com/aws/aws-sdk-js-v3/tree/main/packages-internal/credential-provider-process
+
+@aws-sdk/credential-provider-sso 3.973.5 [npm]
+Licence: Apache-2.0
+Upstream: https://github.com/aws/aws-sdk-js-v3/tree/main/packages-internal/credential-provider-sso
+
+@aws-sdk/credential-provider-web-identity 3.972.67 [npm]
+Licence: Apache-2.0
+Upstream: https://github.com/aws/aws-sdk-js-v3/tree/main/packages-internal/credential-provider-web-identity
+
+@aws-sdk/eventstream-handler-node 3.972.30 [npm]
+Licence: Apache-2.0
+Upstream: https://github.com/aws/aws-sdk-js-v3/tree/main/packages-internal/eventstream-handler-node
+
+@aws-sdk/middleware-eventstream 3.972.25 [npm]
+Licence: Apache-2.0
+Upstream: https://github.com/aws/aws-sdk-js-v3/tree/main/packages-internal/middleware-eventstream
+
+@aws-sdk/middleware-websocket 3.972.43 [npm]
+Licence: Apache-2.0
+Upstream: https://github.com/aws/aws-sdk-js-v3/tree/main/packages-internal/middleware-websocket
+
+@aws-sdk/nested-clients 3.997.35 [npm]
+Licence: Apache-2.0
+Upstream: https://github.com/aws/aws-sdk-js-v3/tree/main/packages/nested-clients
+
+@aws-sdk/signature-v4-multi-region 3.996.42 [npm]
+Licence: Apache-2.0
+Upstream: https://github.com/aws/aws-sdk-js-v3/tree/main/packages/signature-v4-multi-region
+
+@aws-sdk/token-providers 3.1048.0 [npm]
+Licence: Apache-2.0
+Upstream: https://github.com/aws/aws-sdk-js-v3/tree/main/packages/token-providers
+
+@aws-sdk/token-providers 3.1095.0 [npm]
+Licence: Apache-2.0
+Upstream: https://github.com/aws/aws-sdk-js-v3/tree/main/packages/token-providers
+
+@aws-sdk/types 3.974.2 [npm]
+Licence: Apache-2.0
+Upstream: https://github.com/aws/aws-sdk-js-v3/tree/main/packages-internal/types
+
+@aws-sdk/util-locate-window 3.965.8 [npm]
+Licence: Apache-2.0
+Upstream: https://github.com/aws/aws-sdk-js-v3/tree/main/packages-internal/util-locate-window
+
+@aws-sdk/xml-builder 3.972.37 [npm]
+Licence: Apache-2.0
+Upstream: https://github.com/aws/aws-sdk-js-v3/tree/main/packages-internal/xml-builder
+
+@aws/lambda-invoke-store 0.3.0 [npm]
+Licence: Apache-2.0
+Upstream: https://github.com/awslabs/aws-lambda-invoke-store
+
+@babel/runtime 7.29.7 [npm]
+Licence: MIT
+Upstream: https://babel.dev/docs/en/next/babel-runtime
+
+@earendil-works/pi-agent-core 0.82.0 [npm]
+Licence: MIT
+Upstream: https://github.com/earendil-works/pi#readme
+
+@earendil-works/pi-ai 0.82.0 [npm]
+Licence: MIT
+Upstream: https://github.com/earendil-works/pi#readme
+
+@earendil-works/pi-coding-agent 0.82.0 [npm]
+Licence: MIT
+Upstream: https://github.com/earendil-works/pi#readme
+
+@earendil-works/pi-tui 0.82.0 [npm]
+Licence: MIT
+Upstream: https://github.com/earendil-works/pi#readme
+
+@google/genai 1.52.0 [npm]
+Licence: Apache-2.0
+Upstream: https://github.com/googleapis/js-genai#readme
+
+@internationalized/date 3.12.2 [npm]
+Licence: Apache-2.0
+Upstream: https://github.com/adobe/react-spectrum/tree/main#readme
+
+@internationalized/number 3.6.7 [npm]
+Licence: Apache-2.0
+Upstream: https://github.com/adobe/react-spectrum#readme
+
+@internationalized/string 3.2.9 [npm]
+Licence: Apache-2.0
+Upstream: https://github.com/adobe/react-spectrum#readme
+
+@mariozechner/clipboard-darwin-arm64 0.3.9 [npm]
+Licence: MIT
+Upstream: https://github.com/badlogic/clipboard#readme
+
+@mariozechner/clipboard-darwin-universal 0.3.9 [npm]
+Licence: MIT
+Upstream: https://github.com/badlogic/clipboard#readme
+
+@mariozechner/clipboard 0.3.9 [npm]
+Licence: MIT
+Upstream: https://github.com/badlogic/clipboard#readme
+
+@mistralai/mistralai 2.2.6 [npm]
+Licence: Apache-2.0
+Upstream: https://github.com/mistralai/client-ts#readme
+
+@opentelemetry/api 1.9.0 [npm]
+Licence: Apache-2.0
+Upstream: https://github.com/open-telemetry/opentelemetry-js/tree/main/api
+
+@opentelemetry/semantic-conventions 1.43.0 [npm]
+Licence: Apache-2.0
+Upstream: https://github.com/open-telemetry/opentelemetry-js/tree/main/semantic-conventions
+
+@protobufjs/aspromise 1.1.2 [npm]
+Licence: BSD-3-Clause
+Upstream: https://github.com/dcodeIO/protobuf.js#readme
+
+@protobufjs/base64 1.1.2 [npm]
+Licence: BSD-3-Clause
+Upstream: https://github.com/dcodeIO/protobuf.js#readme
+
+@protobufjs/codegen 2.0.5 [npm]
+Licence: BSD-3-Clause
+Upstream: https://github.com/dcodeIO/protobuf.js#readme
+
+@protobufjs/eventemitter 1.1.1 [npm]
+Licence: BSD-3-Clause
+Upstream: https://github.com/dcodeIO/protobuf.js#readme
+
+@protobufjs/fetch 1.1.1 [npm]
+Licence: BSD-3-Clause
+Upstream: https://github.com/dcodeIO/protobuf.js#readme
+
+@protobufjs/float 1.0.2 [npm]
+Licence: BSD-3-Clause
+Upstream: https://github.com/dcodeIO/protobuf.js#readme
+
+@protobufjs/path 1.1.2 [npm]
+Licence: BSD-3-Clause
+Upstream: https://github.com/dcodeIO/protobuf.js#readme
+
+@protobufjs/pool 1.1.0 [npm]
+Licence: BSD-3-Clause
+Upstream: https://github.com/dcodeIO/protobuf.js#readme
+
+@protobufjs/utf8 1.1.2 [npm]
+Licence: BSD-3-Clause
+Upstream: https://github.com/protobufjs/protobuf.js#readme
+
+@react-types/shared 3.36.0 [npm]
+Licence: Apache-2.0
+Upstream: https://github.com/adobe/react-spectrum#readme
+
+@shikijs/core 4.3.1 [npm]
+Licence: MIT
+Upstream: https://github.com/shikijs/shiki#readme
+
+@shikijs/engine-javascript 4.3.1 [npm]
+Licence: MIT
+Upstream: https://github.com/shikijs/shiki#readme
+
+@shikijs/engine-oniguruma 4.3.1 [npm]
+Licence: MIT
+Upstream: https://github.com/shikijs/shiki#readme
+
+@shikijs/langs 4.3.1 [npm]
+Licence: MIT
+Upstream: https://github.com/shikijs/shiki#readme
+
+@shikijs/primitive 4.3.1 [npm]
+Licence: MIT
+Upstream: https://github.com/shikijs/shiki#readme
+
+@shikijs/themes 4.3.1 [npm]
+Licence: MIT
+Upstream: https://github.com/shikijs/shiki#readme
+
+@shikijs/types 4.3.1 [npm]
+Licence: MIT
+Upstream: https://github.com/shikijs/shiki#readme
+
+@shikijs/vscode-textmate 10.0.2 [npm]
+Licence: MIT
+Upstream: https://github.com/shikijs/vscode-textmate#readme
+
+@silvia-odwyer/photon-node 0.3.4 [npm]
+Licence: Apache-2.0
+Upstream: https://silvia-odwyer.github.io/photon/
+
+@smithy/core 3.30.0 [npm]
+Licence: Apache-2.0
+Upstream: https://github.com/smithy-lang/smithy-typescript/tree/main/packages/core
+
+@smithy/credential-provider-imds 4.4.14 [npm]
+Licence: Apache-2.0
+Upstream: https://github.com/smithy-lang/smithy-typescript/tree/main/packages/credential-provider-imds
+
+@smithy/fetch-http-handler 5.6.11 [npm]
+Licence: Apache-2.0
+Upstream: https://github.com/smithy-lang/smithy-typescript/tree/main/packages/fetch-http-handler
+
+@smithy/is-array-buffer 2.2.0 [npm]
+Licence: Apache-2.0
+Upstream: https://github.com/awslabs/smithy-typescript/tree/main/packages/is-array-buffer
+
+@smithy/node-http-handler 4.7.3 [npm]
+Licence: Apache-2.0
+Upstream: https://github.com/smithy-lang/smithy-typescript/tree/main/packages/node-http-handler
+
+@smithy/node-http-handler 4.9.11 [npm]
+Licence: Apache-2.0
+Upstream: https://github.com/smithy-lang/smithy-typescript/tree/main/packages/node-http-handler
+
+@smithy/signature-v4 5.6.10 [npm]
+Licence: Apache-2.0
+Upstream: https://github.com/smithy-lang/smithy-typescript/tree/main/packages/signature-v4
+
+@smithy/types 4.16.1 [npm]
+Licence: Apache-2.0
+Upstream: https://github.com/smithy-lang/smithy-typescript/tree/main/packages/types
+
+@smithy/util-buffer-from 2.2.0 [npm]
+Licence: Apache-2.0
+Upstream: https://github.com/awslabs/smithy-typescript/tree/main/packages/util-buffer-from
+
+@smithy/util-utf8 2.3.0 [npm]
+Licence: Apache-2.0
+Upstream: https://github.com/awslabs/smithy-typescript/tree/main/packages/util-utf8
+
+@swc/helpers 0.5.23 [npm]
+Licence: Apache-2.0
+Upstream: https://swc.rs
+
+@tanstack/react-virtual 3.14.8 [npm]
+Licence: MIT
+Upstream: https://tanstack.com/virtual
+
+@tanstack/virtual-core 3.17.6 [npm]
+Licence: MIT
+Upstream: https://tanstack.com/virtual
+
+@tauri-apps/api 2.11.1 [npm]
+Licence: Apache-2.0 OR MIT
+Upstream: https://github.com/tauri-apps/tauri#readme
+
+@types/debug 4.1.13 [npm]
+Licence: MIT
+Upstream: https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/debug
+
+@types/estree-jsx 1.0.5 [npm]
+Licence: MIT
+Upstream: https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/estree-jsx
+
+@types/estree 1.0.9 [npm]
+Licence: MIT
+Upstream: https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/estree
+
+@types/hast 3.0.5 [npm]
+Licence: MIT
+Upstream: https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/hast
+
+@types/mdast 4.0.4 [npm]
+Licence: MIT
+Upstream: https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/mdast
+
+@types/ms 2.1.0 [npm]
+Licence: MIT
+Upstream: https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/ms
+
+@types/node 22.19.11 [npm]
+Licence: MIT
+Upstream: https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/node
+
+@types/react 19.2.14 [npm]
+Licence: MIT
+Upstream: https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/react
+
+@types/retry 0.12.0 [npm]
+Licence: MIT
+Upstream: https://github.com/DefinitelyTyped/DefinitelyTyped#readme
+
+@types/unist 2.0.11 [npm]
+Licence: MIT
+Upstream: https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/unist
+
+@types/unist 3.0.3 [npm]
+Licence: MIT
+Upstream: https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/unist
+
+@ungap/structured-clone 1.3.3 [npm]
+Licence: ISC
+Upstream: https://github.com/ungap/structured-clone#readme
+
+agent-base 7.1.4 [npm]
+Licence: MIT
+Upstream: https://github.com/TooTallNate/proxy-agents#readme
+
+ajv 8.20.0 [npm]
+Licence: MIT
+Upstream: https://ajv.js.org
+
+aria-hidden 1.2.6 [npm]
+Licence: MIT
+Upstream: https://github.com/theKashey/aria-hidden#readme
+
+bail 2.0.2 [npm]
+Licence: MIT
+Upstream: https://github.com/wooorm/bail#readme
+
+balanced-match 4.0.4 [npm]
+Licence: MIT
+Upstream: https://github.com/juliangruber/balanced-match#readme
+
+base64-js 1.5.1 [npm]
+Licence: MIT
+Upstream: https://github.com/beatgammit/base64-js
+
+bignumber.js 9.3.1 [npm]
+Licence: MIT
+Upstream: https://github.com/MikeMcl/bignumber.js#readme
+
+bowser 2.14.1 [npm]
+Licence: MIT
+Upstream: https://github.com/bowser-js/bowser
+
+brace-expansion 5.0.9 [npm]
+Licence: MIT
+Upstream: https://github.com/juliangruber/brace-expansion#readme
+
+buffer-equal-constant-time 1.0.1 [npm]
+Licence: BSD-3-Clause
+Upstream: https://github.com/goinstant/buffer-equal-constant-time#readme
+
+ccount 2.0.1 [npm]
+Licence: MIT
+Upstream: https://github.com/wooorm/ccount#readme
+
+chalk 5.6.2 [npm]
+Licence: MIT
+Upstream: https://github.com/chalk/chalk#readme
+
+character-entities-html4 2.1.0 [npm]
+Licence: MIT
+Upstream: https://github.com/wooorm/character-entities-html4#readme
+
+character-entities-legacy 3.0.0 [npm]
+Licence: MIT
+Upstream: https://github.com/wooorm/character-entities-legacy#readme
+
+character-entities 2.0.2 [npm]
+Licence: MIT
+Upstream: https://github.com/wooorm/character-entities#readme
+
+character-reference-invalid 2.0.1 [npm]
+Licence: MIT
+Upstream: https://github.com/wooorm/character-reference-invalid#readme
+
+client-only 0.0.1 [npm]
+Licence: MIT
+Upstream: https://reactjs.org/
+
+clsx 2.1.1 [npm]
+Licence: MIT
+Upstream: https://github.com/lukeed/clsx#readme
+
+comma-separated-tokens 2.0.3 [npm]
+Licence: MIT
+Upstream: https://github.com/wooorm/comma-separated-tokens#readme
+
+cross-spawn 7.0.6 [npm]
+Licence: MIT
+Upstream: https://github.com/moxystudio/node-cross-spawn
+
+csstype 3.2.3 [npm]
+Licence: MIT
+Upstream: https://github.com/frenic/csstype#readme
+
+data-uri-to-buffer 4.0.1 [npm]
+Licence: MIT
+Upstream: https://github.com/TooTallNate/node-data-uri-to-buffer
+
+debug 4.4.3 [npm]
+Licence: MIT
+Upstream: https://github.com/debug-js/debug#readme
+
+decode-named-character-reference 1.3.0 [npm]
+Licence: MIT
+Upstream: https://github.com/wooorm/decode-named-character-reference#readme
+
+dequal 2.0.3 [npm]
+Licence: MIT
+Upstream: https://github.com/lukeed/dequal#readme
+
+devlop 1.1.0 [npm]
+Licence: MIT
+Upstream: https://github.com/wooorm/devlop#readme
+
+diff 8.0.4 [npm]
+Licence: BSD-3-Clause
+Upstream: https://github.com/kpdecker/jsdiff#readme
+
+ecdsa-sig-formatter 1.0.11 [npm]
+Licence: Apache-2.0
+Upstream: https://github.com/Brightspace/node-ecdsa-sig-formatter#readme
+
+escape-string-regexp 5.0.0 [npm]
+Licence: MIT
+Upstream: https://github.com/sindresorhus/escape-string-regexp#readme
+
+estree-util-is-identifier-name 3.0.0 [npm]
+Licence: MIT
+Upstream: https://github.com/syntax-tree/estree-util-is-identifier-name#readme
+
+extend 3.0.2 [npm]
+Licence: MIT
+Upstream: https://github.com/justmoon/node-extend#readme
+
+fast-deep-equal 3.1.3 [npm]
+Licence: MIT
+Upstream: https://github.com/epoberezkin/fast-deep-equal#readme
+
+fast-uri 3.1.8 [npm]
+Licence: BSD-3-Clause
+Upstream: https://github.com/fastify/fast-uri
+
+fetch-blob 3.2.0 [npm]
+Licence: MIT
+Upstream: https://github.com/node-fetch/fetch-blob#readme
+
+formdata-polyfill 4.0.10 [npm]
+Licence: MIT
+Upstream: https://github.com/jimmywarting/FormData#readme
+
+gaxios 7.3.0 [npm]
+Licence: Apache-2.0
+Upstream: https://github.com/googleapis/google-cloud-node/tree/main/core/packages/gaxios
+
+gcp-metadata 8.1.2 [npm]
+Licence: Apache-2.0
+Upstream: https://github.com/googleapis/google-cloud-node-core/tree/main/packages/gcp-metadata
+
+get-east-asian-width 1.6.0 [npm]
+Licence: MIT
+Upstream: https://github.com/sindresorhus/get-east-asian-width#readme
+
+glob 13.0.6 [npm]
+Licence: BlueOak-1.0.0
+Upstream: https://github.com/isaacs/node-glob#readme
+
+google-auth-library 10.9.1 [npm]
+Licence: Apache-2.0
+Upstream: https://github.com/googleapis/google-cloud-node/tree/main/core/packages/google-auth-library-nodejs
+
+google-logging-utils 1.1.3 [npm]
+Licence: Apache-2.0
+Upstream: https://github.com/googleapis/google-cloud-node-core/tree/main/dev-packages/logging-utils
+
+graceful-fs 4.2.11 [npm]
+Licence: ISC
+Upstream: https://github.com/isaacs/node-graceful-fs#readme
+
+has-flag 4.0.0 [npm]
+Licence: MIT
+Upstream: https://github.com/sindresorhus/has-flag#readme
+
+hast-util-to-html 9.0.5 [npm]
+Licence: MIT
+Upstream: https://github.com/syntax-tree/hast-util-to-html#readme
+
+hast-util-to-jsx-runtime 2.3.6 [npm]
+Licence: MIT
+Upstream: https://github.com/syntax-tree/hast-util-to-jsx-runtime#readme
+
+hast-util-whitespace 3.0.0 [npm]
+Licence: MIT
+Upstream: https://github.com/syntax-tree/hast-util-whitespace#readme
+
+highlight.js 10.7.3 [npm]
+Licence: BSD-3-Clause
+Upstream: https://highlightjs.org/
+
+hosted-git-info 9.0.3 [npm]
+Licence: ISC
+Upstream: https://github.com/npm/hosted-git-info
+
+html-url-attributes 3.0.1 [npm]
+Licence: MIT
+Upstream: https://github.com/rehypejs/rehype-minify/tree/main#readme
+
+html-void-elements 3.0.0 [npm]
+Licence: MIT
+Upstream: https://github.com/wooorm/html-void-elements#readme
+
+http-proxy-agent 7.0.2 [npm]
+Licence: MIT
+Upstream: https://github.com/TooTallNate/proxy-agents#readme
+
+https-proxy-agent 7.0.6 [npm]
+Licence: MIT
+Upstream: https://github.com/TooTallNate/proxy-agents#readme
+
+ignore 7.0.5 [npm]
+Licence: MIT
+Upstream: https://github.com/kaelzhang/node-ignore#readme
+
+inline-style-parser 0.2.7 [npm]
+Licence: MIT
+Upstream: https://github.com/remarkablemark/inline-style-parser#readme
+
+is-alphabetical 2.0.1 [npm]
+Licence: MIT
+Upstream: https://github.com/wooorm/is-alphabetical#readme
+
+is-alphanumerical 2.0.1 [npm]
+Licence: MIT
+Upstream: https://github.com/wooorm/is-alphanumerical#readme
+
+is-decimal 2.0.1 [npm]
+Licence: MIT
+Upstream: https://github.com/wooorm/is-decimal#readme
+
+is-hexadecimal 2.0.1 [npm]
+Licence: MIT
+Upstream: https://github.com/wooorm/is-hexadecimal#readme
+
+is-plain-obj 4.1.0 [npm]
+Licence: MIT
+Upstream: https://github.com/sindresorhus/is-plain-obj#readme
+
+isexe 2.0.0 [npm]
+Licence: ISC
+Upstream: https://github.com/isaacs/isexe#readme
+
+jiti 2.7.0 [npm]
+Licence: MIT
+Upstream: https://github.com/unjs/jiti#readme
+
+json-bigint 1.0.0 [npm]
+Licence: MIT
+Upstream: https://github.com/sidorares/json-bigint#readme
+
+json-schema-to-ts 3.1.1 [npm]
+Licence: MIT
+Upstream: https://github.com/ThomasAribart/json-schema-to-ts#readme
+
+json-schema-traverse 1.0.0 [npm]
+Licence: MIT
+Upstream: https://github.com/epoberezkin/json-schema-traverse#readme
+
+jwa 2.0.1 [npm]
+Licence: MIT
+Upstream: https://github.com/brianloveswords/node-jwa#readme
+
+jws 4.0.1 [npm]
+Licence: MIT
+Upstream: https://github.com/brianloveswords/node-jws#readme
+
+long 5.3.2 [npm]
+Licence: Apache-2.0
+Upstream: https://github.com/dcodeIO/long.js#readme
+
+longest-streak 3.1.0 [npm]
+Licence: MIT
+Upstream: https://github.com/wooorm/longest-streak#readme
+
+lru-cache 11.5.2 [npm]
+Licence: BlueOak-1.0.0
+Upstream: https://github.com/isaacs/node-lru-cache#readme
+
+markdown-table 3.0.4 [npm]
+Licence: MIT
+Upstream: https://github.com/wooorm/markdown-table#readme
+
+marked 18.0.5 [npm]
+Licence: MIT
+Upstream: https://marked.js.org
+
+mdast-util-find-and-replace 3.0.2 [npm]
+Licence: MIT
+Upstream: https://github.com/syntax-tree/mdast-util-find-and-replace#readme
+
+mdast-util-from-markdown 2.0.3 [npm]
+Licence: MIT
+Upstream: https://github.com/syntax-tree/mdast-util-from-markdown#readme
+
+mdast-util-gfm-autolink-literal 2.0.1 [npm]
+Licence: MIT
+Upstream: https://github.com/syntax-tree/mdast-util-gfm-autolink-literal#readme
+
+mdast-util-gfm-footnote 2.1.0 [npm]
+Licence: MIT
+Upstream: https://github.com/syntax-tree/mdast-util-gfm-footnote#readme
+
+mdast-util-gfm-strikethrough 2.0.0 [npm]
+Licence: MIT
+Upstream: https://github.com/syntax-tree/mdast-util-gfm-strikethrough#readme
+
+mdast-util-gfm-table 2.0.0 [npm]
+Licence: MIT
+Upstream: https://github.com/syntax-tree/mdast-util-gfm-table#readme
+
+mdast-util-gfm-task-list-item 2.0.0 [npm]
+Licence: MIT
+Upstream: https://github.com/syntax-tree/mdast-util-gfm-task-list-item#readme
+
+mdast-util-gfm 3.1.0 [npm]
+Licence: MIT
+Upstream: https://github.com/syntax-tree/mdast-util-gfm#readme
+
+mdast-util-mdx-expression 2.0.1 [npm]
+Licence: MIT
+Upstream: https://github.com/syntax-tree/mdast-util-mdx-expression#readme
+
+mdast-util-mdx-jsx 3.2.0 [npm]
+Licence: MIT
+Upstream: https://github.com/syntax-tree/mdast-util-mdx-jsx#readme
+
+mdast-util-mdxjs-esm 2.0.1 [npm]
+Licence: MIT
+Upstream: https://github.com/syntax-tree/mdast-util-mdxjs-esm#readme
+
+mdast-util-phrasing 4.1.0 [npm]
+Licence: MIT
+Upstream: https://github.com/syntax-tree/mdast-util-phrasing#readme
+
+mdast-util-to-hast 13.2.1 [npm]
+Licence: MIT
+Upstream: https://github.com/syntax-tree/mdast-util-to-hast#readme
+
+mdast-util-to-markdown 2.1.2 [npm]
+Licence: MIT
+Upstream: https://github.com/syntax-tree/mdast-util-to-markdown#readme
+
+mdast-util-to-string 4.0.0 [npm]
+Licence: MIT
+Upstream: https://github.com/syntax-tree/mdast-util-to-string#readme
+
+micromark-core-commonmark 2.0.3 [npm]
+Licence: MIT
+Upstream: https://github.com/micromark/micromark/tree/main#readme
+
+micromark-extension-gfm-autolink-literal 2.1.0 [npm]
+Licence: MIT
+Upstream: https://github.com/micromark/micromark-extension-gfm-autolink-literal#readme
+
+micromark-extension-gfm-footnote 2.1.0 [npm]
+Licence: MIT
+Upstream: https://github.com/micromark/micromark-extension-gfm-footnote#readme
+
+micromark-extension-gfm-strikethrough 2.1.0 [npm]
+Licence: MIT
+Upstream: https://github.com/micromark/micromark-extension-gfm-strikethrough#readme
+
+micromark-extension-gfm-table 2.1.1 [npm]
+Licence: MIT
+Upstream: https://github.com/micromark/micromark-extension-gfm-table#readme
+
+micromark-extension-gfm-tagfilter 2.0.0 [npm]
+Licence: MIT
+Upstream: https://github.com/micromark/micromark-extension-gfm-tagfilter#readme
+
+micromark-extension-gfm-task-list-item 2.1.0 [npm]
+Licence: MIT
+Upstream: https://github.com/micromark/micromark-extension-gfm-task-list-item#readme
+
+micromark-extension-gfm 3.0.0 [npm]
+Licence: MIT
+Upstream: https://github.com/micromark/micromark-extension-gfm#readme
+
+micromark-factory-destination 2.0.1 [npm]
+Licence: MIT
+Upstream: https://github.com/micromark/micromark/tree/main#readme
+
+micromark-factory-label 2.0.1 [npm]
+Licence: MIT
+Upstream: https://github.com/micromark/micromark/tree/main#readme
+
+micromark-factory-space 2.0.1 [npm]
+Licence: MIT
+Upstream: https://github.com/micromark/micromark/tree/main#readme
+
+micromark-factory-title 2.0.1 [npm]
+Licence: MIT
+Upstream: https://github.com/micromark/micromark/tree/main#readme
+
+micromark-factory-whitespace 2.0.1 [npm]
+Licence: MIT
+Upstream: https://github.com/micromark/micromark/tree/main#readme
+
+micromark-util-character 2.1.1 [npm]
+Licence: MIT
+Upstream: https://github.com/micromark/micromark/tree/main#readme
+
+micromark-util-chunked 2.0.1 [npm]
+Licence: MIT
+Upstream: https://github.com/micromark/micromark/tree/main#readme
+
+micromark-util-classify-character 2.0.1 [npm]
+Licence: MIT
+Upstream: https://github.com/micromark/micromark/tree/main#readme
+
+micromark-util-combine-extensions 2.0.1 [npm]
+Licence: MIT
+Upstream: https://github.com/micromark/micromark/tree/main#readme
+
+micromark-util-decode-numeric-character-reference 2.0.2 [npm]
+Licence: MIT
+Upstream: https://github.com/micromark/micromark/tree/main#readme
+
+micromark-util-decode-string 2.0.1 [npm]
+Licence: MIT
+Upstream: https://github.com/micromark/micromark/tree/main#readme
+
+micromark-util-encode 2.0.1 [npm]
+Licence: MIT
+Upstream: https://github.com/micromark/micromark/tree/main#readme
+
+micromark-util-html-tag-name 2.0.1 [npm]
+Licence: MIT
+Upstream: https://github.com/micromark/micromark/tree/main#readme
+
+micromark-util-normalize-identifier 2.0.1 [npm]
+Licence: MIT
+Upstream: https://github.com/micromark/micromark/tree/main#readme
+
+micromark-util-resolve-all 2.0.1 [npm]
+Licence: MIT
+Upstream: https://github.com/micromark/micromark/tree/main#readme
+
+micromark-util-sanitize-uri 2.0.1 [npm]
+Licence: MIT
+Upstream: https://github.com/micromark/micromark/tree/main#readme
+
+micromark-util-subtokenize 2.1.0 [npm]
+Licence: MIT
+Upstream: https://github.com/micromark/micromark/tree/main#readme
+
+micromark-util-symbol 2.0.1 [npm]
+Licence: MIT
+Upstream: https://github.com/micromark/micromark/tree/main#readme
+
+micromark-util-types 2.0.2 [npm]
+Licence: MIT
+Upstream: https://github.com/micromark/micromark/tree/main#readme
+
+micromark 4.0.2 [npm]
+Licence: MIT
+Upstream: https://github.com/micromark/micromark/tree/main#readme
+
+minimatch 10.2.5 [npm]
+Licence: BlueOak-1.0.0
+Upstream: https://github.com/isaacs/minimatch#readme
+
+minipass 7.1.3 [npm]
+Licence: BlueOak-1.0.0
+Upstream: https://github.com/isaacs/minipass#readme
+
+ms 2.1.3 [npm]
+Licence: MIT
+Upstream: https://github.com/vercel/ms#readme
+
+node-domexception 1.0.0 [npm]
+Licence: MIT
+Upstream: https://github.com/jimmywarting/node-domexception#readme
+
+node-fetch 3.3.2 [npm]
+Licence: MIT
+Upstream: https://github.com/node-fetch/node-fetch
+
+oniguruma-parser 0.12.2 [npm]
+Licence: MIT
+Upstream: https://github.com/slevithan/oniguruma-parser#readme
+
+oniguruma-to-es 4.3.6 [npm]
+Licence: MIT
+Upstream: https://github.com/slevithan/oniguruma-to-es#readme
+
+openai 6.26.0 [npm]
+Licence: Apache-2.0
+Upstream: https://github.com/openai/openai-node#readme
+
+p-retry 4.6.2 [npm]
+Licence: MIT
+Upstream: https://github.com/sindresorhus/p-retry#readme
+
+parse-entities 4.0.2 [npm]
+Licence: MIT
+Upstream: https://github.com/wooorm/parse-entities#readme
+
+partial-json 0.1.7 [npm]
+Licence: MIT
+Upstream: https://promplate.dev/partial-json-parser
+
+path-key 3.1.1 [npm]
+Licence: MIT
+Upstream: https://github.com/sindresorhus/path-key#readme
+
+path-scurry 2.0.2 [npm]
+Licence: BlueOak-1.0.0
+Upstream: https://github.com/isaacs/path-scurry#readme
+
+proper-lockfile 4.1.2 [npm]
+Licence: MIT
+Upstream: https://github.com/moxystudio/node-proper-lockfile
+
+property-information 7.2.0 [npm]
+Licence: MIT
+Upstream: https://github.com/wooorm/property-information#readme
+
+protobufjs 7.6.5 [npm]
+Licence: BSD-3-Clause
+Upstream: https://protobufjs.github.io/protobuf.js/
+
+react-aria-components 1.19.0 [npm]
+Licence: Apache-2.0
+Upstream: https://github.com/adobe/react-spectrum#readme
+
+react-aria 3.50.0 [npm]
+Licence: Apache-2.0
+Upstream: https://github.com/adobe/react-spectrum#readme
+
+react-dom 19.2.8 [npm]
+Licence: MIT
+Upstream: https://react.dev/
+
+react-markdown 10.1.0 [npm]
+Licence: MIT
+Upstream: https://github.com/remarkjs/react-markdown#readme
+
+react-stately 3.48.0 [npm]
+Licence: Apache-2.0
+Upstream: https://github.com/adobe/react-spectrum#readme
+
+react 19.2.8 [npm]
+Licence: MIT
+Upstream: https://react.dev/
+
+regex-recursion 6.0.2 [npm]
+Licence: MIT
+Upstream: https://github.com/slevithan/regex-recursion#readme
+
+regex-utilities 2.3.0 [npm]
+Licence: MIT
+Upstream: https://github.com/slevithan/regex-utilities#readme
+
+regex 6.1.0 [npm]
+Licence: MIT
+Upstream: https://github.com/slevithan/regex#readme
+
+remark-gfm 4.0.1 [npm]
+Licence: MIT
+Upstream: https://github.com/remarkjs/remark-gfm#readme
+
+remark-parse 11.0.0 [npm]
+Licence: MIT
+Upstream: https://remark.js.org
+
+remark-rehype 11.1.2 [npm]
+Licence: MIT
+Upstream: https://github.com/remarkjs/remark-rehype#readme
+
+remark-stringify 11.0.0 [npm]
+Licence: MIT
+Upstream: https://remark.js.org
+
+require-from-string 2.0.2 [npm]
+Licence: MIT
+Upstream: https://github.com/floatdrop/require-from-string#readme
+
+retry 0.12.0 [npm]
+Licence: MIT
+Upstream: https://github.com/tim-kos/node-retry
+
+retry 0.13.1 [npm]
+Licence: MIT
+Upstream: https://github.com/tim-kos/node-retry
+
+safe-buffer 5.2.1 [npm]
+Licence: MIT
+Upstream: https://github.com/feross/safe-buffer
+
+scheduler 0.27.0 [npm]
+Licence: MIT
+Upstream: https://react.dev/
+
+semver 7.8.0 [npm]
+Licence: ISC
+Upstream: https://github.com/npm/node-semver#readme
+
+shebang-command 2.0.0 [npm]
+Licence: MIT
+Upstream: https://github.com/kevva/shebang-command#readme
+
+shebang-regex 3.0.0 [npm]
+Licence: MIT
+Upstream: https://github.com/sindresorhus/shebang-regex#readme
+
+shiki 4.3.1 [npm]
+Licence: MIT
+Upstream: https://github.com/shikijs/shiki#readme
+
+signal-exit 3.0.7 [npm]
+Licence: ISC
+Upstream: https://github.com/tapjs/signal-exit
+
+space-separated-tokens 2.0.2 [npm]
+Licence: MIT
+Upstream: https://github.com/wooorm/space-separated-tokens#readme
+
+stringify-entities 4.0.4 [npm]
+Licence: MIT
+Upstream: https://github.com/wooorm/stringify-entities#readme
+
+style-to-js 1.1.21 [npm]
+Licence: MIT
+Upstream: https://github.com/remarkablemark/style-to-js#readme
+
+style-to-object 1.0.14 [npm]
+Licence: MIT
+Upstream: https://github.com/remarkablemark/style-to-object#readme
+
+supports-color 8.1.1 [npm]
+Licence: MIT
+Upstream: https://github.com/chalk/supports-color#readme
+
+trim-lines 3.0.1 [npm]
+Licence: MIT
+Upstream: https://github.com/wooorm/trim-lines#readme
+
+trough 2.2.0 [npm]
+Licence: MIT
+Upstream: https://github.com/wooorm/trough#readme
+
+ts-algebra 2.0.0 [npm]
+Licence: MIT
+Upstream: https://github.com/ThomasAribart/ts-algebra#readme
+
+tslib 2.8.1 [npm]
+Licence: 0BSD
+Upstream: https://www.typescriptlang.org/
+
+typebox 1.1.38 [npm]
+Licence: MIT
+Upstream: https://github.com/sinclairzx81/typebox#readme
+
+undici-types 6.21.0 [npm]
+Licence: MIT
+Upstream: https://undici.nodejs.org
+
+undici 8.10.2 [npm]
+Licence: MIT
+Upstream: https://undici.nodejs.org
+
+unified 11.0.5 [npm]
+Licence: MIT
+Upstream: https://unifiedjs.com
+
+unist-util-is 6.0.1 [npm]
+Licence: MIT
+Upstream: https://github.com/syntax-tree/unist-util-is#readme
+
+unist-util-position 5.0.0 [npm]
+Licence: MIT
+Upstream: https://github.com/syntax-tree/unist-util-position#readme
+
+unist-util-stringify-position 4.0.0 [npm]
+Licence: MIT
+Upstream: https://github.com/syntax-tree/unist-util-stringify-position#readme
+
+unist-util-visit-parents 6.0.2 [npm]
+Licence: MIT
+Upstream: https://github.com/syntax-tree/unist-util-visit-parents#readme
+
+unist-util-visit 5.1.0 [npm]
+Licence: MIT
+Upstream: https://github.com/syntax-tree/unist-util-visit#readme
+
+use-sync-external-store 1.6.0 [npm]
+Licence: MIT
+Upstream: https://github.com/facebook/react#readme
+
+vfile-message 4.0.3 [npm]
+Licence: MIT
+Upstream: https://github.com/vfile/vfile-message#readme
+
+vfile 6.0.3 [npm]
+Licence: MIT
+Upstream: https://github.com/vfile/vfile#readme
+
+web-streams-polyfill 3.3.3 [npm]
+Licence: MIT
+Upstream: https://github.com/MattiasBuelens/web-streams-polyfill#readme
+
+which 2.0.2 [npm]
+Licence: ISC
+Upstream: https://github.com/isaacs/node-which#readme
+
+ws 8.21.1 [npm]
+Licence: MIT
+Upstream: https://github.com/websockets/ws
+
+yaml 2.9.0 [npm]
+Licence: ISC
+Upstream: https://eemeli.org/yaml/
+
+zod-to-json-schema 3.25.2 [npm]
+Licence: ISC
+Upstream: https://github.com/StefanTerdell/zod-to-json-schema#readme
+
+zod 4.4.3 [npm]
+Licence: MIT
+Upstream: https://zod.dev
+
+zwitch 2.0.4 [npm]
+Licence: MIT
+Upstream: https://github.com/wooorm/zwitch#readme

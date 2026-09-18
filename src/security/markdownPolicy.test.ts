@@ -140,12 +140,16 @@ describe('opaque local asset policy', () => {
         byteLength: MAX_ASSET_BYTES,
         expiresAt: 1_001,
       };
-      expect(validateOpaqueAssetDescriptor(validCapability, descriptor, 1_000, validOrigin)).toEqual({
+      expect(
+        validateOpaqueAssetDescriptor(validCapability, descriptor, 1_000, validOrigin),
+      ).toEqual({
         url: descriptor.url,
         mime,
         byteLength: MAX_ASSET_BYTES,
       });
-      expect(validateOpaqueAssetDescriptor(validCapability, descriptor, 1_001, validOrigin)).toBeNull();
+      expect(
+        validateOpaqueAssetDescriptor(validCapability, descriptor, 1_001, validOrigin),
+      ).toBeNull();
       expect(
         validateOpaqueAssetDescriptor(
           validCapability,
@@ -157,10 +161,20 @@ describe('opaque local asset policy', () => {
     }
 
     expect(
-      validateOpaqueAssetDescriptor(validCapability, { ...validAsset, byteLength: 1 }, 1_000, validOrigin),
+      validateOpaqueAssetDescriptor(
+        validCapability,
+        { ...validAsset, byteLength: 1 },
+        1_000,
+        validOrigin,
+      ),
     ).not.toBeNull();
     expect(
-      validateOpaqueAssetDescriptor(validCapability, { ...validAsset, byteLength: 0 }, 1_000, validOrigin),
+      validateOpaqueAssetDescriptor(
+        validCapability,
+        { ...validAsset, byteLength: 0 },
+        1_000,
+        validOrigin,
+      ),
     ).toBeNull();
   });
 
@@ -186,7 +200,12 @@ describe('opaque local asset policy', () => {
       'file:///__piui_markdown_asset__/0123456789abcdef0123456789abcdef.png',
     ]) {
       expect(
-        validateOpaqueAssetDescriptor(validCapability, { ...nativeAsset, url }, 1_000, 'tauri://localhost'),
+        validateOpaqueAssetDescriptor(
+          validCapability,
+          { ...nativeAsset, url },
+          1_000,
+          'tauri://localhost',
+        ),
       ).toBeNull();
     }
   });
@@ -225,7 +244,9 @@ describe('pre-parser resource bounds', () => {
     const cases = [
       `${'a'.repeat(10_000)}\n`.repeat(26) + 'a'.repeat(2_145),
       'a'.repeat(MAX_LOGICAL_LINE_UTF16 + 1),
-      Array.from({ length: MAX_LINKS_AND_IMAGES + 1 }, (_, index) => `[x${index}](relative)`).join('\n'),
+      Array.from({ length: MAX_LINKS_AND_IMAGES + 1 }, (_, index) => `[x${index}](relative)`).join(
+        '\n',
+      ),
       `${'> '.repeat(33)}nested`,
       '*'.repeat(10_001),
       `\`\`\`text\n${'c'.repeat(MAX_CODE_BLOCK_UTF16 + 1)}\n\`\`\``,
@@ -300,9 +321,8 @@ describe('pre-parser resource bounds', () => {
     expect(prepareMarkdown(block(MAX_CODE_BLOCK_UTF16)).mode).toBe('markdown');
     expect(prepareMarkdown(block(MAX_CODE_BLOCK_UTF16 + 1)).mode).toBe('plain');
 
-    const exactAggregate = Array.from(
-      { length: MAX_CODE_TOTAL_UTF16 / MAX_CODE_BLOCK_UTF16 },
-      () => block(MAX_CODE_BLOCK_UTF16),
+    const exactAggregate = Array.from({ length: MAX_CODE_TOTAL_UTF16 / MAX_CODE_BLOCK_UTF16 }, () =>
+      block(MAX_CODE_BLOCK_UTF16),
     ).join('\n');
     const overAggregate = `${exactAggregate}\n${block(1)}`;
     expect(prepareMarkdown(exactAggregate).mode).toBe('markdown');
@@ -325,7 +345,9 @@ describe('pre-parser resource bounds', () => {
       return lines;
     };
     const indentedBlock = (countedUnits: number, prefix = '    ') =>
-      payloadLines(countedUnits).map((line) => `${prefix}${line}`).join('\n');
+      payloadLines(countedUnits)
+        .map((line) => `${prefix}${line}`)
+        .join('\n');
     const separate = (blocks: readonly string[]) => blocks.join('\n\nprose separator\n\n');
 
     expect(prepareMarkdown(indentedBlock(MAX_CODE_BLOCK_UTF16)).mode).toBe('markdown');
@@ -339,17 +361,15 @@ describe('pre-parser resource bounds', () => {
       notice: 'Content shortened for safety.',
     });
 
-    const exactAggregate = separate(Array.from(
-      { length: MAX_CODE_TOTAL_UTF16 / MAX_CODE_BLOCK_UTF16 },
-      () => indentedBlock(MAX_CODE_BLOCK_UTF16),
-    ));
+    const exactAggregate = separate(
+      Array.from({ length: MAX_CODE_TOTAL_UTF16 / MAX_CODE_BLOCK_UTF16 }, () =>
+        indentedBlock(MAX_CODE_BLOCK_UTF16),
+      ),
+    );
     expect(prepareMarkdown(exactAggregate).mode).toBe('markdown');
     expect(prepareMarkdown(`${exactAggregate}\n\nprose separator\n\n    x`).mode).toBe('plain');
 
-    const exactBlocks = separate(Array.from(
-      { length: MAX_CODE_BLOCKS },
-      () => '    x',
-    ));
+    const exactBlocks = separate(Array.from({ length: MAX_CODE_BLOCKS }, () => '    x'));
     expect(prepareMarkdown(exactBlocks).mode).toBe('markdown');
     expect(prepareMarkdown(`${exactBlocks}\n\nprose separator\n\n\tx`).mode).toBe('plain');
   });
@@ -365,17 +385,18 @@ describe('pre-parser resource bounds', () => {
       }
       return lines;
     };
-    const quotedFence = (countedUnits: number) => [
-      '> > ```text',
-      ...payloadLines(countedUnits).map((line) => `> > ${line}`),
-      '> > ```',
-    ].join('\n');
-    const listedIndent = (countedUnits: number) => payloadLines(countedUnits).map(
-      (line, index) => index === 0 ? `-     ${line}` : `      ${line}`,
-    ).join('\n');
-    const quotedIndent = (countedUnits: number, indentation = '    ') => payloadLines(countedUnits)
-      .map((line) => `> ${indentation}${line}`)
-      .join('\n');
+    const quotedFence = (countedUnits: number) =>
+      ['> > ```text', ...payloadLines(countedUnits).map((line) => `> > ${line}`), '> > ```'].join(
+        '\n',
+      );
+    const listedIndent = (countedUnits: number) =>
+      payloadLines(countedUnits)
+        .map((line, index) => (index === 0 ? `-     ${line}` : `      ${line}`))
+        .join('\n');
+    const quotedIndent = (countedUnits: number, indentation = '    ') =>
+      payloadLines(countedUnits)
+        .map((line) => `> ${indentation}${line}`)
+        .join('\n');
     for (const block of [
       quotedFence(MAX_CODE_BLOCK_UTF16),
       listedIndent(MAX_CODE_BLOCK_UTF16),
@@ -426,21 +447,21 @@ describe('pre-parser resource bounds', () => {
       }
       return lines;
     };
-    const block = (countedUnits: number) => [
-      '- > ```text',
-      ...payloadLines(countedUnits).map((line) => `  > ${line}`),
-      '  > ```',
-    ].join('\n');
+    const block = (countedUnits: number) =>
+      ['- > ```text', ...payloadLines(countedUnits).map((line) => `  > ${line}`), '  > ```'].join(
+        '\n',
+      );
     const separate = (blocks: readonly string[]) => blocks.join('\n\nprose separator\n\n');
 
     const exactBlock = block(MAX_CODE_BLOCK_UTF16);
     expect(prepareMarkdown(exactBlock)).toMatchObject({ mode: 'markdown', source: exactBlock });
     expect(prepareMarkdown(block(MAX_CODE_BLOCK_UTF16 + 1)).mode).toBe('plain');
 
-    const exactAggregate = separate(Array.from(
-      { length: MAX_CODE_TOTAL_UTF16 / MAX_CODE_BLOCK_UTF16 },
-      () => block(MAX_CODE_BLOCK_UTF16),
-    ));
+    const exactAggregate = separate(
+      Array.from({ length: MAX_CODE_TOTAL_UTF16 / MAX_CODE_BLOCK_UTF16 }, () =>
+        block(MAX_CODE_BLOCK_UTF16),
+      ),
+    );
     expect(prepareMarkdown(exactAggregate).mode).toBe('markdown');
     const overAggregate = `${exactAggregate}\n\nprose separator\n\n${block(1)}`;
     const aggregateFallback = prepareMarkdown(overAggregate);
@@ -486,24 +507,30 @@ describe('pre-parser resource bounds', () => {
     }
     expect(auditText.length).toBeLessThanOrEqual(MAX_RAW_AUDIT_TOTAL_UTF16);
 
-    const unterminated = extractRawHtmlAudit('<![CDATA[/synthetic/private/unterminated-cdata-canary');
+    const unterminated = extractRawHtmlAudit(
+      '<![CDATA[/synthetic/private/unterminated-cdata-canary',
+    );
     expect(unterminated.candidateCount).toBe(1);
     expect(unterminated.excerpts.join('')).toContain('unterminated-cdata-canary');
 
     const terminated = extractRawHtmlAudit(
-      '<![CDATA[/synthetic/private/terminated-cdata-canary]]>'
-      + 'x'.repeat(65)
-      + 'post-terminator-canary',
+      '<![CDATA[/synthetic/private/terminated-cdata-canary]]>' +
+        'x'.repeat(65) +
+        'post-terminator-canary',
     );
     expect(terminated.excerpts.join('')).toContain('terminated-cdata-canary]]>');
     expect(terminated.excerpts.join('')).not.toContain('post-terminator-canary');
 
-    const many = extractRawHtmlAudit(Array.from(
-      { length: MAX_RAW_AUDIT_SNIPPETS + 20 },
-      (_, index) => `<probe-${index}>value</probe-${index}>`,
-    ).join('\n'));
+    const many = extractRawHtmlAudit(
+      Array.from(
+        { length: MAX_RAW_AUDIT_SNIPPETS + 20 },
+        (_, index) => `<probe-${index}>value</probe-${index}>`,
+      ).join('\n'),
+    );
     expect(many.excerpts.length).toBeLessThanOrEqual(MAX_RAW_AUDIT_SNIPPETS);
-    expect(many.excerpts.every((excerpt) => excerpt.length <= MAX_RAW_AUDIT_SNIPPET_UTF16)).toBe(true);
+    expect(many.excerpts.every((excerpt) => excerpt.length <= MAX_RAW_AUDIT_SNIPPET_UTF16)).toBe(
+      true,
+    );
     expect(many.excerpts.join('\n\n').length).toBeLessThanOrEqual(MAX_RAW_AUDIT_TOTAL_UTF16);
     expect(many.shortened).toBe(true);
   });
@@ -511,10 +538,13 @@ describe('pre-parser resource bounds', () => {
   it('locks exact highlighting byte and line cut-offs', () => {
     expect(isWithinHighlightBounds('a'.repeat(MAX_HIGHLIGHT_BYTES - 1))).toBe(true);
     expect(isWithinHighlightBounds('a'.repeat(MAX_HIGHLIGHT_BYTES))).toBe(false);
-    expect(highlightLineCount(Array.from({ length: MAX_HIGHLIGHT_LINES - 1 }, () => 'x').join('\n')))
-      .toBe(MAX_HIGHLIGHT_LINES - 1);
     expect(
-      isWithinHighlightBounds(Array.from({ length: MAX_HIGHLIGHT_LINES - 1 }, () => 'x').join('\n')),
+      highlightLineCount(Array.from({ length: MAX_HIGHLIGHT_LINES - 1 }, () => 'x').join('\n')),
+    ).toBe(MAX_HIGHLIGHT_LINES - 1);
+    expect(
+      isWithinHighlightBounds(
+        Array.from({ length: MAX_HIGHLIGHT_LINES - 1 }, () => 'x').join('\n'),
+      ),
     ).toBe(true);
     expect(
       isWithinHighlightBounds(Array.from({ length: MAX_HIGHLIGHT_LINES }, () => 'x').join('\n')),

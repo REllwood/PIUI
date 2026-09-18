@@ -1,21 +1,12 @@
 import { useVirtualizer } from '@tanstack/react-virtual';
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type KeyboardEvent,
-} from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import {
   A28_HUMAN_WITNESS_READY_EVENT,
   assertA28HumanWitnessLease,
   type A28HumanWitnessLease,
 } from './a28WitnessContract';
 
-export const A28_ACCESSIBILITY_ROUTE = 'accessibility-packaged';
-export const A28_ACCESSIBILITY_TEST_ACTIVE =
-  import.meta.env.VITE_PIUI_A28_ACCESSIBILITY_TEST === '1';
+export { A28_ACCESSIBILITY_ROUTE, A28_ACCESSIBILITY_TEST_ACTIVE } from './routeActivation';
 export const A28_TRANSCRIPT_COUNT = 100;
 
 type TranscriptItem = Readonly<{
@@ -48,16 +39,15 @@ export const A28_TRANSCRIPT: readonly TranscriptItem[] = Object.freeze(
   }),
 );
 
-export function nextA28TranscriptIndex(
-  current: number,
-  key: string,
-  pageSize = 10,
-): number | null {
-  if (!Number.isSafeInteger(current)
-    || current < 0
-    || current >= A28_TRANSCRIPT_COUNT
-    || !Number.isSafeInteger(pageSize)
-    || pageSize < 1) return null;
+export function nextA28TranscriptIndex(current: number, key: string, pageSize = 10): number | null {
+  if (
+    !Number.isSafeInteger(current) ||
+    current < 0 ||
+    current >= A28_TRANSCRIPT_COUNT ||
+    !Number.isSafeInteger(pageSize) ||
+    pageSize < 1
+  )
+    return null;
   const last = A28_TRANSCRIPT_COUNT - 1;
   if (key === 'ArrowDown') return Math.min(last, current + 1);
   if (key === 'ArrowUp') return Math.max(0, current - 1);
@@ -130,16 +120,16 @@ function TranscriptRow({
       id={item.id}
       ref={measure}
       role="listitem"
-      className={`a28-transcript__row${virtualStart === undefined
-        ? ''
-        : ' a28-transcript__virtual-position'}`}
+      className={`a28-transcript__row${
+        virtualStart === undefined ? '' : ' a28-transcript__virtual-position'
+      }`}
       aria-posinset={item.ordinal}
       aria-setsize={A28_TRANSCRIPT_COUNT}
       data-a28-row={item.ordinal}
       data-index={virtualStart === undefined ? undefined : index}
-      style={virtualStart === undefined
-        ? undefined
-        : { transform: `translateY(${virtualStart}px)` }}
+      style={
+        virtualStart === undefined ? undefined : { transform: `translateY(${virtualStart}px)` }
+      }
       tabIndex={focusedIndex === index ? 0 : -1}
       onFocus={() => onFocus(index)}
       onKeyDown={(event) => onKeyDown(event, index)}
@@ -162,8 +152,7 @@ export function AccessibilityProbe() {
   const [mode, setMode] = useState<TranscriptMode>('virtualised');
   const [appearance, setAppearance] = useState<Appearance>('dark');
   const [focusedIndex, setFocusedIndex] = useState(0);
-  const [humanWitness, setHumanWitness] =
-    useState<A28HumanWitnessLease | null>(null);
+  const [humanWitness, setHumanWitness] = useState<A28HumanWitnessLease | null>(null);
   const virtualizer = useVirtualizer({
     count: A28_TRANSCRIPT_COUNT,
     estimateSize: () => 82,
@@ -184,15 +173,9 @@ export function AccessibilityProbe() {
         setPhase('failed');
       }
     };
-    window.addEventListener(
-      A28_HUMAN_WITNESS_READY_EVENT,
-      receiveHumanWitnessLease,
-    );
+    window.addEventListener(A28_HUMAN_WITNESS_READY_EVENT, receiveHumanWitnessLease);
     return () => {
-      window.removeEventListener(
-        A28_HUMAN_WITNESS_READY_EVENT,
-        receiveHumanWitnessLease,
-      );
+      window.removeEventListener(A28_HUMAN_WITNESS_READY_EVENT, receiveHumanWitnessLease);
     };
   }, []);
 
@@ -201,10 +184,7 @@ export function AccessibilityProbe() {
     const controller = new AbortController();
     preparation.current = controller;
     setPhase('preparing');
-    void Promise.all([
-      afterPaint(controller.signal),
-      cancellablePause(400, controller.signal),
-    ])
+    void Promise.all([afterPaint(controller.signal), cancellablePause(400, controller.signal)])
       .then(() => setPhase('ready'))
       .catch((error: unknown) => {
         if (!(error instanceof DOMException && error.name === 'AbortError')) setPhase('failed');
@@ -214,23 +194,26 @@ export function AccessibilityProbe() {
       });
   };
 
-  const focusRow = useCallback((index: number) => {
-    setFocusedIndex(index);
-    if (mode === 'virtualised') virtualizer.scrollToIndex(index, { align: 'auto' });
-    window.requestAnimationFrame(() => {
-      document.getElementById(A28_TRANSCRIPT[index]?.id ?? '')?.focus({ preventScroll: true });
-    });
-  }, [mode, virtualizer]);
+  const focusRow = useCallback(
+    (index: number) => {
+      setFocusedIndex(index);
+      if (mode === 'virtualised') virtualizer.scrollToIndex(index, { align: 'auto' });
+      window.requestAnimationFrame(() => {
+        document.getElementById(A28_TRANSCRIPT[index]?.id ?? '')?.focus({ preventScroll: true });
+      });
+    },
+    [mode, virtualizer],
+  );
 
-  const handleRowKeyDown = useCallback((
-    event: KeyboardEvent<HTMLDivElement>,
-    index: number,
-  ) => {
-    const next = nextA28TranscriptIndex(index, event.key);
-    if (next === null) return;
-    event.preventDefault();
-    focusRow(next);
-  }, [focusRow]);
+  const handleRowKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLDivElement>, index: number) => {
+      const next = nextA28TranscriptIndex(index, event.key);
+      if (next === null) return;
+      event.preventDefault();
+      focusRow(next);
+    },
+    [focusRow],
+  );
 
   const visibleRange = useMemo(() => {
     if (mode === 'accessible') return `All ${A28_TRANSCRIPT_COUNT} rows are rendered.`;
@@ -288,8 +271,8 @@ export function AccessibilityProbe() {
             <p className="a28-probe__eyebrow">Human VoiceOver witness</p>
             <h2 id="a28-human-witness-title">Exact packaged twin retained</h2>
             <p role="status" aria-live="polite">
-              Complete all four VoiceOver checks while this application remains open. The
-              automation runner is waiting for your explicit completion record.
+              Complete all four VoiceOver checks while this application remains open. The automation
+              runner is waiting for your explicit completion record.
             </p>
           </div>
           <progress aria-label="Waiting for human VoiceOver evidence" />
@@ -304,23 +287,33 @@ export function AccessibilityProbe() {
             </div>
             <div>
               <dt>Evidence directory</dt>
-              <dd><code>{humanWitness.evidenceDirectory}</code></dd>
+              <dd>
+                <code>{humanWitness.evidenceDirectory}</code>
+              </dd>
             </div>
             <div>
               <dt>Source digest</dt>
-              <dd><code>{humanWitness.sourceDigest}</code></dd>
+              <dd>
+                <code>{humanWitness.sourceDigest}</code>
+              </dd>
             </div>
             <div>
               <dt>Production fingerprint</dt>
-              <dd><code>{humanWitness.productionFingerprint}</code></dd>
+              <dd>
+                <code>{humanWitness.productionFingerprint}</code>
+              </dd>
             </div>
             <div>
               <dt>Automation-twin fingerprint</dt>
-              <dd><code>{humanWitness.automationTwinFingerprint}</code></dd>
+              <dd>
+                <code>{humanWitness.automationTwinFingerprint}</code>
+              </dd>
             </div>
             <div>
               <dt>Witness nonce</dt>
-              <dd><code>{humanWitness.witnessNonce}</code></dd>
+              <dd>
+                <code>{humanWitness.witnessNonce}</code>
+              </dd>
             </div>
           </dl>
         </section>

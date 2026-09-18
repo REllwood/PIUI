@@ -1,0 +1,31 @@
+:root,
+:root[data-theme='dark'] {
+  --canvas: #080a09;
+  --surface: #0f1210;
+  --surface-raised: #171b18;
+  --surface-highlight: #202521;
+  --text: #f3f6f2;
+  --text-muted: #a9b1a7;
+  --divider: #2c322d;
+  --control-border: #667064;
+  --accent: #c8f36b;
+  --accent-on: #10130d;
+  --work: #b997ff;
+  --work-on: #160e23;
+  --info: #6bd8ff;
+  --success: #8ddf9c;
+  --warning: #f3c969;
+  --danger: #ff928c;
+  --primary: #f3f6f2;
+  --primary-on: #111411;
+  --focus: #91caff;
+  --canvas-glow: rgb(185 151 255 / 10%);
+  --accent-surface: rgb(200 243 107 / 11%);
+  --work-surface: rgb(185 151 255 / 12%);
+  --info-surface: rgb(107 216 255 / 11%);
+  --warning-surface: rgb(243 201 105 / 12%);
+  --danger-surface: rgb(255 146 140 / 12%);
+  --selection: rgb(185 151 255 / 16%);
+  --shadow-small: 0 1px 2px rgb(0 0 0 / 32%);
+  --shadow-large: 0 8px 24px rgb(0 0 0 / 32%);
+}

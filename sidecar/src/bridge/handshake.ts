@@ -21,10 +21,7 @@ export type HandshakeExpectation = {
   capabilities: readonly string[];
 };
 
-export function createHandshake(
-  expectation: HandshakeExpectation,
-  sequence = 0,
-): ProtocolEnvelope {
+export function createHandshake(expectation: HandshakeExpectation, sequence = 0): ProtocolEnvelope {
   return {
     version: 1,
     kind: 'handshake',

@@ -4,12 +4,20 @@ import { describe, expect, it } from 'vitest';
 import {
   A26_EXPECTED_NATIVE_EVIDENCE,
   A26_HOSTILE_FIXTURE_SHA256,
+  A26_MODULE_KINDS,
   A26_NATIVE_EVIDENCE_KEYS,
   A26_RASTER_FIXTURE_SHA256,
+  a26ResourceAllowlistSha256,
   assertA26BrowserEvidence,
   assertA26BundleEvidence,
   assertA26DomEvidence,
+  assertA26FrontendInventory,
+  assertA26ResourceAllowlist,
   assertAuthoritativeMarkdownEvidence,
+  classifyA26ResourceEntries,
+  createA26ObserveScript,
+  deriveA26FrontendInventory,
+  parseA26ModuleProvenance,
   parseAuthoritativeMarkdownEvidence,
   parseNativeMarkdownEvidence,
   parsePackagedMarkdownEvidence,
@@ -32,8 +40,14 @@ function browserEvidence() {
     runtimeErrors: 0,
     unhandledRejections: 0,
     disclosedExternalOpens: 0,
+    duplicateResourceEntries: 0,
+    missingResourceEntries: 0,
     unexpectedResourceEntries: 0,
+    hostileSameOriginResourceEntries: 0,
     rasterResourceEntries: 1,
+    resourceAllowlistEntries: 17,
+    observedResourceEntries: 17,
+    observedResourceSha256: sha('c'),
     locationUnchanged: true,
     scriptCanaryExecuted: false,
     eventCanaryExecuted: false,
@@ -52,9 +66,13 @@ function domEvidence() {
     rasterImages: 1,
     loadedRasterImages: 1,
     rasterSourcesExact: true,
-    highlightedBlocks: 1,
+    highlightedBlocks: 2,
     highlightTokenNodes: 12,
-    plainCodeBlocks: 1,
+    plainCodeBlocks: 3,
+    languageFallbacks: 1,
+    renderBudgetFallbacks: 1,
+    workBudgetFallbacks: 1,
+    fallbackSourceTextExact: true,
     omittedAssets: 19,
     blockedLinks: 31,
     externalLinkButtons: 3,
@@ -65,17 +83,108 @@ function domEvidence() {
   };
 }
 
+function frontendInventory(
+  inventoryCharacter: string,
+  allowlistCharacter: string,
+  provenanceCharacter: string,
+) {
+  return {
+    fileCount: 18,
+    inventorySha256: sha(inventoryCharacter),
+    javascriptRegexEngineChunks: 1,
+    moduleProvenanceSha256: sha(provenanceCharacter),
+    onigurumaEngineChunks: 0,
+    resourceAllowlistEntries: 17,
+    resourceAllowlistSha256: sha(allowlistCharacter),
+    wasmFiles: 0,
+    wasmMagicFrontendFiles: 0,
+    wasmPayloadReferences: 0,
+  };
+}
+
 function bundleEvidence() {
+  const automationFrontend = frontendInventory('b', 'c', 'f');
   return {
     productionWebdriverIncluded: false,
     automationWebdriverIncluded: true,
     cspExact: true,
     piuiRasterOnlyImageAddition: true,
-    wasmFiles: 0,
-    wasmMagicFrontendFiles: 0,
-    onigurumaEngineChunks: 0,
-    javascriptRegexEngineChunks: 1,
+    productionFrontend: frontendInventory('a', 'd', 'e'),
+    automationFrontend,
+    repeatAutomationFrontend: { ...automationFrontend },
   };
+}
+
+function canonicalReceiptJson(value: unknown): string {
+  if (value === null || typeof value === 'boolean' || typeof value === 'number'
+    || typeof value === 'string') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalReceiptJson).join(',')}]`;
+  if (!value || typeof value !== 'object') throw new Error('invalid receipt test value');
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record).sort().map((key) => (
+    `${JSON.stringify(key)}:${canonicalReceiptJson(record[key])}`
+  )).join(',')}}`;
+}
+
+type ReceiptChunk = Readonly<{
+  assets: readonly string[];
+  css: readonly string[];
+  dynamicImports: readonly string[];
+  fileName: string;
+  imports: readonly string[];
+  isEntry: boolean;
+  moduleKinds: readonly string[];
+}>;
+
+function moduleProvenanceBytes(chunks: readonly ReceiptChunk[]): Buffer {
+  return Buffer.from(`${canonicalReceiptJson({ chunks, schemaVersion: 1 })}\n`, 'utf8');
+}
+
+function provenanceFixture() {
+  const requiredKinds = A26_MODULE_KINDS.filter((kind) => (
+    kind !== 'a26-engine-oniguruma' && kind !== 'a26-wasm-module'
+  ));
+  const frontend = [
+    { path: 'assets/dormant.js', bytes: Buffer.from('export const dormant = true;') },
+    { path: 'assets/engine.js', bytes: Buffer.from('export const regexEngine = true;') },
+    { path: 'assets/main.js', bytes: Buffer.from('export const entry = true;') },
+    {
+      path: 'index.html',
+      bytes: Buffer.from(
+        '<!doctype html><script type="module" src="/assets/main.js"></script>',
+      ),
+    },
+  ];
+  const chunks: ReceiptChunk[] = [
+    {
+      assets: [],
+      css: [],
+      dynamicImports: [],
+      fileName: 'assets/dormant.js',
+      imports: [],
+      isEntry: false,
+      moduleKinds: [],
+    },
+    {
+      assets: [],
+      css: [],
+      dynamicImports: [],
+      fileName: 'assets/engine.js',
+      imports: [],
+      isEntry: false,
+      moduleKinds: requiredKinds,
+    },
+    {
+      assets: [],
+      css: [],
+      dynamicImports: ['assets/dormant.js', 'assets/engine.js'],
+      fileName: 'assets/main.js',
+      imports: [],
+      isEntry: true,
+      moduleKinds: [],
+    },
+  ];
+  return { chunks, frontend, provenance: moduleProvenanceBytes(chunks) };
 }
 
 function authoritativeEvidence() {
@@ -122,6 +231,8 @@ describe('A.26 packaged hostile-Markdown contract', () => {
     expect(assertA26BrowserEvidence({ ...browserEvidence(), rasterResourceEntries: 0 }))
       .toEqual({ ...browserEvidence(), rasterResourceEntries: 0 });
     expect(assertA26DomEvidence(domEvidence())).toEqual(domEvidence());
+    expect(assertA26FrontendInventory(bundleEvidence().productionFrontend))
+      .toEqual(bundleEvidence().productionFrontend);
     expect(assertA26BundleEvidence(bundleEvidence())).toEqual(bundleEvidence());
     expect(JSON.stringify({
       native: A26_EXPECTED_NATIVE_EVIDENCE,
@@ -129,6 +240,189 @@ describe('A.26 packaged hostile-Markdown contract', () => {
       dom: domEvidence(),
       bundle: bundleEvidence(),
     })).not.toContain('/');
+  });
+
+  it('requires a clean engine inventory for production and both automation builds', () => {
+    const valid = bundleEvidence();
+    for (const candidate of [
+      {
+        ...valid,
+        productionFrontend: { ...valid.productionFrontend, wasmFiles: 1 },
+      },
+      {
+        ...valid,
+        automationFrontend: { ...valid.automationFrontend, onigurumaEngineChunks: 1 },
+      },
+      {
+        ...valid,
+        repeatAutomationFrontend: {
+          ...valid.repeatAutomationFrontend,
+          javascriptRegexEngineChunks: 0,
+        },
+      },
+      {
+        ...valid,
+        repeatAutomationFrontend: {
+          ...valid.repeatAutomationFrontend,
+          inventorySha256: sha('e'),
+        },
+      },
+    ]) {
+      expect(() => assertA26BundleEvidence(candidate))
+        .toThrow('A.26 packaged Markdown probe rejected');
+    }
+  });
+
+  it('uses a package-derived exact resource allow-list and catches the hostile same-origin image', () => {
+    const expectedResourcePaths = [
+      '/assets/engine-javascript-a1.js',
+      '/assets/index-b2.js',
+    ];
+    const expectedRasterUrl =
+      'piui-raster://localhost/__piui_markdown_asset__/0123456789abcdef0123456789abcdef.png';
+    const currentLocation = 'tauri://localhost/markdown-packaged';
+    const allowedResources = expectedResourcePaths.map((path) => `tauri://localhost${path}`);
+    expect(assertA26ResourceAllowlist(expectedResourcePaths)).toEqual(expectedResourcePaths);
+    expect(a26ResourceAllowlistSha256(expectedResourcePaths)).toBe(
+      createHash('sha256')
+        .update(Buffer.from(`${JSON.stringify(expectedResourcePaths)}\n`, 'utf8'))
+        .digest('hex'),
+    );
+    expect(classifyA26ResourceEntries({
+      currentLocation,
+      expectedRasterUrl,
+      expectedResourcePaths,
+      resourceNames: [
+        ...allowedResources,
+        expectedRasterUrl,
+        'tauri://localhost/synthetic/private/image-canary.png',
+      ],
+    })).toEqual({
+      duplicateResourceEntries: 0,
+      hostileSameOriginResourceEntries: 1,
+      missingResourceEntries: 0,
+      observedResourcePaths: expectedResourcePaths,
+      rasterResourceEntries: 1,
+      resourceAllowlistEntries: 2,
+      unexpectedResourceEntries: 1,
+    });
+    expect(classifyA26ResourceEntries({
+      currentLocation,
+      expectedRasterUrl,
+      expectedResourcePaths,
+      resourceNames: [...allowedResources, expectedRasterUrl],
+    })).toEqual({
+      duplicateResourceEntries: 0,
+      hostileSameOriginResourceEntries: 0,
+      missingResourceEntries: 0,
+      observedResourcePaths: expectedResourcePaths,
+      rasterResourceEntries: 1,
+      resourceAllowlistEntries: 2,
+      unexpectedResourceEntries: 0,
+    });
+    expect(classifyA26ResourceEntries({
+      currentLocation,
+      expectedRasterUrl,
+      expectedResourcePaths,
+      resourceNames: [allowedResources[1], expectedRasterUrl],
+    })).toMatchObject({
+      duplicateResourceEntries: 0,
+      missingResourceEntries: 1,
+      observedResourcePaths: [expectedResourcePaths[1]],
+      unexpectedResourceEntries: 0,
+    });
+    expect(classifyA26ResourceEntries({
+      currentLocation,
+      expectedRasterUrl,
+      expectedResourcePaths,
+      resourceNames: [...allowedResources, allowedResources[1], expectedRasterUrl],
+    })).toMatchObject({
+      duplicateResourceEntries: 1,
+      missingResourceEntries: 0,
+      observedResourcePaths: expectedResourcePaths,
+      unexpectedResourceEntries: 0,
+    });
+    expect(classifyA26ResourceEntries({
+      currentLocation,
+      expectedRasterUrl,
+      expectedResourcePaths,
+      resourceNames: [...allowedResources, 'tauri://localhost/assets/dormant.js'],
+    })).toMatchObject({
+      missingResourceEntries: 0,
+      unexpectedResourceEntries: 1,
+    });
+    for (const malformed of [
+      ['/index.html'],
+      ['/assets/index-b2.js?cache=1'],
+      [...expectedResourcePaths].reverse(),
+    ]) {
+      expect(() => assertA26ResourceAllowlist(malformed))
+        .toThrow('A.26 packaged Markdown probe rejected');
+    }
+    const observeScript = createA26ObserveScript(expectedResourcePaths);
+    expect(observeScript).toContain(JSON.stringify(expectedResourcePaths));
+    expect(observeScript).toContain("performance.getEntriesByType('resource')");
+    expect(observeScript).toContain("crypto.subtle.digest('SHA-256'");
+    expect(observeScript).toContain('resourceObservation.observedResourcePaths');
+    expect(observeScript).toContain('/synthetic/private/image-canary.png');
+    expect(() => new Function(`return async function a26Observation() {${observeScript}}`))
+      .not.toThrow();
+  });
+
+  it('derives the exact route closure from path-free provenance and rejects hidden engines or payloads', () => {
+    const fixture = provenanceFixture();
+    expect(parseA26ModuleProvenance(fixture.provenance).chunks).toHaveLength(3);
+    const derived = deriveA26FrontendInventory(fixture.frontend, fixture.provenance);
+    expect(derived.expectedResourcePaths).toEqual([
+      '/assets/engine.js',
+      '/assets/main.js',
+    ]);
+    expect(derived.evidence.resourceAllowlistEntries).toBe(2);
+    expect(derived.evidence.resourceAllowlistEntries).toBeLessThan(
+      derived.evidence.fileCount - 1,
+    );
+    expect(derived.evidence.resourceAllowlistSha256).toBe(
+      a26ResourceAllowlistSha256(derived.expectedResourcePaths),
+    );
+
+    const hiddenOniguruma = fixture.chunks.map((chunk) => (
+      chunk.fileName === 'assets/dormant.js'
+        ? { ...chunk, moduleKinds: ['a26-engine-oniguruma'] }
+        : chunk
+    ));
+    expect(() => deriveA26FrontendInventory(
+      fixture.frontend,
+      moduleProvenanceBytes(hiddenOniguruma),
+    )).toThrow('A.26 packaged Markdown probe rejected');
+
+    for (const bytes of [
+      Buffer.concat([Buffer.from('renamed payload: '), Buffer.from([0x00, 0x61, 0x73, 0x6d])]),
+      Buffer.from('export const renamedPayload = "AGFzbQEAAAA";'),
+      Buffer.from('export const renamedPayload = [0, 97, 115, 109];'),
+    ]) {
+      const frontend = fixture.frontend.map((file) => (
+        file.path === 'assets/dormant.js' ? { ...file, bytes } : file
+      ));
+      expect(() => deriveA26FrontendInventory(frontend, fixture.provenance))
+        .toThrow('A.26 packaged Markdown probe rejected');
+    }
+
+    const missingLanguage = fixture.chunks.map((chunk) => (
+      chunk.fileName === 'assets/engine.js'
+        ? { ...chunk, moduleKinds: chunk.moduleKinds.filter((kind) => kind !== 'a26-lang-rust') }
+        : chunk
+    ));
+    expect(() => deriveA26FrontendInventory(
+      fixture.frontend,
+      moduleProvenanceBytes(missingLanguage),
+    )).toThrow('A.26 packaged Markdown probe rejected');
+
+    const nonCanonical = Buffer.from(
+      fixture.provenance.toString('utf8').replace('{"chunks"', '{ "chunks"'),
+      'utf8',
+    );
+    expect(() => parseA26ModuleProvenance(nonCanonical))
+      .toThrow('A.26 packaged Markdown probe rejected');
   });
 
   it('accepts the closed authoritative and post-cleanup reports and rejects substitutions', () => {
@@ -149,7 +443,16 @@ describe('A.26 packaged hostile-Markdown contract', () => {
       line({ ...authoritative, dom: { ...domEvidence(), rasterImages: 2 } }),
       line({ ...authoritative, native: { ...A26_EXPECTED_NATIVE_EVIDENCE, assetSuccessfulReads: 0 } }),
       line({ ...authoritative, driver: { ...authoritative.driver, dormantTwinListeners: 1 } }),
-      line({ ...authoritative, bundle: { ...bundleEvidence(), wasmFiles: 1 } }),
+      line({
+        ...authoritative,
+        bundle: {
+          ...bundleEvidence(),
+          automationFrontend: {
+            ...bundleEvidence().automationFrontend,
+            wasmFiles: 1,
+          },
+        },
+      }),
       Buffer.alloc(262_145, 0x20),
     ];
     for (const candidate of malformed) {
@@ -192,17 +495,30 @@ describe('A.26 packaged hostile-Markdown contract', () => {
   });
 
   it('keeps the architecture route and native command surface fixed and visibly busy', async () => {
-    const [route, prelude, command] = await Promise.all([
+    const [index, route, prelude, command] = await Promise.all([
+      readFile(new URL('../../index.html', import.meta.url), 'utf8'),
       readFile(new URL('../../src/architecture-gate/MarkdownProbe.tsx', import.meta.url), 'utf8'),
       readFile(new URL('../../src/architecture-gate/a26MarkdownPrelude.ts', import.meta.url), 'utf8'),
       readFile(new URL('../../src-tauri/src/commands/a26_markdown.rs', import.meta.url), 'utf8'),
     ]);
+    const preludeIndex = index.indexOf('/src/architecture-gate/a26MarkdownPrelude.ts');
+    const applicationIndex = index.indexOf('/src/main.tsx');
+    expect(preludeIndex).toBeGreaterThan(-1);
+    expect(applicationIndex).toBeGreaterThan(preludeIndex);
     expect(route).toContain("invoke<unknown>('a26_markdown_prepare')");
     expect(route).toContain("import('../../tests/fixtures/markdown/hostile.md?raw')");
     expect(route).toContain('aria-busy={state.phase !== \'ready\'}');
     expect(route).toContain('markdown-probe__spinner');
     expect(prelude).toContain("import.meta.env.VITE_PIUI_A26_MARKDOWN_TEST === '1'");
     expect(prelude).toContain('let begun = false;');
+    expect(prelude).toContain('const preBeginCounters = blankCounters();');
+    expect(prelude).toContain('else if (!begun) preBeginCounters[key] += 1;');
+    expect(prelude).toContain('counters = { ...preBeginCounters };');
+    const beginSource = prelude.slice(
+      prelude.indexOf('begin(rasterUrl: string)'),
+      prelude.indexOf('recordDisclosedExternalOpen()'),
+    );
+    expect(beginSource).not.toContain('loadingIndicatorPresented = false;');
     expect(prelude).toContain('WebAssembly.Module = new Proxy');
     expect(prelude).toContain('WebAssembly.Instance = new Proxy');
     expect(prelude).toContain('WebAssembly.Memory = new Proxy');
@@ -221,7 +537,8 @@ describe('A.26 packaged hostile-Markdown contract', () => {
   });
 
   it('integrates the feature-only driver, exact custom protocol and packaged command', async () => {
-    const [cargo, commands, native, app, config, packageJson, packageRunner] = await Promise.all([
+    const [cargo, commands, native, app, config, packageJson, packageRunner, viteConfig]
+      = await Promise.all([
       readFile(new URL('../../src-tauri/Cargo.toml', import.meta.url), 'utf8'),
       readFile(new URL('../../src-tauri/src/commands/mod.rs', import.meta.url), 'utf8'),
       readFile(new URL('../../src-tauri/src/lib.rs', import.meta.url), 'utf8'),
@@ -229,6 +546,7 @@ describe('A.26 packaged hostile-Markdown contract', () => {
       readFile(new URL('../../src-tauri/tauri.conf.json', import.meta.url), 'utf8'),
       readFile(new URL('../../package.json', import.meta.url), 'utf8'),
       readFile(new URL('../../scripts/package-spike.mjs', import.meta.url), 'utf8'),
+      readFile(new URL('../../vite.config.ts', import.meta.url), 'utf8'),
     ]);
     expect(cargo).toMatch(/architecture-test\s*=\s*\["dep:tauri-plugin-wdio-webdriver"\]/);
     expect(cargo).toContain('tauri-plugin-wdio-webdriver');
@@ -244,8 +562,24 @@ describe('A.26 packaged hostile-Markdown contract', () => {
     expect(app).toContain('spike === A26_MARKDOWN_ROUTE');
     expect(JSON.parse(config).app.security.csp).toContain("img-src 'self' piui-raster:");
     expect(JSON.parse(packageJson).scripts['spike:packaged:markdown'])
-      .toBe('node scripts/run-packaged-markdown-probe.mjs');
+      .toBe('/usr/bin/env -i PATH=/usr/bin:/bin LANG=en_AU.UTF-8 LC_ALL=en_AU.UTF-8 /usr/bin/ruby --disable-gems scripts/architecture-bootstrap.rb package --authoritative-a26');
     expect(packageRunner).toContain('--authoritative-a26');
     expect(packageRunner).toContain('executeAuthoritativeMarkdownProbe');
+    expect(packageRunner).toContain("productionFrontend = captureA26FrontendInventories");
+    expect(packageRunner).toContain("automationFrontend = captureA26FrontendInventories");
+    expect(packageRunner).toContain("repeatAutomationFrontend = captureA26FrontendInventories");
+    expect(packageRunner).toContain('PIUI_A26_MODULE_PROVENANCE_PATH: resolve(');
+    expect(packageRunner).toContain('const frontendProvenance = await readTrustedRegularFile(');
+    expect(packageRunner).toContain('productionProvenance,');
+    expect(packageRunner).toContain('automationProvenance,');
+    expect(packageRunner).toContain('repeatAutomationProvenance,');
+    expect(packageRunner).toContain('deriveA26FrontendInventoryFromProvenance(frontend, provenance)');
+    expect(packageRunner).toContain(
+      'expectedResourcePaths: markdownBundleDerivation.expectedResourcePaths',
+    );
+    expect(viteConfig).toContain("name: 'piui-a26-module-provenance'");
+    expect(viteConfig).toContain("flag: 'wx'");
+    expect(viteConfig).toContain('mode: 0o600');
+    expect(viteConfig).toContain('moduleKinds: sorted(moduleKinds)');
   });
 });

@@ -1,7 +1,4 @@
-import {
-  isWithinHighlightBounds,
-  MAX_LOGICAL_LINE_UTF16,
-} from './markdownPolicy';
+import { isWithinHighlightBounds, MAX_LOGICAL_LINE_UTF16 } from './markdownPolicy';
 
 export const HIGHLIGHT_LANGUAGE_ALIASES = Object.freeze({
   bash: 'bash',
@@ -21,7 +18,8 @@ export const HIGHLIGHT_LANGUAGE_ALIASES = Object.freeze({
   typescript: 'typescript',
 });
 
-export type HighlightLanguage = (typeof HIGHLIGHT_LANGUAGE_ALIASES)[keyof typeof HIGHLIGHT_LANGUAGE_ALIASES];
+export type HighlightLanguage =
+  (typeof HIGHLIGHT_LANGUAGE_ALIASES)[keyof typeof HIGHLIGHT_LANGUAGE_ALIASES];
 export type FixedTokenClass =
   | 'tok-attribute'
   | 'tok-comment'
@@ -182,10 +180,10 @@ export async function loadFixedHighlighter(): Promise<FixedHighlighter> {
 export function highlightRenderNodeCount(result: FixedHighlightResult): number {
   const newlineTextNodes = Math.max(0, result.lines.length - 1);
   return result.lines.reduce(
-    (total, line) => total + 1 + line.reduce(
-      (lineTotal, token) => lineTotal + (token.className === null ? 1 : 2),
-      0,
-    ),
+    (total, line) =>
+      total +
+      1 +
+      line.reduce((lineTotal, token) => lineTotal + (token.className === null ? 1 : 2), 0),
     newlineTextNodes,
   );
 }
@@ -219,16 +217,17 @@ export async function highlightCode(
   for (const line of result.tokens) {
     const fixedLine: FixedHighlightToken[] = [];
     for (const token of line) {
-      const scopes = token.explanation?.flatMap((entry) =>
-        entry.scopes.map((scope) => scope.scopeName),
-      ) ?? [];
+      const scopes =
+        token.explanation?.flatMap((entry) => entry.scopes.map((scope) => scope.scopeName)) ?? [];
       const className = classForScopes(scopes);
       renderNodes += className === null ? 1 : 2;
       if (renderNodes > MAX_HIGHLIGHT_RENDER_NODES_PER_BLOCK) return null;
-      fixedLine.push(Object.freeze({
-        content: token.content,
-        className,
-      }));
+      fixedLine.push(
+        Object.freeze({
+          content: token.content,
+          className,
+        }),
+      );
     }
     lines.push(Object.freeze(fixedLine));
   }
@@ -259,10 +258,12 @@ export function createHighlightJobRegistry(
         code.length > MAX_HIGHLIGHT_WORK_UTF16_PER_BLOCK ||
         reservedWorkUnits + code.length > MAX_HIGHLIGHT_WORK_UTF16_TOTAL
       ) {
-        return Promise.resolve(Object.freeze({
-          result: null,
-          reason: 'Plain code: message highlight work budget reached.',
-        }));
+        return Promise.resolve(
+          Object.freeze({
+            result: null,
+            reason: 'Plain code: message highlight work budget reached.',
+          }),
+        );
       }
 
       reservedWorkUnits += code.length;

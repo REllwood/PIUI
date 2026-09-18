@@ -248,6 +248,12 @@ pub(crate) struct WorkspaceSync {
     pub(crate) lease_id: Option<String>,
 }
 
+pub(crate) struct WorkspaceExecutionContext {
+    pub(crate) workspace_id: String,
+    pub(crate) revision: u64,
+    pub(crate) canonical_path: PathBuf,
+}
+
 pub enum LoadStart {
     Dispatch(LoadLease),
     Cached(WorkspaceSummary),
@@ -289,6 +295,42 @@ impl Drop for RevokeOutcome {
 }
 
 impl WorkspaceRegistry {
+    pub(crate) fn execution_context(
+        &self,
+        workspace_id: &str,
+        expected_revision: u64,
+    ) -> Result<WorkspaceExecutionContext, String> {
+        let (id, revision, path, identity) = {
+            let inner = self
+                .inner
+                .lock()
+                .map_err(|_| WORKSPACE_UNAVAILABLE.to_string())?;
+            let record = inner
+                .records
+                .get(workspace_id)
+                .ok_or_else(|| WORKSPACE_UNAVAILABLE.to_string())?;
+            if record.lifecycle != WorkspaceLifecycle::OpenUntrusted
+                || record.trust_state != TrustState::Trusted
+                || record.revision != expected_revision
+                || record.pending_authorisation.is_some()
+            {
+                return Err(WORKSPACE_UNTRUSTED.into());
+            }
+            (
+                record.id.clone(),
+                record.revision,
+                record.capability.canonical_path.clone(),
+                record.capability.identity,
+            )
+        };
+        revalidate_path_identity(&path, identity)?;
+        Ok(WorkspaceExecutionContext {
+            workspace_id: id,
+            revision,
+            canonical_path: path,
+        })
+    }
+
     pub(crate) fn with_approval_binding<T>(
         &self,
         workspace_id: &str,
@@ -1078,7 +1120,7 @@ fn identity_for_fd(fd: RawFd) -> Result<DirectoryIdentity, String> {
     }
     Ok(DirectoryIdentity {
         device: stat.st_dev as u64,
-        inode: stat.st_ino as u64,
+        inode: stat.st_ino,
     })
 }
 
@@ -1454,10 +1496,7 @@ mod tests {
             inspected.metadata.as_ref().unwrap().settings,
             MetadataKind::File
         );
-        assert!(matches!(
-            registry.begin_load(&acquired.workspace_id, 0, 1),
-            Err(_)
-        ));
+        assert!(registry.begin_load(&acquired.workspace_id, 0, 1).is_err());
         let opened = registry.open_untrusted(&acquired.workspace_id, 0).unwrap();
         assert_eq!(opened.trust_state, TrustState::Untrusted);
         let (trusted, _lease_id) = registry.authorise(&acquired.workspace_id, 0).unwrap();
@@ -1552,10 +1591,7 @@ mod tests {
             summary.resource_state,
             PublicResourceState::RevokedPriorEffects
         );
-        assert!(matches!(
-            registry.begin_load(&acquired.workspace_id, 2, 8),
-            Err(_)
-        ));
+        assert!(registry.begin_load(&acquired.workspace_id, 2, 8).is_err());
         let (retrusted, _) = registry.authorise(&acquired.workspace_id, 2).unwrap();
         assert_eq!(retrusted.revision, 3);
         let second_lease = match registry.begin_load(&acquired.workspace_id, 3, 8).unwrap() {

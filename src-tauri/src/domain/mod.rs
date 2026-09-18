@@ -1,3 +1,12 @@
 pub mod approval;
 pub mod assets;
+pub mod changes;
+pub mod file_search;
+pub mod providers;
+pub mod resources;
+pub mod session;
+pub mod session_lock;
+pub mod settings;
+pub mod turn;
+pub mod update_state;
 pub mod workspace;

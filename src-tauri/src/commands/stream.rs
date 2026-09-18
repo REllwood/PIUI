@@ -2,14 +2,16 @@ use crate::commands::bridge::{
     AcknowledgementAbandonment, BridgeState, DeliveryAcceptance, bridge_start_transport,
 };
 use crate::commands::projector::{PROJECTION_REJECTED, PublicOperationClass};
-use crate::protocol::{Envelope, ProtocolKind, validate_envelope};
+use crate::protocol::{Envelope, ErrorCategory, ProtocolKind, validate_envelope};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, State};
 const STREAM_DEADLINE: Duration = Duration::from_secs(5);
+const PRODUCT_STREAM_DEADLINE: Duration = Duration::from_secs(900);
 const MAX_STREAM_EVENTS: u64 = 4_096;
 const MAX_STREAM_DELTA_UTF16: u64 = 262_144;
 const STREAM_DEADLINE_EXCEEDED: &str = "sidecar stream deadline exceeded";
 const STREAM_LIMIT_EXCEEDED: &str = "sidecar stream limit exceeded";
+const SYNTHESISED_STREAM_TERMINAL_ID: &str = "host-synthesised-stream-terminal";
 
 #[derive(Default)]
 struct StreamBudget {
@@ -170,7 +172,7 @@ where
     })
 }
 
-fn run_stream_transport_receipted<F>(
+pub(crate) fn run_stream_transport_receipted<F>(
     state: &BridgeState,
     request: Envelope,
     mut deliver: F,
@@ -300,10 +302,20 @@ where
         return Err(error);
     }
 
+    let deadline = if request
+        .payload
+        .get("method")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|method| matches!(method, "product.turn.start" | "product.auth.start"))
+    {
+        PRODUCT_STREAM_DEADLINE
+    } else {
+        STREAM_DEADLINE
+    };
     let result = run_stream_loop(
         generation,
         &request.id,
-        Instant::now() + STREAM_DEADLINE,
+        Instant::now() + deadline,
         |timeout| {
             supervisor
                 .lock()
@@ -365,6 +377,22 @@ where
                 .payload
                 .get("snapshot")
                 .is_some_and(serde_json::Value::is_object);
+        let is_stream_response = envelope.kind == ProtocolKind::Response
+            && !is_snapshot
+            && envelope.correlation_id.as_deref() == Some(request_id);
+        if is_stream_response {
+            // The sidecar answered a stream request with a plain response, so the stream
+            // will never carry its own terminal. Synthesise the terminal failure the
+            // WebView already understands rather than waiting out the deadline.
+            let terminal = synthesise_stream_failure(&envelope, request_id);
+            budget.observe(&terminal)?;
+            deliver(
+                generation,
+                &terminal,
+                deadline.saturating_duration_since(Instant::now()),
+            )?;
+            return Ok(());
+        }
         if !is_stream_event && !is_acknowledgement && !is_snapshot {
             continue;
         }
@@ -383,7 +411,7 @@ where
                     .payload
                     .get("terminal")
                     .and_then(serde_json::Value::as_str),
-                Some("complete" | "cancelled")
+                Some("complete" | "cancelled" | "failed")
             )
         {
             return Ok(());
@@ -392,14 +420,56 @@ where
     }
 }
 
+fn synthesise_stream_failure(response: &Envelope, request_id: &str) -> Envelope {
+    let code = response
+        .error
+        .as_ref()
+        .map_or("provider-stream-unavailable", |error| {
+            match error.category {
+                ErrorCategory::InvalidRequest => "provider-stream-invalid-request",
+                ErrorCategory::UnsupportedVersion => "provider-stream-unsupported-version",
+                ErrorCategory::Unavailable => "provider-stream-unavailable",
+                ErrorCategory::Cancelled => "provider-stream-cancelled",
+                ErrorCategory::Timeout => "provider-stream-timeout",
+                ErrorCategory::PermissionDenied => "provider-stream-permission-denied",
+                ErrorCategory::Conflict => "provider-stream-conflict",
+                ErrorCategory::Internal => "provider-stream-internal",
+            }
+        });
+    Envelope {
+        version: 1,
+        kind: ProtocolKind::Event,
+        id: SYNTHESISED_STREAM_TERMINAL_ID.to_owned(),
+        correlation_id: Some(request_id.to_owned()),
+        decision_id: None,
+        sequence: response.sequence,
+        payload: serde_json::Map::from_iter([
+            ("eventType".into(), serde_json::Value::from("stream.failed")),
+            ("terminal".into(), serde_json::Value::from("failed")),
+            ("code".into(), serde_json::Value::from(code)),
+        ]),
+        error: None,
+    }
+}
+
 fn validate_stream_request(request: &Envelope) -> Result<(), String> {
+    let method = request
+        .payload
+        .get("method")
+        .and_then(serde_json::Value::as_str);
+    let permitted_payload = match method {
+        Some("stream.fixture") => request.payload.len() == 1,
+        Some("product.turn.start") => {
+            crate::protocol::product::validate_product_turn_request(&request.payload).is_ok()
+        }
+        Some("product.auth.start") => {
+            crate::protocol::product::validate_product_auth_request(&request.payload).is_ok()
+        }
+        _ => false,
+    };
     if validate_envelope(request).is_err()
         || request.kind != ProtocolKind::Request
-        || request
-            .payload
-            .get("method")
-            .and_then(serde_json::Value::as_str)
-            != Some("stream.fixture")
+        || !permitted_payload
         || !valid_id(&request.id)
     {
         return Err("stream request invalid".into());
@@ -434,9 +504,9 @@ fn valid_id(request_id: &str) -> bool {
 mod tests {
     use super::{
         AcknowledgementAbandonment, DeliveryAcceptance, MAX_STREAM_DELTA_UTF16, MAX_STREAM_EVENTS,
-        PublicOperationClass, STREAM_LIMIT_EXCEEDED, StreamBudget,
+        PublicOperationClass, STREAM_DEADLINE_EXCEEDED, STREAM_LIMIT_EXCEEDED, StreamBudget,
         finish_timed_out_acknowledgement, project_stream_delivery, run_stream_loop,
-        validate_cancellation, validate_stream_request,
+        synthesise_stream_failure, validate_cancellation, validate_stream_request,
     };
     use crate::commands::bridge::BridgeState;
     use crate::protocol::Envelope;
@@ -569,6 +639,117 @@ mod tests {
         );
         assert_eq!(snapshot_result, Err(STREAM_LIMIT_EXCEEDED.into()));
         assert_eq!(delivered_snapshots, 1);
+    }
+
+    #[test]
+    fn stream_correlated_responses_terminate_the_stream_with_a_mapped_failure() {
+        for (category, code) in [
+            ("invalid-request", "provider-stream-invalid-request"),
+            ("unsupported-version", "provider-stream-unsupported-version"),
+            ("unavailable", "provider-stream-unavailable"),
+            ("cancelled", "provider-stream-cancelled"),
+            ("timeout", "provider-stream-timeout"),
+            ("permission-denied", "provider-stream-permission-denied"),
+            ("conflict", "provider-stream-conflict"),
+            ("internal", "provider-stream-internal"),
+        ] {
+            let response = envelope(serde_json::json!({
+                "version":1,"kind":"response","id":"sidecar-1",
+                "correlationId":"web-auth-driver-0001","sequence":1,"payload":{},
+                "error":{"category":category,"message":"Product operation failed","retryable":true}
+            }));
+            let terminal = synthesise_stream_failure(&response, "web-auth-driver-0001");
+            assert_eq!(terminal.kind, super::ProtocolKind::Event);
+            assert_eq!(
+                terminal.correlation_id.as_deref(),
+                Some("web-auth-driver-0001")
+            );
+            assert!(terminal.error.is_none());
+            assert_eq!(
+                terminal
+                    .payload
+                    .get("eventType")
+                    .and_then(serde_json::Value::as_str),
+                Some("stream.failed")
+            );
+            assert_eq!(
+                terminal
+                    .payload
+                    .get("terminal")
+                    .and_then(serde_json::Value::as_str),
+                Some("failed")
+            );
+            assert_eq!(
+                terminal
+                    .payload
+                    .get("code")
+                    .and_then(serde_json::Value::as_str),
+                Some(code)
+            );
+        }
+
+        // A success response for a stream correlation is still a protocol break.
+        let success = envelope(serde_json::json!({
+            "version":1,"kind":"response","id":"sidecar-2",
+            "correlationId":"web-auth-driver-0001","sequence":2,"payload":{"ok":true}
+        }));
+        assert_eq!(
+            synthesise_stream_failure(&success, "web-auth-driver-0001")
+                .payload
+                .get("code")
+                .and_then(serde_json::Value::as_str),
+            Some("provider-stream-unavailable")
+        );
+
+        // The run loop must stop on that response instead of waiting out the deadline.
+        let error_response = envelope(serde_json::json!({
+            "version":1,"kind":"response","id":"sidecar-1",
+            "correlationId":"web-auth-driver-0001","sequence":1,"payload":{},
+            "error":{"category":"unavailable","message":"Product operation failed","retryable":true}
+        }));
+        let mut delivered = Vec::new();
+        let started = Instant::now();
+        let result = run_stream_loop(
+            1,
+            "web-auth-driver-0001",
+            started + Duration::from_secs(60),
+            |_| Ok(error_response.clone()),
+            |_, envelope, _| {
+                delivered.push(envelope.clone());
+                Ok(())
+            },
+        );
+        assert_eq!(result, Ok(()));
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert_eq!(delivered.len(), 1);
+        assert_eq!(
+            delivered[0]
+                .payload
+                .get("code")
+                .and_then(serde_json::Value::as_str),
+            Some("provider-stream-unavailable")
+        );
+
+        // Responses correlated elsewhere still pass by without terminating the stream.
+        let unrelated = envelope(serde_json::json!({
+            "version":1,"kind":"response","id":"sidecar-3",
+            "correlationId":"web-other-0001","sequence":3,"payload":{}
+        }));
+        let mut unrelated_deliveries = 0;
+        assert_eq!(
+            run_stream_loop(
+                1,
+                "web-auth-driver-0001",
+                Instant::now() + Duration::from_millis(250),
+                |_| Ok(unrelated.clone()),
+                |_, _, _| {
+                    unrelated_deliveries += 1;
+                    Ok(())
+                },
+            ),
+            Err(STREAM_DEADLINE_EXCEEDED.into())
+        );
+        assert_eq!(unrelated_deliveries, 0);
     }
 
     #[test]

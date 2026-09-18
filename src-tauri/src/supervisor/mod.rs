@@ -9,7 +9,9 @@ mod stdio;
 pub use handshake::{
     HandshakeExpectation, NODE_VERSION, PI_VERSION, PROTOCOL_VERSION, validate_handshake,
 };
+pub(crate) use process::pi_agent_dir_within;
 pub use process::{SidecarStatus, SidecarSupervisor, SupervisorPaths};
 pub use redact::StderrRedactor;
 pub use restart::{RESTART_HALTED_REPORT, RestartController};
 pub use router::{SequenceOutcome, SequenceRouter};
+pub(crate) use stdio::report_sidecar_failure;

@@ -4,6 +4,7 @@ use crate::protocol::{Envelope, ProtocolKind};
 use serde::Deserialize;
 use serde_json::{Map, Value};
 use std::path::Path;
+use std::path::PathBuf;
 use std::time::Duration;
 use tauri::{State, WebviewWindow};
 
@@ -14,6 +15,14 @@ const PRIVATE_REJECTED: &str = "workspace private response rejected";
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NativeFolderSelectionRequest {}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkspaceFileDiscoveryRequest {
+    workspace_id: String,
+    expected_revision: u64,
+    query: String,
+}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -436,6 +445,83 @@ pub fn workspace_revoke(
     expected_revision: u64,
 ) -> Result<WorkspaceSummary, String> {
     revoke_workspace(state.inner(), &workspace_id, expected_revision)
+}
+
+#[tauri::command]
+pub async fn workspace_discover_files(
+    state: State<'_, BridgeState>,
+    request_data: WorkspaceFileDiscoveryRequest,
+) -> Result<Vec<String>, String> {
+    if request_data.query.chars().count() > 160 || request_data.query.chars().any(char::is_control)
+    {
+        return Err("workspace-file-query-invalid".into());
+    }
+    let workspace = state
+        .workspace_registry()
+        .execution_context(&request_data.workspace_id, request_data.expected_revision)?;
+    let root = workspace.canonical_path;
+    let query = request_data.query.to_lowercase();
+    tauri::async_runtime::spawn_blocking(move || discover_workspace_files(&root, &query))
+        .await
+        .map_err(|_| "workspace-file-discovery-worker-failed".to_string())?
+}
+
+fn discover_workspace_files(root: &Path, query: &str) -> Result<Vec<String>, String> {
+    const MAX_VISITED: usize = 10_000;
+    const MAX_RESULTS: usize = 100;
+    const MAX_DEPTH: usize = 16;
+    let mut stack = vec![(root.to_path_buf(), 0_usize)];
+    let mut results = Vec::new();
+    let mut visited = 0_usize;
+    while let Some((directory, depth)) = stack.pop() {
+        if visited >= MAX_VISITED || results.len() >= MAX_RESULTS || depth > MAX_DEPTH {
+            break;
+        }
+        let mut entries = std::fs::read_dir(&directory)
+            .map_err(|_| "workspace-file-discovery-failed".to_string())?
+            .filter_map(Result::ok)
+            .collect::<Vec<_>>();
+        entries.sort_by_key(std::fs::DirEntry::file_name);
+        for entry in entries {
+            visited += 1;
+            if visited > MAX_VISITED || results.len() >= MAX_RESULTS {
+                break;
+            }
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.chars().any(char::is_control)
+                || matches!(
+                    name.as_ref(),
+                    ".git" | "node_modules" | "target" | ".DS_Store"
+                )
+            {
+                continue;
+            }
+            let path: PathBuf = entry.path();
+            let metadata = std::fs::symlink_metadata(&path)
+                .map_err(|_| "workspace-file-discovery-failed".to_string())?;
+            if metadata.file_type().is_symlink() {
+                continue;
+            }
+            if metadata.is_dir() {
+                stack.push((path, depth + 1));
+                continue;
+            }
+            if !metadata.is_file() {
+                continue;
+            }
+            let relative = path
+                .strip_prefix(root)
+                .map_err(|_| "workspace-file-discovery-failed".to_string())?
+                .to_string_lossy()
+                .replace('\\', "/");
+            if relative.len() <= 1_024 && relative.to_lowercase().contains(query) {
+                results.push(relative);
+            }
+        }
+    }
+    results.sort();
+    Ok(results)
 }
 
 fn parse_success<T: for<'de> Deserialize<'de>>(envelope: Envelope) -> Result<T, String> {

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import {
   mkdir,
   mkdtemp,
@@ -18,6 +19,28 @@ import {
 } from './architecture-proof-fixtures.mjs';
 
 const sha = architectureSha;
+const recordSource = await readFile(
+  new URL('../../scripts/record-architecture-gate.mjs', import.meta.url),
+  'utf8',
+);
+
+test('forwards only an exact validated transcript for the automation batch', () => {
+  const executor = recordSource.slice(
+    recordSource.indexOf('async function executeDefaultBatch'),
+    recordSource.indexOf('export async function recordArchitectureGate'),
+  );
+  assert.match(
+    executor,
+    /batchId === 'automation'\s*\? createA28ProgressTranscriptForwarder/u,
+  );
+  assert.match(executor, /stderrObserver: \(bytes\) => progress\.push\(bytes\)/u);
+  assert.match(executor, /progress\.finish\(\{ allowEmpty: true \}\)/u);
+  assert.match(executor, /!result\.stderr\.equals\(forwardedStderr\)/u);
+  assert.doesNotMatch(executor, /\.\.\.process\.env/u);
+  for (const key of ['HOME', 'LANG', 'LC_ALL', 'PATH', 'TMPDIR']) {
+    assert.match(executor, new RegExp(`\\b${key}:`, 'u'));
+  }
+});
 
 async function createRepository(t) {
   const root = await mkdtemp(join(tmpdir(), 'piui-gate-record.'));
@@ -32,9 +55,11 @@ async function createRepository(t) {
   return root;
 }
 
-function fakeExecutor() {
+function fakeExecutor(requests = []) {
   let production;
-  return async ({ batchId, productionArtifact, sourceDigest }) => {
+  return async (request) => {
+    requests.push(request);
+    const { batchId, productionArtifact, sourceDigest } = request;
     if (batchId === 'production') {
       const batch = architectureProofBatch(batchId, undefined, sourceDigest);
       production = batch.artifact;
@@ -48,8 +73,9 @@ function fakeExecutor() {
 
 test('records an append-only, self-validating architecture decision', async (t) => {
   const root = await createRepository(t);
+  const requests = [];
   const result = await recordArchitectureGate(root, {
-    executeBatch: fakeExecutor(),
+    executeBatch: fakeExecutor(requests),
     nonce: '11111111111111111111111111111111',
     now: () => new Date('2026-07-31T12:00:00.000Z'),
   });
@@ -66,6 +92,13 @@ test('records an append-only, self-validating architecture decision', async (t) 
     'started.json',
   ]);
   assert.equal((await readdir(join(run, 'proofs'))).length, 8);
+  const startedBytes = await readFile(join(run, 'started.json'));
+  const contextSha256 = createHash('sha256').update(startedBytes).digest('hex');
+  assert.equal(requests.length, 4);
+  for (const request of requests) {
+    assert.equal(request.architectureGateRunId, result.runId);
+    assert.equal(request.architectureGateRunContextSha256, contextSha256);
+  }
 });
 
 test('refuses semantically invalid proof evidence before publishing a pass marker', async (t) => {

@@ -158,7 +158,14 @@ where
 }
 
 pub fn run_cleanup<R: Read, W: Write>(input: &mut R, output: &mut W) -> bool {
-    run_mode(MaintenanceMode::Cleanup, input, output).is_ok()
+    run_cleanup_with_failure_code(input, output).is_ok()
+}
+
+pub fn run_cleanup_with_failure_code<R: Read, W: Write>(
+    input: &mut R,
+    output: &mut W,
+) -> Result<(), MaintenanceFailureCode> {
+    run_mode(MaintenanceMode::Cleanup, input, output)
 }
 
 pub(crate) fn valid_a23_namespace(namespace: &str) -> bool {
@@ -637,6 +644,19 @@ mod tests {
         assert_eq!(
             output,
             b"{\"schemaVersion\":1,\"fixtureAbsent\":false,\"indexAbsent\":false,\"secretAbsent\":false,\"labelAbsent\":false}\n"
+        );
+    }
+
+    #[test]
+    fn cleanup_harness_receives_the_exact_failure_code() {
+        let mut output = Vec::new();
+        assert_eq!(
+            run_cleanup_with_failure_code(&mut Cursor::new(b"invalid\n"), &mut output),
+            Err(MaintenanceFailureCode::Input)
+        );
+        assert_eq!(
+            output,
+            b"{\"schemaVersion\":1,\"cleanupSucceeded\":false,\"indexAbsent\":false}\n"
         );
     }
 

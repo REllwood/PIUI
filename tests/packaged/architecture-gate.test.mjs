@@ -77,7 +77,7 @@ function validResults() {
           twinFingerprint: automationFingerprint,
         }),
         distribution: 'non-distributable',
-        signature: 'adhoc',
+        signature: 'apple-development',
         webdriverIncluded: true,
       }),
       credentialTwin: artifact({

@@ -104,6 +104,30 @@ impl CredentialProxy {
         .map_err(operation_error_code)
     }
 
+    pub(crate) fn import_credential(
+        &self,
+        provider_id: &str,
+        credential: Value,
+    ) -> Result<String, &'static str> {
+        validate_provider_id(provider_id).map_err(|_| "credential-import-invalid")?;
+        let credential = PrivateValue::new(credential);
+        let (credential_type, material) = validate_and_serialise_credential(credential.value())
+            .map_err(|_| "credential-import-invalid")?;
+        let mut repository = self
+            .inner
+            .lock()
+            .map_err(|_| "credential-store-unavailable")?;
+        set_credential(
+            repository.as_mut(),
+            provider_id.to_owned(),
+            credential_type,
+            material,
+            ACCOUNT_LABEL,
+            None,
+        )
+        .map_err(operation_error_code)
+    }
+
     /// Executes a decoded private request without reserving wire coordinates.
     /// This blocking seam is retained for the accepted A.15b-1 tests and
     /// non-supervisor callers.

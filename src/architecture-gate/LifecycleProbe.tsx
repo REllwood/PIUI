@@ -2,9 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-export const A27_LIFECYCLE_ROUTE = 'lifecycle-packaged';
-export const A27_LIFECYCLE_TEST_ACTIVE =
-  import.meta.env.VITE_PIUI_A27_LIFECYCLE_TEST === '1';
+export { A27_LIFECYCLE_ROUTE, A27_LIFECYCLE_TEST_ACTIVE } from './routeActivation';
 
 export type LifecyclePhase =
   | 'ready'
@@ -65,14 +63,15 @@ export function assertLifecycleSnapshot(value: unknown): LifecycleSnapshot {
   }
   const snapshot = value as Record<string, unknown>;
   if (
-    JSON.stringify(Object.keys(snapshot).sort()) !== JSON.stringify([...exactSnapshotKeys].sort())
-    || snapshot.schemaVersion !== 1
-    || typeof snapshot.phase !== 'string'
-    || !lifecyclePhases.has(snapshot.phase as LifecyclePhase)
-    || typeof snapshot.busy !== 'boolean'
-    || typeof snapshot.message !== 'string'
-    || snapshot.message.length < 1
-    || snapshot.message.length > 160
+    JSON.stringify(Object.keys(snapshot).sort()) !==
+      JSON.stringify([...exactSnapshotKeys].sort()) ||
+    snapshot.schemaVersion !== 1 ||
+    typeof snapshot.phase !== 'string' ||
+    !lifecyclePhases.has(snapshot.phase as LifecyclePhase) ||
+    typeof snapshot.busy !== 'boolean' ||
+    typeof snapshot.message !== 'string' ||
+    snapshot.message.length < 1 ||
+    snapshot.message.length > 160
   ) {
     throw new Error('lifecycle-snapshot-rejected');
   }
@@ -299,20 +298,13 @@ export function LifecycleProbe() {
           This architecture-only flow checks duplicate-start prevention, crash recovery, explicit
           restart, last-window close and final quit against one isolated application instance.
         </p>
-        <button
-          ref={primaryButton}
-          type="button"
-          autoFocus
-          disabled={disabled}
-          onClick={engage}
-        >
-          {snapshot.busy ? snapshot.message : (buttonLabel[action] ?? 'Lifecycle verification unavailable')}
+        <button ref={primaryButton} type="button" autoFocus disabled={disabled} onClick={engage}>
+          {snapshot.busy
+            ? snapshot.message
+            : (buttonLabel[action] ?? 'Lifecycle verification unavailable')}
         </button>
         {snapshot.busy ? (
-          <progress
-            aria-label={snapshot.message}
-            className="lifecycle-probe__progress"
-          />
+          <progress aria-label={snapshot.message} className="lifecycle-probe__progress" />
         ) : null}
         <p role="status" aria-live="polite" className="lifecycle-probe__status">
           {snapshot.message}
