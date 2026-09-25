@@ -32,6 +32,9 @@ graphify-out/
 # Pi subagent artefacts
 .pi-subagents/
 
+# Claude Code worktrees and agent state
+.claude/
+
 # OS files
 .DS_Store
 Thumbs.db
