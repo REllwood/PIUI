@@ -4,6 +4,7 @@ import { Icon, type IconName } from '../components/icons/Icon';
 import { LoadingLabel } from '../components/primitives/LoadingLabel';
 import { StatusPill } from '../components/primitives/StatusPill';
 import { isTurnActive } from '../domain/machines';
+import { isActivityInProgress } from '../domain/workSummary';
 import { useProduct } from './ProductContext';
 
 const routes: readonly Readonly<{ id: RouteId; label: string; icon: IconName }>[] = [
@@ -153,7 +154,7 @@ export function NavigationPlane({
             <Icon name={item.icon} />
             <span>{item.label}</span>
             {item.id === 'activity' &&
-            snapshot.activity.some((event) => event.state === 'running') ? (
+            snapshot.activity.some((event) => isActivityInProgress(event.state)) ? (
               <span className="navigation-plane__live" aria-label="Work running" />
             ) : null}
           </button>

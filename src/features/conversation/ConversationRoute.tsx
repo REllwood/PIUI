@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { BottomActionPlane } from '../../app/BottomActionPlane';
 import { useProduct } from '../../app/ProductContext';
 import { isTurnActive } from '../../domain/machines';
+import { workSummaryLabel } from '../../domain/workSummary';
 import { Icon } from '../../components/icons/Icon';
 import { LoadingLabel } from '../../components/primitives/LoadingLabel';
 import { WorkTrace } from '../../components/work-trace/WorkTrace';
@@ -159,11 +160,11 @@ export function ConversationRoute({ approvalRequest = 0 }: Readonly<{ approvalRe
                   Pi’s work
                 </span>
                 <span>
-                  {snapshot.activity.some((item) => item.state === 'running')
-                    ? `${snapshot.activity.filter((item) => item.state === 'running').length} running`
-                    : pendingApproval
-                      ? 'Waiting for your approval'
-                      : 'Work complete'}
+                  {workSummaryLabel(
+                    snapshot.activity,
+                    Boolean(pendingApproval),
+                    snapshot.turnStatus,
+                  )}
                   <Icon name="chevron-down" />
                 </span>
               </summary>

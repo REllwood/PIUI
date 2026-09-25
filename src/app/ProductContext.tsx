@@ -962,13 +962,15 @@ export function ProductProvider({
               activity: [
                 ...live.activity,
                 {
+                  // A started tool is running; any approval it needs is polled separately
+                  // and takes precedence in the work summary.
                   id: activityId,
                   category,
-                  verb: 'Waiting',
+                  verb: 'Running',
                   target: detail,
-                  state: 'waiting',
+                  state: 'running' as const,
                   elapsed: '—',
-                  summary: 'Review the exact local action before it runs.',
+                  summary: 'Pi is using this tool.',
                 },
               ],
               turnStatus: 'tool-running',

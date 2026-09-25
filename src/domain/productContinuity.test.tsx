@@ -297,6 +297,26 @@ describe('production conversation continuity', () => {
     expect(currentProduct().snapshot.turnStatus).toBe('streaming');
   });
 
+  it('records a started tool as running work until it reports an outcome', async () => {
+    await boot();
+    await act(async () => {
+      await currentProduct().send('Run the checks');
+    });
+    act(() => {
+      currentTurn().onTool('tool-1', 'bash', 'started');
+    });
+    expect(currentProduct().snapshot.activity).toContainEqual(
+      expect.objectContaining({ id: 'activity-tool-1', state: 'running' }),
+    );
+    expect(currentProduct().snapshot.turnStatus).toBe('tool-running');
+    act(() => {
+      currentTurn().onTool('tool-1', 'bash', 'complete');
+    });
+    expect(currentProduct().snapshot.activity).toContainEqual(
+      expect.objectContaining({ id: 'activity-tool-1', state: 'complete' }),
+    );
+  });
+
   it('retires pending inspection and turn callbacks when the provider unmounts', async () => {
     const mounted = await boot();
     await queueFollowUp();
