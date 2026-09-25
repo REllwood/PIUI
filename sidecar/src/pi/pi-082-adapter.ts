@@ -34,7 +34,6 @@ import {
   type PublicModelRuntimeInstance,
   type PublicSessionManagerInstance,
 } from './public-sdk.js';
-import { resolveEnabledPackagePaths } from './package-sources.js';
 import { describeProviders } from './providers.js';
 import { SessionOwnership } from './sessions.js';
 import { userShellSpawnHook } from './shell-environment.js';
@@ -834,28 +833,26 @@ export class Pi082Adapter implements PiAdapter {
       request.agentDir,
       packageManager,
     );
-    await resources.discoverExecutableMetadata();
-    const packagePaths = await resolveEnabledPackagePaths(
-      packageManager,
-      resources.enabledPackageSources,
-    );
-    const packageExtensionPaths = packagePaths.extensions
-      .filter((resource) => resource.enabled)
-      .map((resource) => resource.path);
-    // Pi's resource loader keeps this exact array and re-reads it on every
-    // reload, so an extension toggle rewrites it in place before reloading;
-    // handing Pi a copy would leave a disabled extension loaded (and a newly
-    // enabled one missing) until the runtime was rebuilt.
+    // Pi's resource loader keeps the exact extension path array it is given and
+    // re-reads it on every reload, so an extension toggle rewrites this array in
+    // place before reloading; handing Pi a copy would leave a disabled extension
+    // loaded (and a newly enabled one missing) until the runtime was rebuilt.
     const extensionPaths: string[] = [];
-    const refreshExtensionPaths = () => {
+    const refreshExtensionPaths = (): string[] => {
       extensionPaths.splice(
         0,
         extensionPaths.length,
         ...resources.enabledExtensionPaths,
-        ...packageExtensionPaths,
+        ...packagePaths.extensions
+          .filter((resource) => resource.enabled)
+          .map((resource) => resource.path),
       );
+      return extensionPaths;
     };
-    refreshExtensionPaths();
+    await resources.discoverExecutableMetadata();
+    const packagePaths = resources.enabledPackageSources.length
+      ? await packageManager.resolveExtensionSources([...resources.enabledPackageSources])
+      : { extensions: [], skills: [], prompts: [], themes: [] };
     const services = await publicCreateAgentSessionServices({
       cwd: request.workspacePath,
       agentDir: request.agentDir,
@@ -868,7 +865,7 @@ export class Pi082Adapter implements PiAdapter {
         noPromptTemplates: false,
         noThemes: false,
         noContextFiles: true,
-        additionalExtensionPaths: extensionPaths,
+        additionalExtensionPaths: refreshExtensionPaths(),
         additionalSkillPaths: packagePaths.skills
           .filter((resource) => resource.enabled)
           .map((resource) => resource.path),
