@@ -4,6 +4,7 @@ import { Icon, type IconName } from '../components/icons/Icon';
 import { LoadingLabel } from '../components/primitives/LoadingLabel';
 import { StatusPill } from '../components/primitives/StatusPill';
 import { isTurnActive } from '../domain/machines';
+import { canCreateConversation } from '../domain/readiness';
 import { isActivityInProgress } from '../domain/workSummary';
 import { useProduct } from './ProductContext';
 
@@ -26,11 +27,7 @@ export function NavigationPlane({
   const [creating, setCreating] = useState(false);
   const [openingSessionId, setOpeningSessionId] = useState<string | null>(null);
   const turnRunning = isTurnActive(snapshot.turnStatus);
-  const canCreate =
-    snapshot.workspace?.trust === 'trusted' &&
-    snapshot.providers.some((provider) => provider.connected && provider.models.length > 0) &&
-    !turnRunning &&
-    activeOperation === null;
+  const canCreate = canCreateConversation(snapshot, activeOperation);
   useEffect(() => {
     if (!open || !compact) return;
     const previous = document.activeElement;

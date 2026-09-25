@@ -4,6 +4,7 @@ import { Icon } from '../../components/icons/Icon';
 import { LoadingLabel } from '../../components/primitives/LoadingLabel';
 import { StatusPill } from '../../components/primitives/StatusPill';
 import { isTurnActive } from '../../domain/machines';
+import { canCreateConversation, hasConversationPrerequisites } from '../../domain/readiness';
 import type { SessionSummary } from '../../domain/types';
 import './supporting-routes.css';
 
@@ -19,9 +20,8 @@ export function SessionsRoute() {
   const [titleDraft, setTitleDraft] = useState('');
   const [actionError, setActionError] = useState<string | null>(null);
   const turnBusy = isTurnActive(snapshot.turnStatus);
-  const canCreate =
-    snapshot.workspace?.trust === 'trusted' &&
-    snapshot.providers.some((provider) => provider.connected);
+  const prerequisitesMet = hasConversationPrerequisites(snapshot);
+  const canCreate = canCreateConversation(snapshot, product.activeOperation);
   const sessions = useMemo(
     () =>
       snapshot.sessions.filter(
@@ -147,9 +147,9 @@ export function SessionsRoute() {
           type="button"
           className="button button--primary"
           onClick={() => void create()}
-          disabled={product.activeOperation !== null || turnBusy || !canCreate}
+          disabled={!canCreate}
           title={
-            canCreate
+            prerequisitesMet
               ? undefined
               : 'Choose and trust a project, then connect a provider first.'
           }

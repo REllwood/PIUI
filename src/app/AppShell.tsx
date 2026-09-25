@@ -5,6 +5,7 @@ import { CommandMenu } from './CommandMenu';
 import { ComposerDraftProvider } from '../features/composer/ComposerDrafts';
 import { CommandRouter } from './CommandRouter';
 import { isTurnActive } from '../domain/machines';
+import { canCreateConversation } from '../domain/readiness';
 import { MainToolbar } from './MainToolbar';
 import { NavigationPlane } from './NavigationPlane';
 import { useProduct, type OperationId } from './ProductContext';
@@ -46,11 +47,7 @@ export function AppShell() {
     (approval) => approval.state === 'awaiting' || approval.state === 'unacknowledged',
   );
   const turnRunning = isTurnActive(product.snapshot.turnStatus);
-  const canCreate =
-    product.snapshot.workspace?.trust === 'trusted' &&
-    product.snapshot.providers.some((provider) => provider.connected && provider.models.length > 0) &&
-    !turnRunning &&
-    product.activeOperation === null;
+  const canCreate = canCreateConversation(product.snapshot, product.activeOperation);
   useEffect(() => {
     const query = window.matchMedia('(max-width: 760px)');
     const update = () => {
