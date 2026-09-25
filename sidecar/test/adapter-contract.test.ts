@@ -80,6 +80,18 @@ describe('Pi 0.82 adapter contract', () => {
     expect(sources).not.toMatch(/@earendil-works\/pi-coding-agent\//u);
     expect(sources.match(/from ['"]@earendil-works\/pi-coding-agent['"]/gu)).toHaveLength(1);
   });
+
+  it('keeps pi-ai imports confined to the ai-public-sdk seam', () => {
+    const sourceRoot = resolve(import.meta.dirname, '../src');
+    const seam = resolve(sourceRoot, 'pi/ai-public-sdk.ts');
+    const importers = sourceFiles(sourceRoot).filter((file) =>
+      /['"]@earendil-works\/pi-ai(?:\/[^'"]*)?['"]/u.test(readFileSync(file, 'utf8')),
+    );
+    expect(importers).toEqual([seam]);
+    const seamSource = readFileSync(seam, 'utf8');
+    expect(seamSource).not.toMatch(/@earendil-works\/pi-ai\//u);
+    expect(seamSource.match(/from ['"]@earendil-works\/pi-ai['"]/gu)).toHaveLength(1);
+  });
 });
 
 // A stored credential is what makes Pi refresh (and therefore open) its models
