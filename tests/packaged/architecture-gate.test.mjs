@@ -11,6 +11,9 @@ import {
 import {
   architectureMeasuredDelta,
 } from './architecture-proof-fixtures.mjs';
+import { useFixtureAutomationSigningPolicy } from './helpers/automation-signing-policy.mjs';
+
+useFixtureAutomationSigningPolicy();
 
 const sha = (character) => character.repeat(64);
 

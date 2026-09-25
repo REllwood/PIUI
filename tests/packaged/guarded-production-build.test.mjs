@@ -60,6 +60,9 @@ import {
 import {
   architectureProofBatch,
 } from './architecture-proof-fixtures.mjs';
+import { useFixtureAutomationSigningPolicy } from './helpers/automation-signing-policy.mjs';
+
+useFixtureAutomationSigningPolicy();
 
 const sha = (character) => character.repeat(64);
 const runId = '20260731T120000000Z-0123456789abcdef0123456789abcdef';

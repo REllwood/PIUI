@@ -71,6 +71,15 @@ test('creates a deterministic snapshot and ignores declared generated output', a
   const afterGeneratedOutput = await snapshotArchitectureSource(root);
   assert.deepEqual(afterGeneratedOutput.source, initial.source);
 
+  // Fixed local build/evidence output and knowledge-graph output never
+  // become architecture source, and never make the root unclassified.
+  await mkdir(join(root, '.build', 'evidence', 'release-local'), { recursive: true });
+  await writeFile(join(root, '.build', 'evidence', 'release-local', 'release-evidence.json'), '{}\n');
+  await mkdir(join(root, 'graphify-out'), { recursive: true });
+  await writeFile(join(root, 'graphify-out', 'graph.json'), '{}\n');
+  const afterLocalOutput = await snapshotArchitectureSource(root);
+  assert.deepEqual(afterLocalOutput.source, initial.source);
+
   await writeFile(join(root, 'scripts', 'gate.mjs'), 'export const changed = true;\n');
   const afterSourceChange = await snapshotArchitectureSource(root);
   assert.notEqual(afterSourceChange.source.digest, initial.source.digest);

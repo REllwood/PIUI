@@ -1,5 +1,9 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import {
+  LOCAL_TRAIL_SKIPPED,
+  localDocumentationTrailPresent,
+} from './local-documentation-trail.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const sourcePath = resolve(root, 'src-tauri/src/lib.rs');
@@ -52,9 +56,15 @@ function render(commands) {
 
 const expected = render(extractCommands(await readFile(sourcePath, 'utf8')));
 if (process.argv.includes('--check')) {
-  const actual = await readFile(outputPath, 'utf8').catch(() => '');
-  if (actual !== expected) throw new Error('Native command inventory is stale');
-  process.stdout.write('Native command inventory: current\n');
+  // The inventory lives in the local-only docs/ trail. A checkout without
+  // docs/ skips; with docs/, a missing inventory is as stale as a wrong one.
+  if (!(await localDocumentationTrailPresent(root, ['docs']))) {
+    process.stdout.write(`Native command inventory: ${LOCAL_TRAIL_SKIPPED}\n`);
+  } else {
+    const actual = await readFile(outputPath, 'utf8').catch(() => '');
+    if (actual !== expected) throw new Error('Native command inventory is stale');
+    process.stdout.write('Native command inventory: current\n');
+  }
 } else {
   await writeFile(outputPath, expected, 'utf8');
   process.stdout.write('Native command inventory: generated\n');
