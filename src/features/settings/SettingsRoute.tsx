@@ -6,7 +6,6 @@ import { LoadingLabel } from '../../components/primitives/LoadingLabel';
 import { StatusPill } from '../../components/primitives/StatusPill';
 import { productErrorMessage, redactForDisplay } from '../../domain/errors';
 import { visibleLogLines } from '../../domain/logs';
-import { isTurnActive } from '../../domain/machines';
 import { DEFAULT_THINKING_LEVEL, isThinkingLevel, thinkingChoices } from '../../domain/thinking';
 import { AppearanceControls, Toggle } from '../appearance/AppearanceControls';
 import { DiagnosticsRoute } from '../diagnostics/DiagnosticsRoute';
@@ -344,15 +343,8 @@ function SettingsSection({
           label="Product tour"
           description="Replay the short Conversation, work-trace and approval tour."
         >
-          <button
-            type="button"
-            className="button"
-            disabled={
-              product.activeOperation !== null ||
-              isTurnActive(product.snapshot.turnStatus)
-            }
-            onClick={() => setTourOpen(true)}
-          >
+          {/* The tour opens in place, so it is safe to replay while Pi is working. */}
+          <button type="button" className="button" onClick={() => setTourOpen(true)}>
             Replay product tour
           </button>
           {tourOpen ? (

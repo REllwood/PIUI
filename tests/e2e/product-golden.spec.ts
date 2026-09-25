@@ -128,8 +128,9 @@ test('replaying the product tour shows only the tour, in place', async ({ page }
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   const replay = page.getByRole('button', { name: 'Replay product tour' });
   await replay.click();
-  const tour = page.getByRole('dialog', { name: 'Ask in plain language' });
-  await expect(tour).toBeVisible();
+  // The dialog takes its name from the current tour page.
+  const tour = page.getByRole('dialog');
+  await expect(tour).toHaveAccessibleName('Ask in plain language');
   expect(page.url()).toBe(url);
   await tour.getByRole('button', { name: 'Next' }).click();
   await tour.getByRole('button', { name: 'Next' }).click();
