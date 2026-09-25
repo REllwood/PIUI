@@ -594,6 +594,11 @@ export async function replaceProductFollowUpQueue(
   return result.queue.count as number;
 }
 
+// Events that arrive before the host acknowledges the turn are held, up to this bound.
+export const MAX_PENDING_TURN_EVENTS = 4_096;
+// Slightly above the host's 900 s turn deadline.
+export const TURN_TERMINAL_TIMEOUT_MS = 910_000;
+
 export async function startProductTurn(
   request: Readonly<{
     sessionId: string;
@@ -612,24 +617,45 @@ export async function startProductTurn(
   let unlisten: UnlistenFn | undefined;
   let accepted = false;
   let finished = false;
+  let overflowed = false;
+  let terminalTimer: ReturnType<typeof setTimeout> | undefined;
   const pending: StreamEnvelope[] = [];
 
   const finishListening = () => {
     if (finished) return;
     finished = true;
+    if (terminalTimer !== undefined) clearTimeout(terminalTimer);
+    terminalTimer = undefined;
+    pending.length = 0;
     unlisten?.();
     unlisten = undefined;
   };
 
+  // Stops listening before notifying, so a throwing callback cannot leave the listener behind.
+  const settle = (notify: () => void) => {
+    if (finished) return;
+    finishListening();
+    notify();
+  };
+
+  // The turn can no longer be followed faithfully, so it is reported as failed and the
+  // host is asked to stop it rather than letting it continue out of sight.
+  const abandon = (code: string) => {
+    settle(() => request.onFailed(code));
+    void invoke('product_turn_stop', { requestData: { requestId } }).catch(() => undefined);
+  };
+
   const handleEnvelope = (envelope: StreamEnvelope) => {
     if (
+      finished ||
       !isRecord(envelope) ||
       envelope.correlationId !== requestId ||
       !isRecord(envelope.payload)
     )
       return;
     if (!accepted) {
-      if (pending.length < 4_096) pending.push(envelope);
+      if (pending.length < MAX_PENDING_TURN_EVENTS) pending.push(envelope);
+      else overflowed = true;
       return;
     }
     const event = envelope.payload;
@@ -648,14 +674,12 @@ export async function startProductTurn(
         event.code as 'started' | 'complete' | 'failed',
       );
     else if (event.eventType === 'stream.failed') {
-      request.onFailed(typeof event.code === 'string' ? event.code : 'provider-turn-failed');
-      finishListening();
+      const code = typeof event.code === 'string' ? event.code : 'provider-turn-failed';
+      settle(() => request.onFailed(code));
     } else if (event.eventType === 'stream.complete') {
-      request.onComplete('complete');
-      finishListening();
+      settle(() => request.onComplete('complete'));
     } else if (event.eventType === 'stream.cancelled') {
-      request.onComplete('cancelled');
-      finishListening();
+      settle(() => request.onComplete('cancelled'));
     }
   };
 
@@ -673,14 +697,21 @@ export async function startProductTurn(
         attachmentCapabilities: [...(request.attachmentCapabilities ?? [])],
       },
     });
-    accepted = true;
-    request.onStarted(requestId);
-    for (const envelope of pending.splice(0)) handleEnvelope(envelope);
-    return requestId;
   } catch (error) {
     finishListening();
     throw error;
   }
+  accepted = true;
+  // The host ends every turn by its own deadline; a turn still silent after that is
+  // treated as lost so its listener cannot outlive it.
+  terminalTimer = setTimeout(() => abandon('turn-terminal-timeout'), TURN_TERMINAL_TIMEOUT_MS);
+  request.onStarted(requestId);
+  if (overflowed) {
+    abandon('turn-events-overflowed');
+    return requestId;
+  }
+  for (const envelope of pending.splice(0)) handleEnvelope(envelope);
+  return requestId;
 }
 
 export async function startProductAuthentication(

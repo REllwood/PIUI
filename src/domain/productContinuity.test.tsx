@@ -325,6 +325,28 @@ describe('production conversation continuity', () => {
     expect(productionBridgeStore.getSnapshot().product).toBe(before);
   });
 
+  it('applies a burst of streamed text as one transcript update', async () => {
+    await boot();
+    await act(async () => {
+      await currentProduct().send('Stream a reply');
+    });
+    const transcripts = new Set<unknown>();
+    const unsubscribe = productionBridgeStore.subscribe(() => {
+      transcripts.add(productionBridgeStore.getSnapshot().product.messages);
+    });
+    act(() => {
+      currentTurn().onDelta('Planning ');
+      currentTurn().onDelta('a safe ');
+      currentTurn().onDelta('change');
+    });
+    expect(transcripts.size).toBe(0);
+    await waitFor(() =>
+      expect(currentProduct().snapshot.messages.at(-1)?.markdown).toBe('Planning a safe change'),
+    );
+    unsubscribe();
+    expect(transcripts.size).toBe(1);
+  });
+
   it('records a started tool as running work until it reports an outcome', async () => {
     await boot();
     await act(async () => {

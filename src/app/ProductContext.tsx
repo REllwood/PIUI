@@ -10,6 +10,7 @@ import {
 } from 'react';
 import { productionBridgeStore } from '../bridge/store';
 import { useBridgeSelector } from '../bridge/useBridgeSelector';
+import { createDeltaBatcher } from './deltaBatcher';
 import { reconcileApprovals } from '../domain/approvals';
 import { createQueueItem, failQueueItem, isTurnActive, submitApproval } from '../domain/machines';
 import {
@@ -916,6 +917,20 @@ export function ProductProvider({
         turnStatus: 'sending',
       });
       let failed = false;
+      // Streamed text reaches the store at most once per frame; every other turn event
+      // flushes first so it observes the complete response so far.
+      const deltas = createDeltaBatcher((text) => {
+        if (!ownsTurn()) return;
+        const live = productionBridgeStore.getSnapshot().product;
+        productionBridgeStore.updateLocalFixture({
+          messages: live.messages.map((item) =>
+            item.id === responseId
+              ? { ...item, markdown: `${item.markdown}${text}`, status: 'streaming' }
+              : item,
+          ),
+          turnStatus: 'streaming',
+        });
+      });
       try {
         await startProductTurn({
           sessionId: session.id,
@@ -930,18 +945,11 @@ export function ProductProvider({
           },
           onDelta: (delta) => {
             if (!ownsTurn()) return;
-            const live = productionBridgeStore.getSnapshot().product;
-            productionBridgeStore.updateLocalFixture({
-              messages: live.messages.map((item) =>
-                item.id === responseId
-                  ? { ...item, markdown: `${item.markdown}${delta}`, status: 'streaming' }
-                  : item,
-              ),
-              turnStatus: 'streaming',
-            });
+            deltas.push(delta);
           },
           onTool: (toolCallId, detail, state) => {
             if (!ownsTurn()) return;
+            deltas.flush();
             const live = productionBridgeStore.getSnapshot().product;
             const activityId = `activity-${toolCallId}`;
             const category = ['read', 'edit', 'write'].includes(detail)
@@ -989,6 +997,7 @@ export function ProductProvider({
           },
           onFailed: (code) => {
             if (!ownsTurn()) return;
+            deltas.flush();
             failed = true;
             turnContinuity.current = null;
             activeTurnRequest.current = null;
@@ -1015,6 +1024,7 @@ export function ProductProvider({
           },
           onComplete: (terminal) => {
             if (!ownsTurn()) return;
+            deltas.flush();
             turnContinuity.current = null;
             activeTurnRequest.current = null;
             const live = productionBridgeStore.getSnapshot().product;
@@ -1043,6 +1053,7 @@ export function ProductProvider({
         });
         return true;
       } catch {
+        deltas.cancel();
         if (!ownsTurn()) return false;
         failed = true;
         turnContinuity.current = null;
