@@ -1,4 +1,8 @@
-import type { AuthEvent, AuthInteraction, AuthPrompt } from '@earendil-works/pi-ai';
+import type {
+  PublicAuthEvent as AuthEvent,
+  PublicAuthInteraction as AuthInteraction,
+  PublicAuthPrompt as AuthPrompt,
+} from '../pi/ai-public-sdk.js';
 import type { AuthInteractionPort, AuthNotice } from '../pi/adapter.js';
 
 function mapPrompt(prompt: AuthPrompt): Parameters<AuthInteractionPort['prompt']>[0] {

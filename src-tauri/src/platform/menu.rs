@@ -43,6 +43,42 @@ pub const MENU_ROUTES: [MenuRoute; 9] = [
     },
 ];
 
+/// Standard text-editing commands. WKWebView only receives Cmd-Z/X/C/V/A
+/// through the native responder chain, so they must exist as predefined menu
+/// items; without an Edit menu those shortcuts silently do nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditCommand {
+    Undo,
+    Redo,
+    Cut,
+    Copy,
+    Paste,
+    SelectAll,
+}
+
+impl EditCommand {
+    /// The shortcut macOS binds to the predefined item.
+    pub const fn accelerator(self) -> &'static str {
+        match self {
+            Self::Undo => "CmdOrCtrl+Z",
+            Self::Redo => "CmdOrCtrl+Shift+Z",
+            Self::Cut => "CmdOrCtrl+X",
+            Self::Copy => "CmdOrCtrl+C",
+            Self::Paste => "CmdOrCtrl+V",
+            Self::SelectAll => "CmdOrCtrl+A",
+        }
+    }
+}
+
+pub const EDIT_COMMANDS: [EditCommand; 6] = [
+    EditCommand::Undo,
+    EditCommand::Redo,
+    EditCommand::Cut,
+    EditCommand::Copy,
+    EditCommand::Paste,
+    EditCommand::SelectAll,
+];
+
 pub struct MenuState {
     new_conversation: tauri::menu::MenuItem<tauri::Wry>,
     choose_project: tauri::menu::MenuItem<tauri::Wry>,
@@ -82,6 +118,10 @@ pub fn menu_routes_are_unique() -> bool {
         MENU_ROUTES[index + 1..]
             .iter()
             .all(|candidate| candidate.id != route.id && candidate.accelerator != route.accelerator)
+    }) && EDIT_COMMANDS.iter().all(|command| {
+        MENU_ROUTES
+            .iter()
+            .all(|route| route.accelerator != command.accelerator())
     })
 }
 
@@ -132,9 +172,21 @@ pub fn install(app: &tauri::App) -> tauri::Result<()> {
         .item(&alternate_send)
         .item(&stop)
         .build()?;
+    let mut edit = SubmenuBuilder::new(app, "Edit");
+    for command in EDIT_COMMANDS {
+        edit = match command {
+            EditCommand::Undo => edit.undo(),
+            EditCommand::Redo => edit.redo().separator(),
+            EditCommand::Cut => edit.cut(),
+            EditCommand::Copy => edit.copy(),
+            EditCommand::Paste => edit.paste(),
+            EditCommand::SelectAll => edit.select_all(),
+        };
+    }
+    let edit = edit.build()?;
     let view = SubmenuBuilder::new(app, "View").item(&navigation).build()?;
     let menu = MenuBuilder::new(app)
-        .items(&[&application, &file, &conversation, &view])
+        .items(&[&application, &file, &edit, &conversation, &view])
         .build()?;
     app.set_menu(menu)?;
     app.manage(MenuState {
@@ -144,4 +196,32 @@ pub fn install(app: &tauri::App) -> tauri::Result<()> {
         alternate_send,
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn edit_menu_provides_every_standard_text_command_without_route_collisions() {
+        for required in [
+            EditCommand::Undo,
+            EditCommand::Redo,
+            EditCommand::Cut,
+            EditCommand::Copy,
+            EditCommand::Paste,
+            EditCommand::SelectAll,
+        ] {
+            assert!(EDIT_COMMANDS.contains(&required), "{required:?} missing");
+        }
+        assert!(menu_routes_are_unique());
+        for command in EDIT_COMMANDS {
+            assert!(
+                MENU_ROUTES
+                    .iter()
+                    .all(|route| route.accelerator != command.accelerator()),
+                "{command:?} shortcut is taken by an application route"
+            );
+        }
+    }
 }

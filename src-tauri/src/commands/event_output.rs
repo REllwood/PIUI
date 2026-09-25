@@ -10,6 +10,9 @@ use tauri::{AppHandle, Emitter};
 
 const EVENT_QUEUE_CAPACITY: usize = 64;
 const EVENT_OUTPUT_UNAVAILABLE: &str = "stream event output unavailable";
+/// The queue is momentarily full. Nothing was accepted, so the caller may
+/// retry; a terminal output failure is reported as unavailable instead.
+pub(crate) const EVENT_OUTPUT_BUSY: &str = "stream event output busy";
 const STREAM_EVENT: &str = "piui://stream-probe";
 
 pub(crate) type EventReceipt = Receiver<Result<(), String>>;
@@ -128,8 +131,9 @@ impl EventOutputQueue {
         Ok(receiver)
     }
 
-    #[cfg(test)]
-    fn enqueue_with_receipt(
+    /// Enqueues one event and reports when the worker has emitted (or
+    /// refused) it, and therefore everything queued before it.
+    pub(crate) fn enqueue_with_receipt(
         &self,
         generation: u64,
         envelope: &Envelope,
@@ -157,9 +161,8 @@ impl EventOutputQueue {
         }
         match sender.try_send(record) {
             Ok(()) => Ok(()),
-            Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {
-                Err(EVENT_OUTPUT_UNAVAILABLE.into())
-            }
+            Err(TrySendError::Full(_)) => Err(EVENT_OUTPUT_BUSY.into()),
+            Err(TrySendError::Disconnected(_)) => Err(EVENT_OUTPUT_UNAVAILABLE.into()),
         }
     }
 
@@ -427,10 +430,9 @@ mod tests {
         entered.wait();
         queue.enqueue(1, &safe).unwrap();
         let started = Instant::now();
-        assert_eq!(
-            queue.enqueue(1, &safe),
-            Err(EVENT_OUTPUT_UNAVAILABLE.into())
-        );
+        // Still bounded and immediate, but reported as retryable
+        // back-pressure rather than as a failed output.
+        assert_eq!(queue.enqueue(1, &safe), Err(EVENT_OUTPUT_BUSY.into()));
         assert!(started.elapsed() < Duration::from_millis(100));
         release.wait();
     }

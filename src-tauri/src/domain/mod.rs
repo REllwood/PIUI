@@ -1,7 +1,9 @@
 pub mod approval;
+pub mod approval_subject;
 pub mod assets;
 pub mod changes;
 pub mod file_search;
+pub(crate) mod product_sessions;
 pub mod providers;
 pub mod resources;
 pub mod session;

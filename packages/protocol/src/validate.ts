@@ -27,10 +27,28 @@ export class ProtocolValidationError extends Error {
   }
 }
 
-export function jsonDepth(value: unknown, level = 0): number {
-  if (level > PROTOCOL_LIMITS.maxDepth) return level;
-  if (value === null || typeof value !== 'object') return level;
-  return Math.max(level, ...Object.values(value).map((child) => jsonDepth(child, level + 1)));
+// Private host lanes carry one credential or approval input validated at depth
+// zero beneath `payload.<field>`; the envelope and payload wrappers add exactly
+// two levels. This mirrors Rust's PRIVATE_HOST_REQUEST_MAX_DEPTH.
+const PRIVATE_HOST_MAX_DEPTH = PROTOCOL_LIMITS.maxDepth + 2;
+
+/**
+ * Depth of the deepest leaf, counting each object or array level once. The
+ * walk is iterative and stops as soon as `limit` is exceeded, so neither very
+ * wide arrays nor very deep nesting can exhaust the call stack or argument
+ * spread limits. Values deeper than `limit` report `limit + 1`.
+ */
+export function jsonDepth(value: unknown, limit: number = PROTOCOL_LIMITS.maxDepth): number {
+  let deepest = 0;
+  const stack: Array<[unknown, number]> = [[value, 0]];
+  while (stack.length > 0) {
+    const [current, level] = stack.pop()!;
+    if (level > deepest) deepest = level;
+    if (deepest > limit) return limit + 1;
+    if (current === null || typeof current !== 'object') continue;
+    for (const child of Object.values(current)) stack.push([child, level + 1]);
+  }
+  return deepest;
 }
 
 function isSecretKey(key: string): boolean {
@@ -57,7 +75,9 @@ function unknownEvent(envelope: ProtocolEnvelope): UnknownEventDiagnostic {
 }
 
 export function validateParsedEnvelope(value: unknown): ProtocolEnvelope | UnknownEventDiagnostic {
-  if (jsonDepth(value) > PROTOCOL_LIMITS.maxDepth) throw new ProtocolValidationError('JSON depth limit exceeded');
+  const kind = value !== null && typeof value === 'object' ? (value as Record<string, unknown>).kind : undefined;
+  const depthLimit = kind === 'host-request' || kind === 'host-response' ? PRIVATE_HOST_MAX_DEPTH : PROTOCOL_LIMITS.maxDepth;
+  if (jsonDepth(value, depthLimit) > depthLimit) throw new ProtocolValidationError('JSON depth limit exceeded');
   if (!validateEnvelope(value) || !validateMessage(value)) {
     throw new ProtocolValidationError('Envelope failed schema validation', [
       ...(validateEnvelope.errors ?? []),

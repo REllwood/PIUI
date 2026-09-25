@@ -82,10 +82,89 @@ type StoredChange = {
   target: string;
   before: Snapshot;
   afterDigest: string;
+  retention: ChangeRetentionEntry;
 };
 
 const MAX_SNAPSHOT_BYTES = 2 * 1024 * 1024;
 const MAX_DIFF_LINES = 4_000;
+
+export const CHANGE_RETENTION_LIMITS = Object.freeze({
+  maxRetainedBytes: 64 * 1024 * 1024,
+  maxChangesPerSession: 256,
+});
+
+export type ChangeRetentionEntry = {
+  /** Bytes still held for the change: its undo snapshot plus its diff lines. */
+  bytes: number;
+  /** Drops the undo snapshot (undo becomes unavailable); returns the bytes freed. */
+  releaseSnapshot(): number;
+  /** Removes the change from its registry altogether. */
+  evict(): void;
+};
+
+/**
+ * One memory budget shared by every ChangeRegistry in the sidecar. Each change
+ * can hold a 2 MiB undo snapshot plus diff text, so without a bound a long run
+ * of edits grows without limit. Past the byte cap the oldest undo snapshots are
+ * released first (those changes stay listed, undo-unavailable); if diff text
+ * alone is still over, the oldest changes are dropped.
+ */
+export class ChangeRetention {
+  readonly #maxRetainedBytes: number;
+  readonly #maxChangesPerSession: number;
+  readonly #entries = new Set<ChangeRetentionEntry>();
+  #bytes = 0;
+
+  constructor(limits: Readonly<{ maxRetainedBytes?: number; maxChangesPerSession?: number }> = {}) {
+    const maxRetainedBytes = limits.maxRetainedBytes ?? CHANGE_RETENTION_LIMITS.maxRetainedBytes;
+    const maxChangesPerSession =
+      limits.maxChangesPerSession ?? CHANGE_RETENTION_LIMITS.maxChangesPerSession;
+    if (
+      !Number.isSafeInteger(maxRetainedBytes) ||
+      maxRetainedBytes < 0 ||
+      !Number.isSafeInteger(maxChangesPerSession) ||
+      maxChangesPerSession < 1
+    ) {
+      throw new Error('change-retention-invalid');
+    }
+    this.#maxRetainedBytes = maxRetainedBytes;
+    this.#maxChangesPerSession = maxChangesPerSession;
+  }
+
+  get retainedBytes(): number {
+    return this.#bytes;
+  }
+
+  get maxChangesPerSession(): number {
+    return this.#maxChangesPerSession;
+  }
+
+  admit(entry: ChangeRetentionEntry): void {
+    if (this.#entries.has(entry)) return;
+    this.#entries.add(entry);
+    this.#bytes += entry.bytes;
+    // Sets iterate oldest first, across every registry sharing this budget.
+    for (const oldest of this.#entries) {
+      if (this.#bytes <= this.#maxRetainedBytes) return;
+      this.#bytes -= oldest.releaseSnapshot();
+    }
+    for (const oldest of [...this.#entries]) {
+      if (this.#bytes <= this.#maxRetainedBytes) return;
+      oldest.evict();
+    }
+  }
+
+  /** Accounts for a snapshot its registry released itself. */
+  released(entry: ChangeRetentionEntry, bytes: number): void {
+    if (this.#entries.has(entry)) this.#bytes -= bytes;
+  }
+
+  forget(entry: ChangeRetentionEntry): void {
+    if (this.#entries.delete(entry)) this.#bytes -= entry.bytes;
+  }
+}
+
+const SHARED_RETENTION = new ChangeRetention();
 
 export class ChangeRegistry {
   readonly #workspaceId: string;
@@ -94,6 +173,7 @@ export class ChangeRegistry {
   readonly #sessionId: string;
   readonly #sessionGeneration: number;
   readonly #changes = new Map<string, StoredChange>();
+  readonly #retention: ChangeRetention;
 
   private constructor(options: {
     workspaceId: string;
@@ -101,12 +181,14 @@ export class ChangeRegistry {
     workspacePath: string;
     sessionId: string;
     sessionGeneration: number;
+    retention: ChangeRetention;
   }) {
     this.#workspaceId = options.workspaceId;
     this.#workspaceRevision = options.workspaceRevision;
     this.#workspacePath = options.workspacePath;
     this.#sessionId = options.sessionId;
     this.#sessionGeneration = options.sessionGeneration;
+    this.#retention = options.retention;
   }
 
   static async create(options: {
@@ -115,8 +197,13 @@ export class ChangeRegistry {
     workspacePath: string;
     sessionId: string;
     sessionGeneration: number;
+    retention?: ChangeRetention;
   }): Promise<ChangeRegistry> {
-    return new ChangeRegistry({ ...options, workspacePath: await realpath(options.workspacePath) });
+    return new ChangeRegistry({
+      ...options,
+      workspacePath: await realpath(options.workspacePath),
+      retention: options.retention ?? SHARED_RETENTION,
+    });
   }
 
   async beforeExecute(toolName: string, params: unknown): Promise<PendingObservation | undefined> {
@@ -177,7 +264,7 @@ export class ChangeRegistry {
           ? 'safe'
           : 'revoked',
     });
-    this.#changes.set(id, {
+    const change: StoredChange = {
       view,
       sessionId: this.#sessionId,
       sessionGeneration: this.#sessionGeneration,
@@ -186,8 +273,22 @@ export class ChangeRegistry {
       target: token.target,
       before: token.before,
       afterDigest: after.digest,
-    });
+      retention: {
+        bytes: linesBytes(beforeLines) + linesBytes(afterLines),
+        releaseSnapshot: () => this.#releaseSnapshot(change),
+        evict: () => this.#evict(change),
+      },
+    };
     after.bytes?.fill(0);
+    // A change that can never be undone has no reason to keep its snapshot.
+    if (view.undo === 'safe') change.retention.bytes += change.before.bytes?.byteLength ?? 0;
+    else this.#releaseSnapshot(change);
+    this.#changes.set(id, change);
+    this.#retention.admit(change.retention);
+    for (const oldest of this.#changes.values()) {
+      if (this.#changes.size <= this.#retention.maxChangesPerSession) break;
+      this.#evict(oldest);
+    }
   }
 
   async list(): Promise<readonly AdapterChange[]> {
@@ -195,10 +296,7 @@ export class ChangeRegistry {
     for (const change of this.#changes.values()) {
       if (change.view.undo === 'safe') {
         const current = await snapshot(change.target);
-        if (current.digest !== change.afterDigest) {
-          change.before.bytes?.fill(0);
-          change.view = Object.freeze({ ...change.view, undo: 'revoked' });
-        }
+        if (current.digest !== change.afterDigest) this.#revoke(change);
       }
       result.push(change.view);
     }
@@ -215,11 +313,22 @@ export class ChangeRegistry {
     ) {
       throw new Error('change-undo-revoked');
     }
+    // Work on a private copy: the retention budget may release the stored
+    // snapshot while this undo is still writing.
+    const restore = Buffer.from(change.before.bytes);
+    try {
+      return await this.#restore(change, restore);
+    } finally {
+      restore.fill(0);
+    }
+  }
+
+  async #restore(change: StoredChange, restore: Buffer): Promise<AdapterChange> {
     let handle: FileHandle;
     try {
       handle = await open(change.target, constants.O_RDWR | constants.O_NOFOLLOW);
     } catch (error) {
-      revoke(change);
+      this.#revoke(change);
       if (isNodeError(error) && (error.code === 'ENOENT' || error.code === 'ELOOP')) {
         throw new Error('change-undo-revoked', { cause: error });
       }
@@ -229,17 +338,17 @@ export class ChangeRegistry {
       const current = await snapshotHandle(handle);
       if (current.bytes === null || current.digest !== change.afterDigest) {
         current.bytes?.fill(0);
-        revoke(change);
+        this.#revoke(change);
         throw new Error('change-undo-revoked');
       }
       try {
-        await replaceHandleContents(handle, change.before.bytes);
+        await replaceHandleContents(handle, restore);
       } catch (writeError) {
         try {
           await replaceHandleContents(handle, current.bytes);
         } catch (rollbackError) {
           current.bytes.fill(0);
-          revoke(change);
+          this.#revoke(change);
           throw new Error('change-state-uncertain', {
             cause: new AggregateError([writeError, rollbackError], 'Undo and rollback failed'),
           });
@@ -251,7 +360,7 @@ export class ChangeRegistry {
     } finally {
       await handle.close();
     }
-    change.before.bytes.fill(0);
+    this.#revoke(change);
     change.view = Object.freeze({ ...change.view, undo: 'complete' });
     return change.view;
   }
@@ -271,8 +380,35 @@ export class ChangeRegistry {
   }
 
   close(): void {
-    for (const change of this.#changes.values()) change.before.bytes?.fill(0);
+    for (const change of this.#changes.values()) {
+      change.before.bytes?.fill(0);
+      this.#retention.forget(change.retention);
+    }
     this.#changes.clear();
+  }
+
+  /** Zeroes and drops the undo snapshot, making undo unavailable. */
+  #releaseSnapshot(change: StoredChange): number {
+    const bytes = change.before.bytes;
+    if (bytes === null) return 0;
+    const freed = change.view.undo === 'safe' ? bytes.byteLength : 0;
+    bytes.fill(0);
+    change.before = Object.freeze({ ...change.before, bytes: null });
+    change.retention.bytes -= freed;
+    if (change.view.undo === 'safe') {
+      change.view = Object.freeze({ ...change.view, undo: 'revoked' });
+    }
+    return freed;
+  }
+
+  #revoke(change: StoredChange): void {
+    this.#retention.released(change.retention, this.#releaseSnapshot(change));
+  }
+
+  #evict(change: StoredChange): void {
+    this.#revoke(change);
+    this.#retention.forget(change.retention);
+    this.#changes.delete(change.view.id);
   }
 }
 
@@ -378,9 +514,10 @@ async function replaceHandleContents(handle: FileHandle, bytes: Buffer): Promise
   await handle.sync();
 }
 
-function revoke(change: StoredChange): void {
-  change.before.bytes?.fill(0);
-  change.view = Object.freeze({ ...change.view, undo: 'revoked' });
+function linesBytes(lines: readonly string[]): number {
+  let bytes = 0;
+  for (const line of lines) bytes += line.length * 2;
+  return bytes;
 }
 
 function displayLines(value: Snapshot): string[] {

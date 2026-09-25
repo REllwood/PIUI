@@ -1,3 +1,4 @@
+use super::approval_subject::{ApprovalSubjectView, SubjectContext, derive_subject};
 use super::workspace::WorkspaceApprovalBinding;
 use crate::protocol::approval::{canonical_json_bytes, valid_approval_tool_name};
 use serde::{Deserialize, Serialize};
@@ -5,7 +6,8 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
-use std::sync::{Arc, Mutex};
+use std::path::PathBuf;
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 use zeroize::Zeroize;
@@ -110,6 +112,9 @@ pub struct ApprovalView {
     pub verb: &'static str,
     pub target: &'static str,
     pub risk: ApprovalRisk,
+    /// What the tool call is about, or `null` for tools without a known
+    /// primary argument. Always serialised so the interface can rely on it.
+    pub subject: Option<ApprovalSubjectView>,
     pub scopes: Vec<ApprovalScopeView>,
     pub expires_in_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -349,6 +354,7 @@ struct Record {
     digest: String,
     canonical_input: Vec<u8>,
     classification: Classification,
+    subject: Option<ApprovalSubjectView>,
     scope_ids: Vec<String>,
     phase: ApprovalState,
     revision: u64,
@@ -414,6 +420,9 @@ impl Drop for Record {
         }
         self.digest.zeroize();
         self.canonical_input.zeroize();
+        if let Some(subject) = self.subject.as_mut() {
+            subject.text.zeroize();
+        }
     }
 }
 
@@ -462,22 +471,67 @@ struct Inner {
     retired_ids: RetiredIds,
 }
 
+/// Wakes the response coordinator when a decision may be ready to write.
+/// It has its own lock, never held with `inner` by a waiter, so it can be
+/// signalled from any context, including while `inner` is held.
+#[derive(Default)]
+struct WorkSignal {
+    epoch: Mutex<u64>,
+    changed: Condvar,
+}
+
+impl WorkSignal {
+    fn epoch(&self) -> u64 {
+        *self.epoch.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn notify(&self) {
+        let mut epoch = self.epoch.lock().unwrap_or_else(PoisonError::into_inner);
+        *epoch = epoch.wrapping_add(1);
+        self.changed.notify_all();
+    }
+
+    fn wait_past(&self, observed: u64, timeout: Duration) {
+        let epoch = self.epoch.lock().unwrap_or_else(PoisonError::into_inner);
+        let _ = self
+            .changed
+            .wait_timeout_while(epoch, timeout, |epoch| *epoch == observed);
+    }
+}
+
+/// Signals the coordinator when a state-changing call returns, after its
+/// `inner` guard has been released.
+struct WorkNotice<'a>(&'a WorkSignal);
+
+impl Drop for WorkNotice<'_> {
+    fn drop(&mut self) {
+        self.0.notify();
+    }
+}
+
 pub struct ApprovalRegistry {
     inner: Mutex<Inner>,
+    work: WorkSignal,
     clock: Arc<dyn ApprovalClock>,
     ids: Arc<dyn ApprovalIdSource>,
     response_tokens: Arc<dyn ApprovalResponseTokenSource>,
     ttl: Duration,
+    // Host-only; approval subjects show paths under it as `~/…`.
+    home: Option<PathBuf>,
 }
 
 impl Default for ApprovalRegistry {
     fn default() -> Self {
         Self {
             inner: Mutex::new(Inner::default()),
+            work: WorkSignal::default(),
             clock: Arc::new(SystemClock),
             ids: Arc::new(RandomIds),
             response_tokens: Arc::new(RandomResponseTokens),
             ttl: DEFAULT_TTL,
+            home: std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .filter(|home| home.is_absolute()),
         }
     }
 }
@@ -492,10 +546,12 @@ impl ApprovalRegistry {
     ) -> Self {
         Self {
             inner: Mutex::new(Inner::default()),
+            work: WorkSignal::default(),
             clock,
             ids,
             response_tokens,
             ttl,
+            home: Some(PathBuf::from("/Users/example")),
         }
     }
 
@@ -504,6 +560,7 @@ impl ApprovalRegistry {
         request: ApprovalRequest,
         workspace_binding: WorkspaceApprovalBinding,
     ) -> Result<ApprovalView, String> {
+        let _work = WorkNotice(&self.work);
         validate_private_correlation(&request.correlation_id)?;
         validate_prefixed_id(&request.session_id, "session-")?;
         validate_prefixed_id(&request.workspace_id, "workspace-")?;
@@ -522,6 +579,14 @@ impl ApprovalRegistry {
             return Err("approval input digest rejected".into());
         }
         let classification = classify(&request.tool_name, &request.input);
+        let subject = derive_subject(
+            &request.tool_name,
+            &request.input,
+            &SubjectContext {
+                workspace_root: workspace_binding.root(),
+                home: self.home.as_deref(),
+            },
+        );
         let now = self.clock.now();
         let mut inner = self
             .inner
@@ -626,6 +691,7 @@ impl ApprovalRegistry {
             digest,
             canonical_input,
             classification,
+            subject,
             scope_ids: vec![scope_id],
             phase: ApprovalState::PolicyCheck,
             revision: 0,
@@ -751,6 +817,7 @@ impl ApprovalRegistry {
     }
 
     pub fn submit(&self, submission: ApprovalSubmission) -> Result<(), String> {
+        let _work = WorkNotice(&self.work);
         validate_prefixed_id(&submission.approval_id, "approval-")?;
         validate_prefixed_id(&submission.decision_id, "decision-")?;
         if submission.scope_ids.len() > 1 || has_duplicates(&submission.scope_ids) {
@@ -839,6 +906,7 @@ impl ApprovalRegistry {
     }
 
     pub fn submit_group(&self, submission: ApprovalGroupSubmission) -> Result<(), String> {
+        let _work = WorkNotice(&self.work);
         validate_prefixed_id(&submission.group_id, "group-")?;
         validate_prefixed_id(&submission.decision_id, "decision-")?;
         validate_prefixed_id(&submission.scope_id, "scope-")?;
@@ -930,6 +998,7 @@ impl ApprovalRegistry {
         &self,
         request: ApprovalReadyRequest,
     ) -> Result<ApprovalReadyAck, String> {
+        let _work = WorkNotice(&self.work);
         validate_private_correlation(&request.correlation_id)?;
         validate_prefixed_id(&request.invocation_id, "invocation-")?;
         validate_wire_coordinate(&request.tool_call_id)?;
@@ -969,12 +1038,13 @@ impl ApprovalRegistry {
         &self,
         request: ApprovalAbandonRequest,
     ) -> Result<ApprovalAbandonAck, String> {
+        let _work = WorkNotice(&self.work);
         validate_private_correlation(&request.correlation_id)?;
         let mut inner = self
             .inner
             .lock()
             .map_err(|_| "approval state unavailable".to_string())?;
-        let keys: Vec<String> = inner
+        let matching: Vec<(String, GroupPhase)> = inner
             .groups
             .iter()
             .filter(|(_, group)| {
@@ -985,10 +1055,24 @@ impl ApprovalRegistry {
                     && group.cohort.assistant_entry_id == request.assistant_entry_id
                     && group.cohort.cohort_digest == request.cohort_digest
             })
-            .map(|(key, _)| key.clone())
+            .map(|(key, group)| (key.clone(), group.phase))
+            .collect();
+        // The sidecar cannot observe host cleanup: its abandon may race our
+        // own expiry or pruning, repeat an earlier abandon, or name a cohort
+        // whose members never registered. None of that is evidence of a
+        // broken generation, so it is acknowledged without touching any
+        // decision and without retaining anything. Only groups still open
+        // are cancelled, so a repeat cannot re-plan a settled response.
+        let keys: Vec<String> = matching
+            .into_iter()
+            .filter(|(_, phase)| !matches!(phase, GroupPhase::Cancelled | GroupPhase::Approved))
+            .map(|(key, _)| key)
             .collect();
         if keys.is_empty() {
-            return Err("approval abandon rejected".into());
+            return Ok(ApprovalAbandonAck {
+                correlation_id: request.correlation_id,
+                cohort_digest: request.cohort_digest,
+            });
         }
         let member_ids: Vec<String> = keys
             .iter()
@@ -1012,6 +1096,42 @@ impl ApprovalRegistry {
             correlation_id: request.correlation_id,
             cohort_digest: request.cohort_digest,
         })
+    }
+
+    /// Marker to pass to [`Self::wait_for_work`] after finding no job.
+    pub(crate) fn work_epoch(&self) -> u64 {
+        self.work.epoch()
+    }
+
+    /// Blocks until state changes after `observed`, the next approval
+    /// expires, or `max_wait` passes, whichever is first. Expiry needs no
+    /// signal: the wait is simply no longer than the time until it.
+    pub(crate) fn wait_for_work(&self, observed: u64, max_wait: Duration) {
+        let until_expiry = {
+            let Ok(inner) = self.inner.lock() else {
+                return;
+            };
+            let now = self.clock.now();
+            inner
+                .records
+                .values()
+                .filter(|record| {
+                    record.phase == ApprovalState::Awaiting
+                        || (record.phase == ApprovalState::Submitting
+                            && record.pending_outcome == Some(ApprovalState::Approved))
+                })
+                .map(|record| record.expires_at.saturating_duration_since(now))
+                .min()
+        };
+        let wait = until_expiry.map_or(max_wait, |until| max_wait.min(until));
+        if !wait.is_zero() {
+            self.work.wait_past(observed, wait);
+        }
+    }
+
+    /// Wakes any coordinator blocked in [`Self::wait_for_work`].
+    pub(crate) fn wake_coordinators(&self) {
+        self.work.notify();
     }
 
     pub(crate) fn take_response_job(
@@ -1330,6 +1450,7 @@ impl ApprovalRegistry {
     }
 
     pub(crate) fn cancel_response(&self, response_token: &str) {
+        let _work = WorkNotice(&self.work);
         let Ok(mut inner) = self.inner.lock() else {
             return;
         };
@@ -1350,6 +1471,7 @@ impl ApprovalRegistry {
     }
 
     pub(crate) fn cancel_workspace(&self, workspace_id: &str) -> Result<(), String> {
+        let _work = WorkNotice(&self.work);
         validate_prefixed_id(workspace_id, "workspace-")?;
         let mut inner = self
             .inner
@@ -1386,6 +1508,7 @@ impl ApprovalRegistry {
     }
 
     pub(crate) fn invalidate_generation(&self, generation: u64) {
+        let _work = WorkNotice(&self.work);
         let Ok(mut inner) = self.inner.lock() else {
             return;
         };
@@ -1761,6 +1884,7 @@ fn view(record: &Record, inner: &Inner, now: Instant) -> ApprovalView {
         verb: record.classification.verb,
         target: record.classification.target,
         risk: record.classification.risk,
+        subject: record.subject.clone(),
         scopes: record
             .scope_ids
             .iter()
@@ -3123,6 +3247,125 @@ mod tests {
     }
 
     #[test]
+    fn the_response_coordinator_wait_ends_on_a_decision_or_the_next_expiry() {
+        let (registry, _) = registry();
+        let registry = Arc::new(registry);
+        // Idle and nothing pending: the full safety-net wait applies.
+        let observed = registry.work_epoch();
+        let started = Instant::now();
+        registry.wait_for_work(observed, Duration::from_millis(60));
+        assert!(started.elapsed() >= Duration::from_millis(50));
+
+        // A decision made while the coordinator waits wakes it at once.
+        let view = registry.register(request(1, "read"), binding()).unwrap();
+        let observed = registry.work_epoch();
+        let submitter = Arc::clone(&registry);
+        let submit = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30));
+            submitter
+                .submit(ApprovalSubmission {
+                    approval_id: view.approval_id.clone(),
+                    decision_id: view.decision_id.clone(),
+                    scope_ids: Vec::new(),
+                    choice: ApprovalChoice::Deny,
+                })
+                .unwrap();
+        });
+        let started = Instant::now();
+        registry.wait_for_work(observed, Duration::from_secs(5));
+        assert!(started.elapsed() < Duration::from_secs(2));
+        submit.join().unwrap();
+        assert!(registry.take_response_job(1).unwrap().is_some());
+
+        // With nothing signalled, the wait still ends by the next expiry
+        // (this registry's approvals live for 100 ms of its clock).
+        registry.register(request(2, "read"), binding()).unwrap();
+        let observed = registry.work_epoch();
+        let started = Instant::now();
+        registry.wait_for_work(observed, Duration::from_secs(5));
+        assert!(started.elapsed() < Duration::from_secs(1));
+
+        // An explicit wake (the end of a generation) also ends it.
+        let observed = registry.work_epoch();
+        let waker = Arc::clone(&registry);
+        let wake = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30));
+            waker.wake_coordinators();
+        });
+        let started = Instant::now();
+        registry.wait_for_work(observed, Duration::from_secs(5));
+        assert!(started.elapsed() < Duration::from_secs(1));
+        wake.join().unwrap();
+    }
+
+    fn abandon_for(request: &ApprovalRequest, correlation: &str) -> ApprovalAbandonRequest {
+        let cohort = request.cohort.as_ref().unwrap();
+        ApprovalAbandonRequest {
+            generation: request.generation,
+            correlation_id: correlation.into(),
+            session_id: request.session_id.clone(),
+            workspace_id: request.workspace_id.clone(),
+            workspace_revision: request.workspace_revision,
+            assistant_entry_id: cohort.assistant_entry_id.clone(),
+            cohort_digest: cohort.cohort_digest.clone(),
+        }
+    }
+
+    #[test]
+    fn abandons_for_unknown_cleaned_up_or_settled_cohorts_are_acknowledged_idempotently() {
+        let (registry, clock) = registry();
+        let tools = ["read", "grep"];
+        let requests: Vec<ApprovalRequest> = (0..2)
+            .map(|ordinal| cohort_request((ordinal + 1) as u64, ordinal, &tools))
+            .collect();
+
+        // A cohort whose members never registered.
+        let ack = registry
+            .abandon(abandon_for(&requests[0], "sidecar-abandon-unknown"))
+            .expect("an unknown cohort is acknowledged, not fatal");
+        assert_eq!(
+            ack.cohort_digest,
+            requests[0].cohort.as_ref().unwrap().cohort_digest
+        );
+        let before = registry.snapshot().unwrap().change_sequence;
+
+        // The host expires and prunes the cohort before the sidecar's abandon.
+        for request in requests.iter().cloned() {
+            registry.register(request, binding()).unwrap();
+        }
+        clock.millis.store(1_000, Ordering::SeqCst);
+        let mut expired = 0;
+        while let Some(job) = registry.take_response_job(1).unwrap() {
+            assert_eq!(job.decision, "expired");
+            registry
+                .complete_response(&job.response_token, |_| Ok(()))
+                .unwrap();
+            expired += 1;
+        }
+        assert_eq!(expired, 2);
+        let settled = registry.snapshot().unwrap();
+        registry
+            .abandon(abandon_for(&requests[0], "sidecar-abandon-late"))
+            .expect("an abandon racing host expiry is acknowledged");
+        registry
+            .abandon(abandon_for(&requests[0], "sidecar-abandon-repeat"))
+            .expect("a repeated abandon is acknowledged");
+        let after = registry.snapshot().unwrap();
+        assert_eq!(after.change_sequence, settled.change_sequence);
+        assert!(after.records.iter().all(|view| {
+            view.state == ApprovalState::Expired
+                && view.terminal_reason == Some(ApprovalTerminalReason::TimedOut)
+        }));
+        assert!(registry.take_response_job(1).unwrap().is_none());
+        assert!(settled.change_sequence > before);
+
+        // Malformed private coordinates are still rejected.
+        let mut forged = abandon_for(&requests[0], "not-a-sidecar-id");
+        forged.correlation_id = "ui-forged".into();
+        assert!(registry.abandon(forged).is_err());
+    }
+
+    #[test]
     fn cohort_abandon_and_timeout_settle_every_registered_member_nonapproved() {
         let (registry, clock) = registry();
         let tools = ["read", "grep", "find"];
@@ -3195,6 +3438,85 @@ mod tests {
                 .all(|view| view.state == ApprovalState::Expired)
         );
         assert_eq!(clock.millis.load(Ordering::SeqCst), 0);
+    }
+
+    fn request_with_input(invocation: u64, tool: &str, input: Value) -> ApprovalRequest {
+        let mut request = request(invocation, tool);
+        request.input_digest = format!(
+            "{:x}",
+            Sha256::digest(canonical_json_bytes(&input).unwrap())
+        );
+        request.input = input;
+        request
+    }
+
+    #[test]
+    fn pending_and_snapshot_views_carry_the_derived_subject() {
+        let (registry, _) = registry();
+        let binding = WorkspaceApprovalBinding::for_test_at(
+            format!("workspace-{:032x}", 2),
+            1,
+            std::path::PathBuf::from("/Users/example/Code/project"),
+        );
+        registry
+            .register(
+                request_with_input(
+                    1,
+                    "read",
+                    serde_json::json!({"path": "/Users/example/Code/project/src/main.rs"}),
+                ),
+                binding.clone(),
+            )
+            .unwrap();
+        registry
+            .register(
+                request_with_input(
+                    2,
+                    "bash",
+                    serde_json::json!({"command": "ls ~ && cat /Users/example/.netrc"}),
+                ),
+                binding.clone(),
+            )
+            .unwrap();
+        registry
+            .register(
+                request_with_input(3, "custom_tool", serde_json::json!({"path": "/etc"})),
+                binding,
+            )
+            .unwrap();
+
+        let pending = registry.pending().unwrap();
+        let subjects = pending
+            .iter()
+            .map(|view| view.subject.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            subjects,
+            [
+                Some(ApprovalSubjectView {
+                    label: "File",
+                    text: "src/main.rs".into(),
+                    truncated: false,
+                }),
+                Some(ApprovalSubjectView {
+                    label: "Command",
+                    text: "ls ~ && cat ~/.netrc".into(),
+                    truncated: false,
+                }),
+            ]
+            .to_vec(),
+            "the unsupported tool is denied at once and never pending"
+        );
+        let snapshot = serde_json::to_value(registry.snapshot().unwrap()).unwrap();
+        let records = snapshot["records"].as_array().unwrap();
+        assert_eq!(
+            records[0]["subject"],
+            serde_json::json!({"label":"File","text":"src/main.rs","truncated":false})
+        );
+        assert_eq!(records[2]["subject"], Value::Null);
+        assert!(records[2].as_object().unwrap().contains_key("subject"));
+        let encoded = snapshot.to_string();
+        assert!(!encoded.contains("/Users/example"), "{encoded}");
     }
 
     #[test]

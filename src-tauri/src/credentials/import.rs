@@ -53,6 +53,17 @@ pub fn import_selected(
     provider_ids: Vec<String>,
     proxy: &CredentialProxy,
 ) -> Result<ImportReceipt, String> {
+    import_selected_with_hook(path, provider_ids, proxy, || {})
+}
+
+/// `before_verify` runs between parsing and the unchanged-source check so a
+/// test can race a concurrent edit exactly where one would matter.
+fn import_selected_with_hook(
+    path: &Path,
+    provider_ids: Vec<String>,
+    proxy: &CredentialProxy,
+    before_verify: impl FnOnce(),
+) -> Result<ImportReceipt, String> {
     if provider_ids.is_empty() || provider_ids.len() > 32 {
         return Err("credential-import-selection-invalid".into());
     }
@@ -77,25 +88,37 @@ pub fn import_selected(
     {
         return Err("credential-import-selection-invalid".into());
     }
-    let mut imported = Vec::with_capacity(provider_ids.len());
+    let mut selected_credentials = Vec::with_capacity(provider_ids.len());
     for provider_id in provider_ids {
         let credential = source
             .remove(&provider_id)
             .ok_or_else(|| "credential-import-selection-invalid".to_string())?;
-        proxy
-            .import_credential(&provider_id, credential)
-            .map_err(str::to_owned)?;
-        imported.push(provider_id);
+        selected_credentials.push((provider_id, credential));
     }
     for value in source.values_mut() {
         zeroise_json(value);
     }
-    let mut after_bytes = read_restricted(path)?;
-    let after = Sha256::digest(&after_bytes);
-    after_bytes.zeroize();
-    if before.as_slice() != after.as_slice() {
-        return Err("credential-import-source-changed".into());
+    // Pi may be rewriting the file while it is read. Confirm the parsed bytes
+    // are still current before anything reaches the Keychain, so a changed
+    // source imports nothing rather than a mixture.
+    before_verify();
+    let unchanged = read_restricted(path).map(|mut after_bytes| {
+        let after = Sha256::digest(&after_bytes);
+        after_bytes.zeroize();
+        before.as_slice() == after.as_slice()
+    });
+    if !matches!(unchanged, Ok(true)) {
+        for (_, credential) in &mut selected_credentials {
+            zeroise_json(credential);
+        }
+        return Err(match unchanged {
+            Ok(_) => "credential-import-source-changed".into(),
+            Err(error) => error,
+        });
     }
+    let imported = proxy
+        .import_credentials(selected_credentials)
+        .map_err(str::to_owned)?;
     Ok(ImportReceipt {
         imported_provider_ids: imported,
         source_unchanged: true,
@@ -252,6 +275,57 @@ mod tests {
         let debug = format!("{proxy:?}");
         assert!(!debug.contains("access-canary"));
         assert!(!debug.contains("refresh-canary"));
+    }
+
+    #[test]
+    fn a_source_changed_before_commit_imports_nothing() {
+        let source = write_private_fixture(
+            "changed",
+            r#"{"anthropic":{"type":"api_key","key":"first-canary"},"openai":{"type":"api_key","key":"second-canary"}}"#,
+        );
+        let proxy = CredentialProxy::in_memory_for_dispatcher_test();
+        let rewritten = source.clone();
+        let result = super::import_selected_with_hook(
+            &source,
+            vec!["anthropic".into(), "openai".into()],
+            &proxy,
+            || {
+                fs::write(
+                    &rewritten,
+                    r#"{"anthropic":{"type":"api_key","key":"rotated-canary"}}"#,
+                )
+                .expect("concurrent rewrite");
+            },
+        );
+        assert_eq!(
+            result.err().as_deref(),
+            Some("credential-import-source-changed")
+        );
+        assert!(
+            proxy.provider_ids_for_test().is_empty(),
+            "nothing may reach the Keychain from a changed source"
+        );
+        let _ = fs::remove_file(source);
+    }
+
+    #[test]
+    fn one_invalid_selected_credential_imports_none_of_the_selection() {
+        let source = write_private_fixture(
+            "partial",
+            r#"{"anthropic":{"type":"api_key","key":"valid-canary"},"broken":{"type":"unknown","value":"x"}}"#,
+        );
+        let proxy = CredentialProxy::in_memory_for_dispatcher_test();
+        assert_eq!(
+            import_selected(&source, vec!["anthropic".into(), "broken".into()], &proxy)
+                .err()
+                .as_deref(),
+            Some("credential-import-invalid")
+        );
+        assert!(proxy.provider_ids_for_test().is_empty());
+        let receipt = import_selected(&source, vec!["anthropic".into()], &proxy).unwrap();
+        assert_eq!(receipt.imported_provider_ids, ["anthropic"]);
+        assert_eq!(proxy.provider_ids_for_test(), ["anthropic"]);
+        let _ = fs::remove_file(source);
     }
 
     #[test]

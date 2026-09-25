@@ -13,17 +13,32 @@ const messagesValid = ajv.compile(messagesSchema);
 const maxLineBytes = 1_048_576;
 const maxPayloadBytes = 524_288;
 const maxDepth = 32;
-const secretKey = /(secret|token|password|api[_-]?key|authorization|credential)/i;
+const privateHostMaxDepth = maxDepth + 2;
+// Mirrors validate.ts and Rust's is_secret_key: strip every `_` and `-`, then
+// match a lowercase needle anywhere in the key.
+const secretNeedles = ['secret', 'token', 'password', 'apikey', 'authorization', 'credential'];
 
-function depth(value, level = 0) {
-  if (level > maxDepth) return level;
-  if (!value || typeof value !== 'object') return level;
-  return Math.max(level, ...Object.values(value).map((child) => depth(child, level + 1)));
+function depth(value, limit) {
+  let deepest = 0;
+  const stack = [[value, 0]];
+  while (stack.length) {
+    const [current, level] = stack.pop();
+    deepest = Math.max(deepest, level);
+    if (deepest > limit) return limit + 1;
+    if (!current || typeof current !== 'object') continue;
+    for (const child of Object.values(current)) stack.push([child, level + 1]);
+  }
+  return deepest;
+}
+
+function isSecretKey(key) {
+  const normalised = key.toLowerCase().replaceAll('_', '').replaceAll('-', '');
+  return secretNeedles.some((needle) => normalised.includes(needle));
 }
 
 function hasSecretKey(value) {
   if (!value || typeof value !== 'object') return false;
-  return Object.entries(value).some(([key, child]) => secretKey.test(key) || hasSecretKey(child));
+  return Object.entries(value).some(([key, child]) => isSecretKey(key) || hasSecretKey(child));
 }
 
 function validateFile(path) {
@@ -41,7 +56,8 @@ function validateFile(path) {
     if (seen.has(envelope.id)) throw new Error('duplicate ID');
     seen.add(envelope.id);
     if (Buffer.byteLength(JSON.stringify(envelope.payload)) > maxPayloadBytes) throw new Error('payload limit exceeded');
-    if (depth(envelope) > maxDepth) throw new Error('depth limit exceeded');
+    const depthLimit = envelope.kind === 'host-request' || envelope.kind === 'host-response' ? privateHostMaxDepth : maxDepth;
+    if (depth(envelope, depthLimit) > depthLimit) throw new Error('depth limit exceeded');
     if (envelope.kind === 'event' && hasSecretKey(envelope.payload)) throw new Error('secret-shaped diagnostic field');
   }
 }

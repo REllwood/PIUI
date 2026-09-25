@@ -285,6 +285,7 @@ pub(crate) fn revoke_workspace(
         return Err(PRIVATE_REJECTED.into());
     }
     if let Some(generation) = outcome.stop_generation {
+        state.product_sessions().take_live_generation(workspace_id);
         state.cutoff_generation(generation)?;
         return Ok(outcome.cleanup());
     }
@@ -292,6 +293,14 @@ pub(crate) fn revoke_workspace(
     let Ok(generation) = current_generation(state) else {
         return Ok(outcome.cleanup());
     };
+    // A product session may be running in this workspace without any
+    // resource load. The sidecar trusts its runtimes until they end, so the
+    // only reliable stop is the generation that owns them. Other sessions
+    // in that generation are stopped too; failing closed is deliberate.
+    if state.product_sessions().take_live_generation(workspace_id) == Some(generation) {
+        state.cutoff_generation(generation)?;
+        return Ok(outcome.cleanup());
+    }
     let response = request(
         state,
         generation,
@@ -411,40 +420,80 @@ pub fn workspace_inspect(
     inspect_workspace(state.inner(), &workspace_id)
 }
 
-#[tauri::command]
-pub fn workspace_open_untrusted(
-    state: State<'_, BridgeState>,
+// Each trust transition can wait up to `WORKSPACE_TIMEOUT` for the sidecar,
+// so none of them may run on the main thread.
+async fn run_workspace_operation(
+    state: &BridgeState,
     workspace_id: String,
     expected_revision: u64,
+    operation: fn(&BridgeState, &str, u64) -> Result<WorkspaceSummary, String>,
 ) -> Result<WorkspaceSummary, String> {
-    open_workspace_untrusted(state.inner(), &workspace_id, expected_revision)
+    let transport = state.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        operation(&transport, &workspace_id, expected_revision)
+    })
+    .await
+    .map_err(|_| "workspace worker failed".to_string())?
 }
 
 #[tauri::command]
-pub fn workspace_authorise(
+pub async fn workspace_open_untrusted(
     state: State<'_, BridgeState>,
     workspace_id: String,
     expected_revision: u64,
 ) -> Result<WorkspaceSummary, String> {
-    authorise_workspace(state.inner(), &workspace_id, expected_revision)
+    run_workspace_operation(
+        state.inner(),
+        workspace_id,
+        expected_revision,
+        open_workspace_untrusted,
+    )
+    .await
 }
 
 #[tauri::command]
-pub fn workspace_load_trusted(
+pub async fn workspace_authorise(
     state: State<'_, BridgeState>,
     workspace_id: String,
     expected_revision: u64,
 ) -> Result<WorkspaceSummary, String> {
-    load_trusted_workspace(state.inner(), &workspace_id, expected_revision)
+    run_workspace_operation(
+        state.inner(),
+        workspace_id,
+        expected_revision,
+        authorise_workspace,
+    )
+    .await
 }
 
 #[tauri::command]
-pub fn workspace_revoke(
+pub async fn workspace_load_trusted(
     state: State<'_, BridgeState>,
     workspace_id: String,
     expected_revision: u64,
 ) -> Result<WorkspaceSummary, String> {
-    revoke_workspace(state.inner(), &workspace_id, expected_revision)
+    run_workspace_operation(
+        state.inner(),
+        workspace_id,
+        expected_revision,
+        load_trusted_workspace,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn workspace_revoke(
+    state: State<'_, BridgeState>,
+    workspace_id: String,
+    expected_revision: u64,
+) -> Result<WorkspaceSummary, String> {
+    run_workspace_operation(
+        state.inner(),
+        workspace_id,
+        expected_revision,
+        revoke_workspace,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -622,6 +671,66 @@ mod tests {
             error: None,
         };
         assert!(parse_success::<StateResponse>(envelope).is_err());
+    }
+
+    #[test]
+    fn revoking_a_workspace_stops_a_live_product_runtime_without_a_resource_load() {
+        let fixture = std::env::temp_dir().join(format!("piui-revoke-runtime-{}", Uuid::new_v4()));
+        let resources = fixture.join("sidecar");
+        let workspace_root = fixture.join("workspace");
+        fs::create_dir_all(resources.join("dist")).unwrap();
+        fs::create_dir_all(&workspace_root).unwrap();
+        fs::write(resources.join("manifest.json"), b"{}\n").unwrap();
+        // Only a handshake: the revoke must not depend on the sidecar
+        // agreeing to stop its own runtimes.
+        fs::write(
+            resources.join("dist/index.js"),
+            r#"
+process.stdout.write(`${JSON.stringify({version:1,kind:'handshake',id:'sidecar-handshake',
+  sequence:0,payload:{nonce:process.env.PIUI_HANDSHAKE_NONCE,
+  desktopVersion:process.env.PIUI_DESKTOP_VERSION,protocolVersion:1,nodeVersion:'22.23.1',
+  piVersion:'0.82.0',architecture:'arm64',
+  capabilities:['cancel','status','stream','host-credentials','workspace-trust-v1']}})}\n`);
+process.stdin.resume();
+"#,
+        )
+        .unwrap();
+        let paths = SupervisorPaths::validated(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("binaries/piui-node-aarch64-apple-darwin"),
+            resources,
+        )
+        .unwrap();
+        let state = BridgeState::new(paths);
+        let registry = state.workspace_registry();
+        let acquired = registry
+            .acquire_selected_directory(&workspace_root)
+            .unwrap();
+        registry.inspect_metadata(&acquired.workspace_id).unwrap();
+        registry.open_untrusted(&acquired.workspace_id, 0).unwrap();
+        let (trusted, _) = registry.authorise(&acquired.workspace_id, 0).unwrap();
+        bridge_start_transport(&state).unwrap();
+        let generation = current_generation(&state).unwrap();
+        // A session was created (or resumed) in this workspace, but no
+        // resource load ever ran, so the registry has no generation to stop.
+        state
+            .product_sessions()
+            .mark_live(&trusted.workspace_id, generation);
+
+        let revoked = revoke_workspace(&state, &trusted.workspace_id, trusted.revision).unwrap();
+        assert_eq!(
+            revoked.trust_state,
+            crate::domain::workspace::TrustState::Revoked
+        );
+        let status = state.supervisor().lock().unwrap().status();
+        assert!(!status.running, "the runtime's generation must be cut off");
+        assert!(
+            state
+                .product_sessions()
+                .take_live_generation(&trusted.workspace_id)
+                .is_none()
+        );
+        bridge_stop_transport(&state).unwrap();
+        fs::remove_dir_all(fixture).unwrap();
     }
 
     fn copy_tree(source: &Path, destination: &Path) {

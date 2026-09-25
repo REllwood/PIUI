@@ -3,6 +3,7 @@ use super::event_output::{EventOutputQueue, EventReceipt};
 use super::projector::{PublicOperationClass, WebViewProjector};
 use crate::credentials::CredentialProxy;
 use crate::domain::approval::ApprovalRegistry;
+use crate::domain::product_sessions::ProductSessionRegistry;
 use crate::domain::workspace::WorkspaceRegistry;
 use crate::protocol::{Envelope, ProtocolKind, validate_envelope};
 use crate::supervisor::{
@@ -34,6 +35,7 @@ pub struct BridgeState {
     event_output: Arc<EventOutputQueue>,
     approval_registry: Arc<ApprovalRegistry>,
     workspace_registry: Arc<WorkspaceRegistry>,
+    product_sessions: Arc<ProductSessionRegistry>,
     #[cfg(feature = "a23-credential-test")]
     a23_evidence: Option<super::a23_native_evidence::A23NativeEvidenceState>,
 }
@@ -61,6 +63,7 @@ impl BridgeState {
             event_output: Arc::new(EventOutputQueue::default()),
             approval_registry,
             workspace_registry,
+            product_sessions: Arc::new(ProductSessionRegistry::default()),
             #[cfg(feature = "a23-credential-test")]
             a23_evidence: None,
         }
@@ -90,6 +93,22 @@ impl BridgeState {
             .ok_or_else(|| "a23-native-evidence-unavailable".to_string())?
             .record_piui_stream_probe_admission(envelope)?;
         Ok(())
+    }
+
+    pub(crate) fn enqueue_event_with_receipt(
+        &self,
+        generation: u64,
+        envelope: &Envelope,
+    ) -> Result<EventReceipt, String> {
+        let receipt = self
+            .event_output
+            .enqueue_with_receipt(generation, envelope)?;
+        #[cfg(feature = "a23-credential-test")]
+        self.a23_evidence
+            .as_ref()
+            .ok_or_else(|| "a23-native-evidence-unavailable".to_string())?
+            .record_piui_stream_probe_admission(envelope)?;
+        Ok(receipt)
     }
 
     pub(crate) fn enqueue_ack_event(
@@ -138,11 +157,16 @@ impl BridgeState {
         self.projector.deactivate_generation(generation)?;
         self.workspace_registry.invalidate_generation(generation);
         self.approval_registry.invalidate_generation(generation);
+        self.product_sessions.forget_generation(generation);
         Ok(())
     }
 
     pub(crate) fn approval_registry(&self) -> Arc<ApprovalRegistry> {
         Arc::clone(&self.approval_registry)
+    }
+
+    pub(crate) fn product_sessions(&self) -> Arc<ProductSessionRegistry> {
+        Arc::clone(&self.product_sessions)
     }
 
     pub(crate) fn workspace_registry(&self) -> Arc<WorkspaceRegistry> {
@@ -316,12 +340,19 @@ fn packaged_readiness_line(status: &SidecarStatus) -> Option<&'static str> {
     .then_some(PACKAGED_AUTHENTICATED_READY)
 }
 
+/// Starting waits up to ten seconds for the handshake. Tauri runs
+/// synchronous commands on the main thread, so every command that can take
+/// the supervisor lock runs on a blocking worker instead.
 #[tauri::command]
-pub fn sidecar_start(
+pub async fn sidecar_start(
     _app: AppHandle,
     state: State<'_, BridgeState>,
 ) -> Result<SidecarStatus, String> {
-    let result = bridge_start_transport(state.inner());
+    let transport = state.inner().clone();
+    let result = tauri::async_runtime::spawn_blocking(move || bridge_start_transport(&transport))
+        .await
+        .map_err(|_| "sidecar start worker failed".to_string())
+        .and_then(|result| result);
     #[cfg(feature = "a23-credential-test")]
     record_a23_command_result(&_app, "sidecar_start", &result)?;
     // The reason the start refused is otherwise only held in memory. Reporting
@@ -399,8 +430,19 @@ pub fn bridge_observe_status(state: &BridgeState) -> Result<SidecarStatus, Strin
 }
 
 #[tauri::command]
-pub fn sidecar_status(state: State<'_, BridgeState>) -> Result<SidecarStatus, String> {
-    bridge_status_transport(state.inner())
+pub async fn sidecar_status(state: State<'_, BridgeState>) -> Result<SidecarStatus, String> {
+    // Observing a failure may trigger an automatic restart and handshake.
+    run_blocking(state.inner(), bridge_status_transport).await
+}
+
+async fn run_blocking<T: Send + 'static>(
+    state: &BridgeState,
+    operation: fn(&BridgeState) -> Result<T, String>,
+) -> Result<T, String> {
+    let transport = state.clone();
+    tauri::async_runtime::spawn_blocking(move || operation(&transport))
+        .await
+        .map_err(|_| "sidecar worker failed".to_string())?
 }
 
 pub fn bridge_restart_transport(state: &BridgeState) -> Result<SidecarStatus, String> {
@@ -421,8 +463,8 @@ pub fn bridge_restart_transport(state: &BridgeState) -> Result<SidecarStatus, St
 }
 
 #[tauri::command]
-pub fn sidecar_restart(state: State<'_, BridgeState>) -> Result<SidecarStatus, String> {
-    bridge_restart_transport(state.inner())
+pub async fn sidecar_restart(state: State<'_, BridgeState>) -> Result<SidecarStatus, String> {
+    run_blocking(state.inner(), bridge_restart_transport).await
 }
 
 pub fn bridge_send_transport(state: &BridgeState, envelope: &Envelope) -> Result<(), String> {
@@ -502,8 +544,11 @@ pub fn bridge_abandon_snapshot_transport_for_test(
 }
 
 #[tauri::command]
-pub fn bridge_send(state: State<'_, BridgeState>, envelope: Envelope) -> Result<(), String> {
-    bridge_send_transport(state.inner(), &envelope)
+pub async fn bridge_send(state: State<'_, BridgeState>, envelope: Envelope) -> Result<(), String> {
+    let transport = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || bridge_send_transport(&transport, &envelope))
+        .await
+        .map_err(|_| "sidecar worker failed".to_string())?
 }
 
 pub fn bridge_stop_transport(state: &BridgeState) -> Result<(), String> {
@@ -518,8 +563,8 @@ pub fn bridge_stop_transport(state: &BridgeState) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn sidecar_stop(state: State<'_, BridgeState>) -> Result<(), String> {
-    bridge_stop_transport(state.inner())
+pub async fn sidecar_stop(state: State<'_, BridgeState>) -> Result<(), String> {
+    run_blocking(state.inner(), bridge_stop_transport).await
 }
 
 #[cfg(test)]

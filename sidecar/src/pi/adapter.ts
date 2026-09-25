@@ -1,4 +1,4 @@
-import type { PublicCredentialStore } from './public-sdk.js';
+import type { PublicCredentialStore, PublicModelRuntimeInstance } from './public-sdk.js';
 import type { AdapterChange } from './changes.js';
 import type { SettingRecord, SettingScope } from './settings.js';
 import type { AdapterResource } from './resources.js';
@@ -139,6 +139,12 @@ export type PiAdapterOptions = Readonly<{
   credentials: PublicCredentialStore;
   allowModelNetwork?: boolean;
   generation: number;
+  /**
+   * In-process test seam that runs once against the new model runtime before
+   * any session exists, for example to register pi-ai's faux provider. No
+   * protocol request can reach it and production construction never sets it.
+   */
+  prepareModelRuntime?: (runtime: PublicModelRuntimeInstance) => void | Promise<void>;
   approvalHost: Readonly<{
     requestApproval: (
       payload: import('../bridge/host-requests.js').CohortApprovalRequestPayload,

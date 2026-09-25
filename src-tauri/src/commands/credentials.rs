@@ -3,6 +3,8 @@ use crate::platform::{
     CREDENTIAL_SHEET_BUSY, CredentialSheetDecision, CredentialSheetRequest, CredentialSheetResult,
     INVALID_CREDENTIAL_INPUT, present_native_credential_sheet,
 };
+use crate::supervisor::pi_agent_dir_within;
+use std::path::{Path, PathBuf};
 #[cfg(feature = "a23-credential-test")]
 use std::sync::Mutex;
 use std::sync::{
@@ -70,36 +72,44 @@ impl CredentialSheetState {
     }
 }
 
-#[tauri::command]
-pub fn credential_import_inspect(
-    app: AppHandle,
-) -> Result<crate::credentials::import::ImportInspection, String> {
+fn import_source_path(app: &AppHandle) -> Result<PathBuf, String> {
     use tauri::Manager;
-    let path = app
+    let home = app
         .path()
         .home_dir()
-        .map_err(|_| "credential-import-source-unavailable".to_string())?
-        .join(".pi")
-        .join("agent")
-        .join("auth.json");
-    crate::credentials::import::inspect(&path)
+        .map_err(|_| "credential-import-source-unavailable".to_string())?;
+    Ok(import_source_within(&home))
+}
+
+fn import_source_within(home: &Path) -> PathBuf {
+    pi_agent_dir_within(home).join("auth.json")
+}
+
+// Both commands read and hash the source file and the import writes the
+// Keychain, so they run off the main thread.
+#[tauri::command]
+pub async fn credential_import_inspect(
+    app: AppHandle,
+) -> Result<crate::credentials::import::ImportInspection, String> {
+    let path = import_source_path(&app)?;
+    tauri::async_runtime::spawn_blocking(move || crate::credentials::import::inspect(&path))
+        .await
+        .map_err(|_| "credential-import-worker-failed".to_string())?
 }
 
 #[tauri::command]
-pub fn credential_import_selected(
+pub async fn credential_import_selected(
     app: AppHandle,
     state: State<'_, CredentialSheetState>,
     provider_ids: Vec<String>,
 ) -> Result<crate::credentials::import::ImportReceipt, String> {
-    use tauri::Manager;
-    let path = app
-        .path()
-        .home_dir()
-        .map_err(|_| "credential-import-source-unavailable".to_string())?
-        .join(".pi")
-        .join("agent")
-        .join("auth.json");
-    crate::credentials::import::import_selected(&path, provider_ids, &state.credential_proxy())
+    let path = import_source_path(&app)?;
+    let proxy = state.credential_proxy();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::credentials::import::import_selected(&path, provider_ids, &proxy)
+    })
+    .await
+    .map_err(|_| "credential-import-worker-failed".to_string())?
 }
 
 struct CredentialSheetPermit {
@@ -418,6 +428,14 @@ mod tests {
     };
     use crate::credentials::{CredentialMetadata, CredentialProxy, KeychainRepository};
     use crate::platform::{CREDENTIAL_SHEET_BUSY, CredentialSheetDecision};
+
+    #[test]
+    fn import_source_is_the_shared_pi_agent_directory() {
+        assert_eq!(
+            super::import_source_within(std::path::Path::new("/Users/example")),
+            std::path::Path::new("/Users/example/.pi/agent/auth.json")
+        );
+    }
 
     #[cfg(feature = "a23-credential-test")]
     struct PrivateTestDirectory(std::path::PathBuf);

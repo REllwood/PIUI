@@ -2,8 +2,10 @@ import { ProtocolDecoder } from '@piui/protocol/codec';
 import type { ProtocolEnvelope } from '@piui/protocol';
 import { createHandshake, REQUIRED_CAPABILITIES } from './bridge/handshake.js';
 import { HostRequestClient, HostRequestError } from './bridge/host-requests.js';
+import { productOperationError } from './bridge/product-errors.js';
 import { createZeroingProtocolWriter } from './bridge/protocol-writer.js';
 import { SidecarRouter } from './bridge/router.js';
+import { claimProtocolStdout } from './bridge/stdout-guard.js';
 import { assertPublicSdk, publicSdkMetadata } from './pi/public-sdk.js';
 import { assertWorkspaceRequestEnvelope, TrustGate, WorkspaceGateError } from './pi/trust-gate.js';
 import { crashFixture } from './spike/crash.js';
@@ -23,6 +25,11 @@ export type SidecarPrivateFixture = Readonly<{
 }>;
 
 export function runSidecar(privateFixture?: SidecarPrivateFixture): void {
+  // Before anything else can print: only the protocol writer may use stdout.
+  const protocolSink = claimProtocolStdout();
+  // The crash and stream fixtures exist only for harnesses. Without this
+  // explicit opt-in they are rejected like any other unknown method.
+  const testMethodsEnabled = process.env.PIUI_ENABLE_TEST_METHODS === '1';
   const decoder = new ProtocolDecoder();
   const router = new SidecarRouter();
   const streams = new Map<string, AbortController>();
@@ -69,7 +76,7 @@ export function runSidecar(privateFixture?: SidecarPrivateFixture): void {
     process.stdout.destroy();
   }
 
-  const write = createZeroingProtocolWriter(undefined, failOutputGeneration);
+  const write = createZeroingProtocolWriter(protocolSink, failOutputGeneration);
   const a23Lifecycle = createA23CredentialLifecycleFromEnvironment();
   const hostRequests = new HostRequestClient({ router, write });
   const parsedGeneration = Number(process.env.PIUI_SUPERVISOR_GENERATION ?? '1');
@@ -177,15 +184,11 @@ export function runSidecar(privateFixture?: SidecarPrivateFixture): void {
         const payload = await productRuntime.handle(incoming);
         if (outputFailed) return;
         write(router.next('response', `response-${incoming.id}`, payload, incoming.id));
-      } catch {
+      } catch (error) {
         if (outputFailed) return;
         write({
           ...router.next('response', `error-${incoming.id}`, {}, incoming.id),
-          error: {
-            category: 'unavailable',
-            message: 'Product operation failed',
-            retryable: true,
-          },
+          error: productOperationError(error),
         });
       }
     } else if (incoming.kind === 'request' && method === 'product.auth.start') {
@@ -370,9 +373,9 @@ export function runSidecar(privateFixture?: SidecarPrivateFixture): void {
       } else if (!outputFailed) {
         rememberTerminal(incoming.id, 'failed');
       }
-    } else if (incoming.kind === 'request' && method === 'spike.crash') {
+    } else if (testMethodsEnabled && incoming.kind === 'request' && method === 'spike.crash') {
       crashFixture();
-    } else if (incoming.kind === 'request' && method === 'stream.fixture') {
+    } else if (testMethodsEnabled && incoming.kind === 'request' && method === 'stream.fixture') {
       const completed = completedStreams.get(incoming.id);
       if (completed) {
         write(

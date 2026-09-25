@@ -168,14 +168,34 @@ afterEach(async () => {
   while (openFixtures.length) await openFixtures.pop()!.close();
 });
 
-function assistantChunk(toolNames: readonly string[]): Record<string, unknown>[] {
-  return toolNames.map((name, index) => ({
-    id: 'fixture-turn', object: 'chat.completion.chunk', created: 1, model: 'fixture-model',
-    choices: [{ index: 0, delta: { tool_calls: [{
-      index, id: `fixture-call-${index + 1}`, type: 'function',
-      function: { name, arguments: JSON.stringify({ value: `${name}-${index + 1}` }) },
-    }] }, finish_reason: null }],
-  }));
+type CallOverride = Readonly<{ name?: string; value?: unknown }>;
+
+function assistantChunk(
+  toolNames: readonly string[],
+  overrides: readonly (CallOverride | undefined)[] = [],
+): Record<string, unknown>[] {
+  return toolNames.map((defined, index) => {
+    const name = overrides[index]?.name ?? defined;
+    const value = overrides[index] && 'value' in overrides[index]
+      ? overrides[index].value
+      : `${name}-${index + 1}`;
+    return {
+      id: 'fixture-turn', object: 'chat.completion.chunk', created: 1, model: 'fixture-model',
+      choices: [{ index: 0, delta: { tool_calls: [{
+        index, id: `fixture-call-${index + 1}`, type: 'function',
+        function: { name, arguments: JSON.stringify({ value }) },
+      }] }, finish_reason: null }],
+    };
+  });
+}
+
+function toolResultText(session: Fixture['session'], toolCallId: string): string | undefined {
+  for (const message of session.messages as unknown as Array<Record<string, unknown>>) {
+    if (message.role !== 'toolResult' || message.toolCallId !== toolCallId) continue;
+    const content = message.content as Array<{ type: string; text?: string }>;
+    return content.filter((part) => part.type === 'text').map((part) => part.text).join('');
+  }
+  return undefined;
 }
 
 async function createFixture(
@@ -183,6 +203,7 @@ async function createFixture(
   laterExtensions: readonly InlineExtension[] = [],
   executionModes: readonly ('parallel' | 'sequential')[] = [],
   cohortTimeoutMs = 125_000,
+  callOverrides: readonly (CallOverride | undefined)[] = [],
 ): Promise<Fixture> {
   let providerTurn = 0;
   const server = createServer((request, response) => {
@@ -193,7 +214,7 @@ async function createFixture(
       response.writeHead(200, { 'content-type': 'text/event-stream' });
       const emit = (value: unknown) => response.write(`data: ${JSON.stringify(value)}\n\n`);
       if (providerTurn++ % 2 === 0) {
-        for (const chunk of assistantChunk(toolNames)) emit(chunk);
+        for (const chunk of assistantChunk(toolNames, callOverrides)) emit(chunk);
         emit({ id: 'fixture-turn', object: 'chat.completion.chunk', created: 1, model: 'fixture-model',
           choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] });
       } else {
@@ -405,6 +426,76 @@ describe('A.18 authentic fail-closed parallel approval', () => {
     expect(fixture.markers).toEqual([]);
   });
 
+  it.each([
+    { name: 'an unknown tool', overrides: [undefined, { name: 'invented_tool' }, undefined] },
+    { name: 'invalid arguments', overrides: [undefined, { value: { not: 'a string' } }, undefined] },
+    { name: 'a failing first member', overrides: [{ name: 'invented_tool' }, undefined, undefined] },
+  ])('runs approved siblings of $name at once instead of stalling the cohort', async ({ overrides }) => {
+    const fixture = await createFixture(['read', 'grep', 'find'], [], [], 125_000, overrides);
+    const failedId = `fixture-call-${overrides.findIndex(Boolean) + 1}`;
+    const prompt = fixture.session.prompt('one sibling is failed by Pi');
+    await waitFor(() => fixture.host.ready.length === 2, 'surviving siblings ready');
+    expect(fixture.host.requests).toHaveLength(2);
+    expect(fixture.host.requests.every((request) => request.cohort.orderedMembers.length === 3)).toBe(true);
+    expect(fixture.host.requests.map((request) => request.toolCallId)).not.toContain(failedId);
+    // A shrunk cohort never offers a group decision.
+    expect(fixture.host.groupActionable()).toBe(false);
+    expect(fixture.markers).toEqual([]);
+    fixture.host.settleIndividual(0, 'approved');
+    fixture.host.settleIndividual(1, 'denied');
+    await prompt;
+    expect(fixture.markers).toHaveLength(1);
+    expect(fixture.markers[0]).toContain(fixture.host.requests[0].toolCallId);
+    expect(fixture.markers.some((marker) => marker.includes(failedId))).toBe(false);
+    expect(fixture.host.abandoned).toEqual([]);
+  });
+
+  it('sends nothing to the host when Pi fails every member of a cohort', async () => {
+    const fixture = await createFixture(['read', 'grep'], [], [], 125_000, [
+      { name: 'invented_one' },
+      { name: 'invented_two' },
+    ]);
+    await fixture.session.prompt('every call is failed by Pi');
+    expect(fixture.host.requests).toEqual([]);
+    expect(fixture.host.abandoned).toEqual([]);
+    expect(fixture.markers).toEqual([]);
+  });
+
+  it('never lets a Pi-failed member register or run afterwards', async () => {
+    const host = new AuthenticApprovalHost();
+    const gate = createApprovalGate(host, context);
+    const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
+    gate.extension.factory({ on: (name: string, handler: (event: unknown, ctx: unknown) => unknown) => {
+      handlers.set(name, handler);
+    } } as never);
+    const parameters = { type: 'object', properties: { value: { type: 'string' } } } as never;
+    const executed: string[] = [];
+    const definitions = ['read', 'grep'].map((name) => gate.decorateToolDefinition({
+      name, label: name, description: name, parameters,
+      async execute(toolCallId) { executed.push(toolCallId); return { content: [], details: {} }; },
+    } as ToolDefinition));
+    const byName = new Map(definitions.map((definition) => [definition.name, definition]));
+    gate.bindSession({ getToolDefinition: (name: string) => byName.get(name), reload: async () => undefined } as never);
+    const assistant = {
+      type: 'message', id: 'assistant-direct', parentId: null,
+      message: { role: 'assistant', content: [
+        { type: 'toolCall', id: 'direct-1', name: 'read', arguments: {} },
+        { type: 'toolCall', id: 'direct-2', name: 'grep', arguments: {} },
+      ] },
+    };
+    const ctx = { sessionManager: { getLeafEntry: () => assistant, getEntry: () => undefined } };
+
+    await handlers.get('tool_execution_end')!({ type: 'tool_execution_end', toolCallId: 'direct-2', toolName: 'grep', result: {}, isError: true }, ctx);
+    const input = { value: 'late' };
+    expect(await handlers.get('tool_call')!({ type: 'tool_call', toolCallId: 'direct-2', toolName: 'grep', input }, ctx))
+      .toEqual({ block: true, reason: 'This action was not approved.' });
+    await expect(byName.get('grep')!.execute('direct-2', input, undefined, undefined, undefined as never))
+      .rejects.toThrow('not approved');
+    expect(host.requests).toEqual([]);
+    expect(host.abandoned).toEqual([]);
+    expect(executed).toEqual([]);
+  });
+
   it('bounds repeated incomplete mixed cohorts and erases each before the next turn', async () => {
     const fixture = await createFixture(
       ['read', 'grep', 'find'],
@@ -437,6 +528,27 @@ describe('A.18 authentic fail-closed parallel approval', () => {
     expect(fixture.host.abandoned.some((entry) => entry.reason === 'definition-change'
       || entry.reason === 'digest-change')).toBe(true);
     expect(fixture.markers).toEqual([]);
+  });
+
+  it('reviews ordinary large calls and tells the model when one is too large to review', async () => {
+    // `{"value":"…"}` adds 12 canonical bytes around the string.
+    const atBound = await createFixture(['read'], [], [], 125_000, [{ value: 'x'.repeat(393_204) }]);
+    const atBoundPrompt = atBound.session.prompt('write a large but reviewable file');
+    await waitFor(() => atBound.host.ready.length === 1, 'large call ready');
+    expect(atBound.host.requests[0].inputDigest).toMatch(/^[0-9a-f]{64}$/u);
+    atBound.host.settleIndividual(0, 'approved');
+    await atBoundPrompt;
+    expect(atBound.markers).toHaveLength(1);
+
+    const overBound = await createFixture(['read'], [], [], 125_000, [{ value: 'x'.repeat(393_205) }]);
+    await overBound.session.prompt('write a file too large to review');
+    expect(overBound.host.requests).toEqual([]);
+    // Nothing was registered, so nothing is abandoned on the host either.
+    expect(overBound.host.abandoned).toEqual([]);
+    expect(overBound.markers).toEqual([]);
+    expect(toolResultText(overBound.session, 'fixture-call-1')).toBe(
+      'This action was too large to review, so it was not approved. Split the change into several smaller tool calls.',
+    );
   });
 
   it('missing ready and ready-abort races abandon every waiter with zero delegates', async () => {
