@@ -1,6 +1,18 @@
 import { chmod, lstat, mkdir, readdir, rm } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
+// Keys a local smoke launch may inherit. Everything else in the developer
+// shell, including provider API keys and loader variables, stays behind.
+const LAUNCH_ENVIRONMENT_KEYS = Object.freeze([
+  'HOME',
+  'LANG',
+  'LC_ALL',
+  'LOGNAME',
+  'TMPDIR',
+  'USER',
+  '__CF_USER_TEXT_ENCODING',
+]);
+
 /**
  * One fixed location per output. Each run overwrites the evidence, replaces
  * the single retained previous bundle and reuses Tauri's own bundle output,
@@ -19,6 +31,21 @@ export function localReleasePaths(root) {
     previousAppPath: resolve(previousRoot, 'PIUI.app'),
     previousRoot,
     runtimeRoot: resolve(root, '.build/release-local-runtime'),
+  });
+}
+
+export function localReleaseLaunchEnvironment(environment, runtimeRoot) {
+  const launch = { PATH: '/usr/bin:/bin:/usr/sbin:/sbin' };
+  for (const key of LAUNCH_ENVIRONMENT_KEYS) {
+    if (typeof environment[key] === 'string') launch[key] = environment[key];
+  }
+  return Object.freeze({
+    ...launch,
+    PIUI_AGENT_ROOT: resolve(runtimeRoot, 'agent'),
+    PIUI_SESSION_ROOT: resolve(runtimeRoot, 'sessions'),
+    XDG_CACHE_HOME: resolve(runtimeRoot, 'cache'),
+    XDG_CONFIG_HOME: resolve(runtimeRoot, 'config'),
+    XDG_DATA_HOME: resolve(runtimeRoot, 'data'),
   });
 }
 

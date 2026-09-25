@@ -4,6 +4,7 @@ import { arch, platform } from 'node:os';
 import { resolve } from 'node:path';
 import { inventoryBundle, inspectMachOBytes } from '../tests/packaged/bundle-inspection.mjs';
 import {
+  localReleaseLaunchEnvironment,
   localReleasePaths,
   replaceDirectory,
 } from './local-release-support.mjs';
@@ -116,14 +117,7 @@ await replaceDirectory(runtimeRoot);
 const child = spawn(resolve(appPath, 'Contents/MacOS/piui'), [], {
   cwd: runtimeRoot,
   detached: false,
-  env: {
-    ...process.env,
-    PIUI_AGENT_ROOT: resolve(runtimeRoot, 'agent'),
-    PIUI_SESSION_ROOT: resolve(runtimeRoot, 'sessions'),
-    XDG_CACHE_HOME: resolve(runtimeRoot, 'cache'),
-    XDG_CONFIG_HOME: resolve(runtimeRoot, 'config'),
-    XDG_DATA_HOME: resolve(runtimeRoot, 'data'),
-  },
+  env: localReleaseLaunchEnvironment(process.env, runtimeRoot),
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 let launchExit = null;
