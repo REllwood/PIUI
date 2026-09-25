@@ -1,4 +1,5 @@
 import { ONBOARDING_STEPS } from '../../domain/onboardingMachine';
+import { BrandMark } from '../../components/brand/BrandMark';
 import { Icon } from '../../components/icons/Icon';
 import { LoadingLabel } from '../../components/primitives/LoadingLabel';
 import { CheckMacStep } from './CheckMacStep';
@@ -89,9 +90,7 @@ export function OnboardingRoute({
     <main className="onboarding-shell" aria-labelledby="onboarding-title">
       <header className="onboarding-toolbar" data-tauri-drag-region>
         <div className="onboarding-brand">
-          <span className="brand-mark" aria-hidden="true">
-            π
-          </span>
+          <BrandMark />
           <strong>PIUI</strong>
         </div>
         <span>Private local setup</span>

@@ -30,19 +30,18 @@
   padding: 0 12px 0 16px;
 }
 .brand-mark {
-  position: relative;
-  display: inline-grid;
-  place-items: center;
-  width: 34px;
-  height: 34px;
+  display: block;
   flex: 0 0 auto;
-  border: 1px solid var(--work);
-  border-radius: 10px;
-  color: var(--work);
-  background: var(--work-surface);
-  font:
-    500 26px/1 Georgia,
-    serif;
+  overflow: visible;
+}
+.brand-mark__edge {
+  fill: none;
+  stroke: var(--divider);
+  stroke-width: 1px;
+  vector-effect: non-scaling-stroke;
+}
+:root[data-theme='light'] .brand-mark__edge {
+  stroke: none;
 }
 .navigation-plane__brand > span:nth-child(2) {
   display: grid;
