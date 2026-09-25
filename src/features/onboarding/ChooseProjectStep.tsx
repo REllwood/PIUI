@@ -59,7 +59,7 @@ export function ChooseProjectStep({
               </span>
               <div>
                 <h2>{project.name}</h2>
-                <p>Selected local folder · capability {project.id.slice(0, 18)}…</p>
+                <p>Selected folder</p>
               </div>
               <StatusPill tone={project.trust === 'trusted' ? 'success' : 'warning'}>
                 {project.trust === 'trusted' ? 'Trusted' : 'Untrusted'}

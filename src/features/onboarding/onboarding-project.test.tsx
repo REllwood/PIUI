@@ -74,4 +74,24 @@ describe('onboarding project trust', () => {
     );
     expect(screen.getByRole('alert').textContent).toBe('PIUI could not trust this project.');
   });
+
+  it('names the selected folder without exposing its internal capability ID', () => {
+    const { container } = render(
+      <ChooseProjectStep
+        project={{
+          id: 'workspace-0123456789abcdef0123456789abcdef',
+          name: 'Project',
+          revision: 1,
+          trust: 'untrusted',
+        }}
+        busy={false}
+        onChoose={async () => undefined}
+        onTrust={async () => undefined}
+      />,
+    );
+    expect(screen.getByRole('heading', { name: 'Project' })).toBeTruthy();
+    expect(screen.getByText('Selected folder')).toBeTruthy();
+    expect(container.textContent).not.toContain('workspace-');
+    expect(container.textContent).not.toMatch(/capability workspace/iu);
+  });
 });
