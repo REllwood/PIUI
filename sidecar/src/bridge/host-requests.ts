@@ -7,7 +7,14 @@ import { canonicaliseApprovalInput } from '../pi/approval-canonical.js';
 const DEFAULT_MAX_CREDENTIAL_PENDING = 128;
 const DEFAULT_MAX_APPROVAL_PENDING = 128;
 const DEFAULT_MAX_APPROVAL_READY_PENDING = 128;
-const DEFAULT_CREDENTIAL_TIMEOUT_MS = 30_000;
+// Local guards for the private host lanes. A credential operation may sit
+// behind a macOS Keychain unlock prompt, so its guard matches the longest
+// user-facing wait we accept. Both lanes share one late-reply rule: Rust must
+// settle every request (with an error if need be) before the local guard
+// fires. Once the guard retires a correlation, any reply to it, however well
+// formed, is treated as replayed private authority and is generation-fatal.
+const DEFAULT_CREDENTIAL_TIMEOUT_MS = 120_000;
+const MAX_CREDENTIAL_TIMEOUT_MS = 120_000;
 const APPROVAL_TIMEOUT_MS = 125_000;
 const MAX_CREDENTIAL_BYTES = 65_536;
 const MAX_LIST_ENTRIES = 256;
@@ -849,7 +856,7 @@ export class HostRequestClient implements CredentialHostTransport {
         DEFAULT_MAX_APPROVAL_READY_PENDING ||
       !Number.isSafeInteger(options.timeoutMs ?? DEFAULT_CREDENTIAL_TIMEOUT_MS) ||
       (options.timeoutMs ?? DEFAULT_CREDENTIAL_TIMEOUT_MS) < 1 ||
-      (options.timeoutMs ?? DEFAULT_CREDENTIAL_TIMEOUT_MS) > 120_000
+      (options.timeoutMs ?? DEFAULT_CREDENTIAL_TIMEOUT_MS) > MAX_CREDENTIAL_TIMEOUT_MS
     ) {
       throw new HostRequestError('credential-request-rejected');
     }
@@ -981,8 +988,9 @@ export class HostRequestClient implements CredentialHostTransport {
     }
 
     // Rust's ordinary expiry arrives before the longer local guard while the
-    // owner is still pending. Any response after local retirement is replayed
-    // private authority and is generation-fatal, even if well formed.
+    // owner is still pending. Any response after local retirement (timeout,
+    // abort or disconnect, on the credential and approval lanes alike) is
+    // replayed private authority and is generation-fatal, even if well formed.
     const pending = this.#take(correlation);
     if (!pending) failProtocol(rejectionCode);
     try {

@@ -791,9 +791,7 @@ export class Pi082Adapter implements PiAdapter {
       packageManager,
     );
     await resources.discoverExecutableMetadata();
-    const packagePaths = resources.enabledPackageSources.length
-      ? await packageManager.resolveExtensionSources([...resources.enabledPackageSources])
-      : { extensions: [], skills: [], prompts: [], themes: [] };
+    const packagePaths = await resources.resolveEnabledPackagePaths();
     const services = await publicCreateAgentSessionServices({
       cwd: request.workspacePath,
       agentDir: request.agentDir,

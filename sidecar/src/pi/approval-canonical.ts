@@ -1,10 +1,14 @@
 import { createHash } from 'node:crypto';
 
-const MAX_BYTES = 65_536;
+// Shared contract C4, mirrored by Rust: canonical JSON of at most 384 KiB,
+// 4,096 nodes and depth 16 (the input root is depth 0). Ordinary write and edit
+// calls fit; anything larger is too large for a person to review.
+const MAX_BYTES = 393_216;
 const MAX_DEPTH = 16;
-const MAX_NODES = 256;
+const MAX_NODES = 4_096;
 const MAX_SAFE_INTEGER = 9_007_199_254_740_991;
 const REJECTED = 'approval-input-rejected';
+const TOO_LARGE = 'approval-input-too-large';
 
 export type CanonicalApprovalInput = Readonly<{
   bytes: Buffer;
@@ -14,11 +18,21 @@ export type CanonicalApprovalInput = Readonly<{
 
 type CanonicalState = {
   nodes: number;
+  stringBytes: number;
   ancestors: Set<object>;
 };
 
 function reject(): never {
   throw new Error(REJECTED);
+}
+
+function tooLarge(): never {
+  throw new Error(TOO_LARGE);
+}
+
+/** True only for a well-formed input rejected solely for exceeding C4. */
+export function isApprovalInputTooLarge(error: unknown): boolean {
+  return error instanceof Error && error.message === TOO_LARGE;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -47,12 +61,16 @@ function utf8KeyCompare(left: string, right: string): number {
 }
 
 function cloneCanonical(value: unknown, depth: number, state: CanonicalState): unknown {
-  if (depth > MAX_DEPTH || state.nodes >= MAX_NODES) reject();
+  if (depth > MAX_DEPTH || state.nodes >= MAX_NODES) tooLarge();
   state.nodes += 1;
 
   if (value === null || typeof value === 'boolean') return value;
   if (typeof value === 'string') {
     if (!hasValidUnicode(value)) reject();
+    // Raw UTF-8 never exceeds its canonical encoding, so this rejects an
+    // oversized input before building its full canonical text.
+    state.stringBytes += Buffer.byteLength(value, 'utf8');
+    if (state.stringBytes > MAX_BYTES) tooLarge();
     return value;
   }
   if (typeof value === 'number') {
@@ -62,6 +80,8 @@ function cloneCanonical(value: unknown, depth: number, state: CanonicalState): u
   }
   if (typeof value !== 'object' || state.ancestors.has(value)) reject();
 
+  // Each element is one more node; refuse before copying a huge descriptor set.
+  if (Array.isArray(value) && value.length > MAX_NODES - state.nodes) tooLarge();
   state.ancestors.add(value);
   try {
     const descriptors = Object.getOwnPropertyDescriptors(value);
@@ -169,16 +189,17 @@ export function deepFreezeApprovalValue<T>(value: T): T {
 
 export function canonicaliseApprovalInput(input: unknown): CanonicalApprovalInput {
   if (!isPlainObject(input)) reject();
-  const value = cloneCanonical(input, 0, { nodes: 0, ancestors: new Set() }) as Record<
-    string,
-    unknown
-  >;
+  const value = cloneCanonical(input, 0, {
+    nodes: 0,
+    stringBytes: 0,
+    ancestors: new Set(),
+  }) as Record<string, unknown>;
   const segments: string[] = [];
   emitCanonical(value, segments);
   const bytes = Buffer.from(segments.join(''), 'utf8');
   if (bytes.length > MAX_BYTES) {
     bytes.fill(0);
-    reject();
+    tooLarge();
   }
   return Object.freeze({
     bytes,

@@ -36,7 +36,11 @@
         "invocationId": { "$ref": "#/$defs/invocationId" },
         "toolName": { "$ref": "#/$defs/toolName" },
         "inputDigest": { "$ref": "#/$defs/digest" },
-        "input": { "type": "object" }
+        "input": {
+          "$comment": "Contract C4: canonical JSON of at most 393216 UTF-8 bytes, 4096 nodes and depth 16 (root is depth 0); only safe integers, never floats. Enforced by both canonicalisers; maxProperties is the node bound's direct consequence.",
+          "type": "object",
+          "maxProperties": 4095
+        }
       }
     },
     "requestV1": {

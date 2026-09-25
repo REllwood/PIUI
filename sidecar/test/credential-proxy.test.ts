@@ -959,6 +959,52 @@ describe('private credential host requests', () => {
     expect(writes).toBe(2);
   });
 
+  it('waits out a slow Keychain unlock for 120 s and treats any later reply as fatal', async () => {
+    vi.useFakeTimers();
+    expect(CREDENTIAL_PROXY_LIMITS.credentialTimeoutMs).toBe(120_000);
+    const requests: ProtocolEnvelope[] = [];
+    const client = new HostRequestClient({
+      router: new SidecarRouter(),
+      write: (request) => requests.push(request),
+    });
+
+    // A reply just inside the guard still settles the request normally.
+    const slow = client.get('keychain-slow-provider');
+    await vi.advanceTimersByTimeAsync(119_999);
+    expect(client.pendingCredentialCount).toBe(1);
+    expect(client.consume({
+      version: 1,
+      kind: 'host-response',
+      id: 'keychain-slow-reply',
+      correlationId: requests[0]!.id,
+      sequence: 1,
+      payload: { found: false },
+    })).toBe(true);
+    await expect(slow).resolves.toBeUndefined();
+
+    // At the guard the request expires, and a well-formed reply after it is
+    // replayed authority: it cuts off every lane of the generation.
+    const expired = client.get('keychain-expired-provider').catch((error: unknown) => error);
+    const listed = client.list().catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(119_999);
+    expect(client.pendingCredentialCount).toBe(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await expired).toMatchObject({ code: 'credential-request-timeout' });
+    expect(await listed).toMatchObject({ code: 'credential-request-timeout' });
+    const concurrent = client.get('keychain-concurrent-provider').catch((error: unknown) => error);
+    expect(() => client.consume({
+      version: 1,
+      kind: 'host-response',
+      id: 'keychain-late-reply',
+      correlationId: requests[1]!.id,
+      sequence: 2,
+      payload: { found: false },
+    })).toThrow('Credential response rejected');
+    expect(await concurrent).toMatchObject({ code: 'credential-host-disconnected' });
+    expect(client.credentialGeneration.signal.aborted).toBe(true);
+    expect(client.pendingCount).toBe(0);
+  });
+
   it('times out, aborts and disconnects credential.set without replaying mutations', async () => {
     vi.useFakeTimers();
     const credential = apiCredential().credential;

@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { ProtocolDecoder, encodeEnvelope } from '../src/codec';
 import { PROTOCOL_LIMITS } from '../src/index';
 import type { ProtocolEnvelope } from '../src/types';
+import { jsonDepth } from '../src/validate';
 
 const fixtureRoot = resolve(import.meta.dirname, '../fixtures');
 
@@ -135,6 +136,65 @@ describe('private protocol codec', () => {
       eventType: 'future.deep-event',
       nested,
     })))).toThrow('JSON depth limit exceeded');
+  });
+
+  it('measures very wide and very deep values without exhausting the stack', () => {
+    const wide = Array.from({ length: 200_000 }, () => 0);
+    expect(jsonDepth({ wide })).toBe(2);
+    expect(jsonDepth([])).toBe(0);
+    expect(jsonDepth({ a: { b: {} } })).toBe(2);
+    let deep: unknown = 0;
+    for (let level = 0; level < 100_000; level += 1) deep = [deep];
+    expect(jsonDepth(deep)).toBe(PROTOCOL_LIMITS.maxDepth + 1);
+    expect(jsonDepth(deep, 40)).toBe(41);
+    expect(() => new ProtocolDecoder().decode(line(eventEnvelope('wide-event', {
+      eventType: 'future.wide-event',
+      wide,
+    })))).not.toThrow(RangeError);
+  });
+
+  it('allows the private host lanes exactly two more levels than ordinary envelopes', () => {
+    const nestedAt = (depth: number): Record<string, unknown> => {
+      let value: Record<string, unknown> = {};
+      for (let level = 0; level < depth; level += 1) value = { child: value };
+      return value;
+    };
+    // payload.<field> sits at envelope depth 2, so field depth d gives d + 2.
+    const privateLimit = PROTOCOL_LIMITS.maxDepth + 2;
+    const hostRequest = (id: string, depth: number) => line({
+      version: 1, kind: 'host-request', id, sequence: 1,
+      payload: { method: 'credential.set', providerId: 'fixture', credential: nestedAt(depth - 2) },
+    });
+    const hostResponse = (id: string, depth: number) => line({
+      version: 1, kind: 'host-response', id, correlationId: 'request-1', sequence: 1,
+      payload: { found: true, credential: nestedAt(depth - 2) },
+    });
+    const event = (id: string, depth: number) => line(eventEnvelope(id, {
+      eventType: 'future.deep-event', nested: nestedAt(depth - 2),
+    }));
+
+    expect(() => new ProtocolDecoder().decode(hostRequest('host-request-max', privateLimit))).not.toThrow();
+    expect(() => new ProtocolDecoder().decode(hostResponse('host-response-max', privateLimit))).not.toThrow();
+    expect(() => new ProtocolDecoder().decode(hostRequest('host-request-over', privateLimit + 1)))
+      .toThrow('JSON depth limit exceeded');
+    expect(() => new ProtocolDecoder().decode(hostResponse('host-response-over', privateLimit + 1)))
+      .toThrow('JSON depth limit exceeded');
+    expect(() => new ProtocolDecoder().decode(event('event-max', PROTOCOL_LIMITS.maxDepth))).not.toThrow();
+    expect(() => new ProtocolDecoder().decode(event('event-over', PROTOCOL_LIMITS.maxDepth + 1)))
+      .toThrow('JSON depth limit exceeded');
+  });
+
+  it('preserves the authoritative failed stream terminal as a known event', () => {
+    const failed: ProtocolEnvelope = {
+      version: 1, kind: 'event', id: 'stream-failed', correlationId: 'turn-1', sequence: 4,
+      payload: { eventType: 'stream.failed', terminal: 'failed', code: 'provider-turn-failed' },
+    };
+    const decoded = new ProtocolDecoder().decode(encodeEnvelope(failed));
+    expect(decoded).toEqual(failed);
+    expect(decoded.payload.eventType).toBe('stream.failed');
+    expect(() => new ProtocolDecoder().decode(line({
+      ...failed, id: 'stream-failed-secret', payload: { ...failed.payload, apiKey: 'canary' },
+    }))).toThrow('Secret-shaped diagnostic field rejected');
   });
 
   it('bounds pending IDs and reclaims acknowledged IDs', () => {
