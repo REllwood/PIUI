@@ -44,7 +44,7 @@ import {
   type FileIdentity,
   type ObservedIdentity,
 } from './session-watch.js';
-import { TypedSettingsAdapter, type SettingScope } from './settings.js';
+import { TypedSettingsAdapter, isThinkingLevel, type SettingScope } from './settings.js';
 import { ResourceRegistry } from './resources.js';
 import { TextDeltaCoalescer } from './text-coalescer.js';
 import { TurnRegistry } from './turns.js';
@@ -1149,10 +1149,10 @@ async function applySetting(
       return;
     }
     case 'reasoning.level':
-      if (!['off', 'minimal', 'low', 'medium', 'high', 'xhigh'].includes(String(value))) {
-        throw new Error('setting-value-invalid');
-      }
-      session.setThinkingLevel(value as 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh');
+      if (!isThinkingLevel(value)) throw new Error('setting-value-invalid');
+      // Pi clamps the level to what the current model supports; the saved
+      // choice stays as chosen and is clamped again after any model change.
+      session.setThinkingLevel(value);
       return;
     case 'tools.active': {
       if (

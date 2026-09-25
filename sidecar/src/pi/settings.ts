@@ -2,6 +2,26 @@ import { constants } from 'node:fs';
 import { lstat, mkdir, open, readFile, rename } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import type { PublicAgentSession } from './public-sdk.js';
+
+export type ThinkingLevel = PublicAgentSession['thinkingLevel'];
+
+// Every level Pi 0.82 accepts. Keyed by Pi's own type so a level added to or
+// removed from Pi fails the build here. Pi, not PIUI, clamps a chosen level to
+// what the session's current model supports.
+const THINKING_LEVELS: Readonly<Record<ThinkingLevel, true>> = Object.freeze({
+  off: true,
+  minimal: true,
+  low: true,
+  medium: true,
+  high: true,
+  xhigh: true,
+  max: true,
+});
+
+export function isThinkingLevel(value: unknown): value is ThinkingLevel {
+  return typeof value === 'string' && Object.hasOwn(THINKING_LEVELS, value);
+}
 
 export type SettingScope = 'global' | 'project';
 export type SettingRecord = Readonly<{
@@ -247,8 +267,7 @@ function assertSettingValue(key: string, value: unknown): void {
         throw new Error('setting-value-invalid');
       return;
     case 'reasoning.level':
-      if (!['off', 'minimal', 'low', 'medium', 'high', 'xhigh'].includes(String(value)))
-        throw new Error('setting-value-invalid');
+      if (!isThinkingLevel(value)) throw new Error('setting-value-invalid');
       return;
     case 'tools.active':
       if (

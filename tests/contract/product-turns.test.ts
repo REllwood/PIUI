@@ -33,6 +33,7 @@ import { ProductRuntime } from '../../sidecar/src/pi/product-router.js';
 
 const PROVIDER = 'piui-e2e-provider';
 const MODEL = 'piui-e2e-model';
+const THINKING_MODEL = 'piui-e2e-thinking-model';
 const workspaceId = `workspace-${'e'.repeat(32)}`;
 
 type Deferred = { promise: Promise<void>; resolve(): void };
@@ -185,6 +186,14 @@ function fauxProduct() {
         contextWindow: 200_000,
         maxTokens: 4_096,
       },
+      {
+        id: THINKING_MODEL,
+        name: 'PIUI end-to-end reasoning model',
+        reasoning: true,
+        input: ['text'],
+        contextWindow: 200_000,
+        maxTokens: 4_096,
+      },
     ],
     tokenSize: { min: 3, max: 3 },
   });
@@ -211,6 +220,7 @@ async function createSession(
   product: ProductRuntime,
   workspacePath: string,
   agentDir: string,
+  modelId = MODEL,
 ): Promise<Session> {
   const created = (await product.handle(
     productRequest({
@@ -222,7 +232,7 @@ async function createSession(
       agentDir,
       title: 'End to end',
       providerId: PROVIDER,
-      modelId: MODEL,
+      modelId,
     }),
   )) as { session: Session };
   return created.session;
@@ -566,6 +576,49 @@ describe('product runtime end to end with real Pi turns', () => {
     await expect(setEnabled(false)).resolves.toMatchObject({ resource: { enabled: false } });
     await turn('after disabling');
     expect(await markerTurns()).toBe(1);
+  });
+
+  it('saves the max thinking level and lets Pi clamp it to what the model supports', async () => {
+    const { workspacePath, agentDir } = await workspace(root);
+    const { faux, product } = fauxProduct();
+    runtime = product;
+    const session = await createSession(product, workspacePath, agentDir, THINKING_MODEL);
+    const settings = (await product.handle(
+      productRequest({
+        method: 'product.settings.list',
+        schemaVersion: 1,
+        sessionId: session.id,
+        expectedGeneration: 1,
+      }),
+    )) as { settings: readonly { key: string; revision: number }[] };
+    const current = settings.settings.find((setting) => setting.key === 'reasoning.level');
+    const saved = (await product.handle(
+      productRequest({
+        method: 'product.setting.save',
+        schemaVersion: 1,
+        sessionId: session.id,
+        expectedGeneration: 1,
+        key: 'reasoning.level',
+        value: 'max',
+        scope: 'global',
+        expectedRevision: current?.revision ?? 0,
+      }),
+    )) as { setting: { value: unknown } };
+    expect(saved.setting.value).toBe('max');
+
+    const requested: unknown[] = [];
+    faux.setResponses([
+      (_context, options) => {
+        requested.push((options as { reasoning?: unknown } | undefined)?.reasoning);
+        return publicFauxAssistantMessage('Thought about it.');
+      },
+    ]);
+    const events = await collect(
+      product.stream(turnRequest(session.id, 1, 'Think hard'), new AbortController().signal),
+    );
+    expect(events.at(-1)?.type).toBe('complete');
+    // This model has no mapping for xhigh or max, so Pi runs it at high.
+    expect(requested).toEqual(['high']);
   });
 
   it("still reports an external writer that appends during PIUI's own turn", async () => {
