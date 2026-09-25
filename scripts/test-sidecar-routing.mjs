@@ -13,6 +13,7 @@ const runtime = spawn(
       NODE_ENV: 'production',
       PIUI_DESKTOP_VERSION: '0.1.0',
       PIUI_HANDSHAKE_NONCE: 'routing-test-00000001',
+      PIUI_ENABLE_TEST_METHODS: '1',
     },
     stdio: ['pipe', 'pipe', 'pipe'],
   },

@@ -24,6 +24,9 @@ export type SidecarPrivateFixture = Readonly<{
 }>;
 
 export function runSidecar(privateFixture?: SidecarPrivateFixture): void {
+  // The crash and stream fixtures exist only for harnesses. Without this
+  // explicit opt-in they are rejected like any other unknown method.
+  const testMethodsEnabled = process.env.PIUI_ENABLE_TEST_METHODS === '1';
   const decoder = new ProtocolDecoder();
   const router = new SidecarRouter();
   const streams = new Map<string, AbortController>();
@@ -367,9 +370,9 @@ export function runSidecar(privateFixture?: SidecarPrivateFixture): void {
       } else if (!outputFailed) {
         rememberTerminal(incoming.id, 'failed');
       }
-    } else if (incoming.kind === 'request' && method === 'spike.crash') {
+    } else if (testMethodsEnabled && incoming.kind === 'request' && method === 'spike.crash') {
       crashFixture();
-    } else if (incoming.kind === 'request' && method === 'stream.fixture') {
+    } else if (testMethodsEnabled && incoming.kind === 'request' && method === 'stream.fixture') {
       const completed = completedStreams.get(incoming.id);
       if (completed) {
         write(
