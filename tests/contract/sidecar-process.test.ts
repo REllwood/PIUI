@@ -16,7 +16,10 @@ type Harness = {
   frames: ProtocolEnvelope[];
   rawStdout: string[];
   send(envelope: ProtocolEnvelope): void;
-  waitFor(predicate: (frame: ProtocolEnvelope) => boolean, label: string): Promise<ProtocolEnvelope>;
+  waitFor(
+    predicate: (frame: ProtocolEnvelope) => boolean,
+    label: string,
+  ): Promise<ProtocolEnvelope>;
 };
 
 const running: Harness[] = [];
@@ -47,7 +50,10 @@ async function startSidecar(extraEnv: Record<string, string> = {}): Promise<Harn
   });
   const frames: ProtocolEnvelope[] = [];
   const rawStdout: string[] = [];
-  const waiters: Array<{ predicate: (frame: ProtocolEnvelope) => boolean; settle(frame: ProtocolEnvelope): void }> = [];
+  const waiters: Array<{
+    predicate: (frame: ProtocolEnvelope) => boolean;
+    settle(frame: ProtocolEnvelope): void;
+  }> = [];
   createInterface({ input: child.stdout }).on('line', (line) => {
     rawStdout.push(line);
     const frame = JSON.parse(line) as ProtocolEnvelope;
@@ -112,7 +118,8 @@ describe('sidecar process protocol', () => {
     const harness = await startSidecar({ PIUI_ENABLE_TEST_METHODS: '1' });
     harness.send(request('fixture-stream-2', 1, { method: 'stream.fixture' }));
     const terminal = await harness.waitFor(
-      (frame) => frame.correlationId === 'fixture-stream-2' && frame.payload.terminal === 'complete',
+      (frame) =>
+        frame.correlationId === 'fixture-stream-2' && frame.payload.terminal === 'complete',
       'stream terminal',
     );
     expect(terminal.kind).toBe('event');
@@ -151,7 +158,13 @@ describe('sidecar process protocol', () => {
     expect(stdout).toBe(
       `${JSON.stringify({ version: 1, kind: 'event', id: 'sidecar-1', sequence: 1, payload: { eventType: 'probe' } })}\n`,
     );
-    for (const text of ['extension log', 'library info', 'library debug', 'raw stdout chunk', 'raw stdout buffer']) {
+    for (const text of [
+      'extension log',
+      'library info',
+      'library debug',
+      'raw stdout chunk',
+      'raw stdout buffer',
+    ]) {
       expect(stderr).toContain(text);
     }
     expect(stderr).not.toContain('abc123');

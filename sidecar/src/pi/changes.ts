@@ -115,9 +115,7 @@ export class ChangeRetention {
   readonly #entries = new Set<ChangeRetentionEntry>();
   #bytes = 0;
 
-  constructor(
-    limits: Readonly<{ maxRetainedBytes?: number; maxChangesPerSession?: number }> = {},
-  ) {
+  constructor(limits: Readonly<{ maxRetainedBytes?: number; maxChangesPerSession?: number }> = {}) {
     const maxRetainedBytes = limits.maxRetainedBytes ?? CHANGE_RETENTION_LIMITS.maxRetainedBytes;
     const maxChangesPerSession =
       limits.maxChangesPerSession ?? CHANGE_RETENTION_LIMITS.maxChangesPerSession;

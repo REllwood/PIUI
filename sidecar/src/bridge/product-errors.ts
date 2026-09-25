@@ -15,7 +15,9 @@ export function productOperationError(error: unknown): ProtocolError {
     return { category: error.category, message: error.code, retryable: error.retryable };
   }
   const code =
-    error instanceof Error && PRODUCT_ERROR_CODE.test(error.message) ? error.message : FALLBACK_CODE;
+    error instanceof Error && PRODUCT_ERROR_CODE.test(error.message)
+      ? error.message
+      : FALLBACK_CODE;
   if (code === 'product-request-rejected') {
     return { category: 'invalid-request', message: code, retryable: false };
   }

@@ -488,7 +488,10 @@ describe('product runtime end to end with real Pi turns', () => {
       },
     ]);
     const events = await collect(
-      product.stream(turnRequest(session.id, 1, 'Show the environment'), new AbortController().signal),
+      product.stream(
+        turnRequest(session.id, 1, 'Show the environment'),
+        new AbortController().signal,
+      ),
     );
     expect(events.at(-1)?.type).toBe('complete');
     expect(host.approvals.map((approval) => approval.toolName)).toEqual(['bash']);
@@ -503,7 +506,9 @@ describe('product runtime end to end with real Pi turns', () => {
     runtime = product;
     const session = await createSession(product, workspacePath, agentDir);
     faux.setResponses([publicFauxAssistantMessage('First reply.')]);
-    await collect(product.stream(turnRequest(session.id, 1, 'Hello'), new AbortController().signal));
+    await collect(
+      product.stream(turnRequest(session.id, 1, 'Hello'), new AbortController().signal),
+    );
     const sessionFiles = (await readdir(join(agentDir, 'sessions'), { recursive: true })).filter(
       (name) => name.endsWith('.jsonl'),
     );

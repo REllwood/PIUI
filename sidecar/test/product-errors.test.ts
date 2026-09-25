@@ -31,9 +31,11 @@ describe('product operation errors', () => {
   });
 
   it('uses the host request code rather than its display text', () => {
-    expect(productOperationError(new HostRequestError('credential-request-timeout'))).toMatchObject({
-      message: 'credential-request-timeout',
-    });
+    expect(productOperationError(new HostRequestError('credential-request-timeout'))).toMatchObject(
+      {
+        message: 'credential-request-timeout',
+      },
+    );
   });
 
   it('never forwards free text, paths or unbounded values', () => {

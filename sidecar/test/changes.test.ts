@@ -110,9 +110,7 @@ describe('ChangeRegistry retention', () => {
     expect(retention.retainedBytes).toBe(9_000);
     const [released] = await older.registry.list();
     expect(released?.undo).toBe('revoked');
-    await expect(older.registry.undo(released?.id ?? '', 1)).rejects.toThrow(
-      'change-undo-revoked',
-    );
+    await expect(older.registry.undo(released?.id ?? '', 1)).rejects.toThrow('change-undo-revoked');
     const [kept] = await newer.registry.list();
     expect(kept?.undo).toBe('safe');
     await newer.registry.undo(kept?.id ?? '', 1);
