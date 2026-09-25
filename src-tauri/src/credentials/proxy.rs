@@ -104,28 +104,58 @@ impl CredentialProxy {
         .map_err(operation_error_code)
     }
 
-    pub(crate) fn import_credential(
+    /// Imports a selection as one unit: every credential is validated before
+    /// the first Keychain write, and the writes run under a single repository
+    /// lock so no other credential operation interleaves with them.
+    pub(crate) fn import_credentials(
         &self,
-        provider_id: &str,
-        credential: Value,
-    ) -> Result<String, &'static str> {
-        validate_provider_id(provider_id).map_err(|_| "credential-import-invalid")?;
-        let credential = PrivateValue::new(credential);
-        let (credential_type, material) = validate_and_serialise_credential(credential.value())
-            .map_err(|_| "credential-import-invalid")?;
+        credentials: Vec<(String, Value)>,
+    ) -> Result<Vec<String>, &'static str> {
+        // Wrap everything first so an early rejection still erases every
+        // credential that was never reached.
+        let credentials = credentials
+            .into_iter()
+            .map(|(provider_id, credential)| (provider_id, PrivateValue::new(credential)))
+            .collect::<Vec<_>>();
+        let mut prepared = Vec::with_capacity(credentials.len());
+        for (provider_id, credential) in credentials {
+            validate_provider_id(&provider_id).map_err(|_| "credential-import-invalid")?;
+            let (credential_type, material) = validate_and_serialise_credential(credential.value())
+                .map_err(|_| "credential-import-invalid")?;
+            prepared.push((provider_id, credential_type, material));
+        }
         let mut repository = self
             .inner
             .lock()
             .map_err(|_| "credential-store-unavailable")?;
-        set_credential(
-            repository.as_mut(),
-            provider_id.to_owned(),
-            credential_type,
-            material,
-            ACCOUNT_LABEL,
-            None,
-        )
-        .map_err(operation_error_code)
+        let mut imported = Vec::with_capacity(prepared.len());
+        for (provider_id, credential_type, material) in prepared {
+            set_credential(
+                repository.as_mut(),
+                provider_id.clone(),
+                credential_type,
+                material,
+                ACCOUNT_LABEL,
+                None,
+            )
+            .map_err(operation_error_code)?;
+            imported.push(provider_id);
+        }
+        Ok(imported)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn provider_ids_for_test(&self) -> Vec<String> {
+        let mut repository = self.inner.lock().unwrap();
+        load_index(repository.as_mut())
+            .map(|index| {
+                index
+                    .entries
+                    .iter()
+                    .map(|entry| entry.provider_id.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Executes a decoded private request without reserving wire coordinates.
