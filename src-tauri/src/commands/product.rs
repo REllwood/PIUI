@@ -950,28 +950,43 @@ pub async fn product_turn_start(
         ]),
         error: None,
     };
-    let readiness = transport.clone();
-    tauri::async_runtime::spawn_blocking(move || bridge_start_transport(&readiness))
-        .await
-        .map_err(|_| "turn readiness worker failed".to_string())??;
-    let _worker = tauri::async_runtime::spawn_blocking(move || {
-        super::stream::run_stream_transport_receipted(&transport, envelope, |generation, event| {
-            if event.kind == ProtocolKind::Ack {
-                transport
-                    .enqueue_ack_event(generation, event)
-                    .map(DeliveryAcceptance::Receipt)
-            } else {
-                transport
-                    .enqueue_event(generation, event)
-                    .map(|()| DeliveryAcceptance::Immediate)
-            }
-        })
+    // Everything up to and including writing the request is awaited, so a
+    // turn that cannot start rejects this command. The turn itself runs on
+    // after the command returns; if it fails later the interface receives a
+    // `stream.failed` terminal instead of waiting for one that never comes.
+    let starting = transport.clone();
+    let opened = tauri::async_runtime::spawn_blocking(move || {
+        bridge_start_transport(&starting)?;
+        super::stream::open_stream(&starting, envelope)
+    })
+    .await
+    .map_err(|_| "turn start worker failed".to_string())??;
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = super::stream::drive_stream_transport_receipted(
+            opened,
+            super::stream::FailureNotice::Project,
+            |generation, event| {
+                if event.kind == ProtocolKind::Ack {
+                    transport
+                        .enqueue_ack_event(generation, event)
+                        .map(DeliveryAcceptance::Receipt)
+                } else {
+                    transport
+                        .enqueue_event(generation, event)
+                        .map(|()| DeliveryAcceptance::Immediate)
+                }
+            },
+        );
+        if let Err(reason) = result {
+            // Fixed host strings only; no payload or path reaches the log.
+            eprintln!("PIUI product turn ended early reason={reason}");
+        }
     });
     Ok(())
 }
 
 #[tauri::command]
-pub fn product_turn_stop(
+pub async fn product_turn_stop(
     state: State<'_, BridgeState>,
     request_data: ProductTurnStopRequest,
 ) -> Result<(), String> {
@@ -985,7 +1000,12 @@ pub fn product_turn_stop(
         payload: Map::new(),
         error: None,
     };
-    super::stream::cancel_stream_transport(state.inner(), cancellation)
+    let transport = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        super::stream::cancel_stream_transport(&transport, cancellation)
+    })
+    .await
+    .map_err(|_| "turn stop worker failed".to_string())?
 }
 
 #[tauri::command]
