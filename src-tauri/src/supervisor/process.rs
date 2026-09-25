@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{
     Arc, Mutex,
-    mpsc::{self, Receiver, SyncSender, sync_channel},
+    mpsc::{self, Receiver, SyncSender, TrySendError, sync_channel},
 };
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -32,6 +32,7 @@ use zeroize::Zeroizing;
 const MAX_JS_SAFE_SEQUENCE: u64 = 9_007_199_254_740_991;
 const MAX_WORKSPACE_WAITERS: usize = 32;
 const MAX_PRODUCT_WAITERS: usize = 32;
+const MAX_RETIRED_PRODUCT_IDS: usize = 256;
 
 #[cfg(feature = "a23-credential-test")]
 const A23_RAW_CAPTURE_MAX_BYTES: usize = 262_144;
@@ -936,12 +937,24 @@ pub(super) struct WorkspaceWaiters {
 
 pub(super) struct ProductWaiters {
     pending: PendingEnvelopeWaiters,
+    // Requests whose waiter gave up before the sidecar answered. Their one
+    // late response is expected and harmless; any other unknown correlation
+    // is still a protocol violation.
+    retired: Mutex<VecDeque<String>>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum ProductDelivery {
+    NotProduct,
+    Delivered,
+    LateDiscarded,
 }
 
 impl ProductWaiters {
     pub(super) fn new() -> Self {
         Self {
             pending: Mutex::new(HashMap::with_capacity(MAX_PRODUCT_WAITERS)),
+            retired: Mutex::new(VecDeque::with_capacity(MAX_RETIRED_PRODUCT_IDS)),
         }
     }
 
@@ -962,12 +975,16 @@ impl ProductWaiters {
         Ok(())
     }
 
-    pub(super) fn deliver(&self, generation: u64, envelope: Envelope) -> Result<bool, String> {
+    pub(super) fn deliver(
+        &self,
+        generation: u64,
+        envelope: Envelope,
+    ) -> Result<ProductDelivery, String> {
         let Some(correlation) = envelope.correlation_id.as_deref() else {
-            return Ok(false);
+            return Ok(ProductDelivery::NotProduct);
         };
         if !correlation.starts_with("rust-product-") {
-            return Ok(false);
+            return Ok(ProductDelivery::NotProduct);
         }
         let waiter = self
             .pending
@@ -975,21 +992,55 @@ impl ProductWaiters {
             .map_err(|_| "product waiter unavailable".to_string())?
             .remove(correlation);
         let Some((expected_generation, sender)) = waiter else {
-            return Err("product response correlation unavailable".into());
+            let mut retired = self
+                .retired
+                .lock()
+                .map_err(|_| "product waiter unavailable".to_string())?;
+            return match retired.iter().position(|id| id == correlation) {
+                Some(position) => {
+                    retired.remove(position);
+                    Ok(ProductDelivery::LateDiscarded)
+                }
+                None => Err("product response correlation unavailable".into()),
+            };
         };
         if expected_generation != generation {
             return Err("stale product response".into());
         }
-        sender
-            .try_send(Ok(envelope))
-            .map_err(|_| "product waiter unavailable".to_string())?;
-        Ok(true)
+        match sender.try_send(Ok(envelope)) {
+            Ok(()) => Ok(ProductDelivery::Delivered),
+            // The waiter timed out between our claim and its own retirement.
+            Err(TrySendError::Disconnected(_)) => Ok(ProductDelivery::LateDiscarded),
+            Err(TrySendError::Full(_)) => Err("product waiter unavailable".into()),
+        }
     }
 
     fn cancel(&self, id: &str) {
         if let Ok(mut pending) = self.pending.lock() {
             pending.remove(id);
         }
+    }
+
+    /// A waiter abandoned without a response: stop routing to it, but
+    /// remember the correlation so the sidecar's eventual answer is dropped
+    /// rather than treated as a protocol violation.
+    pub(super) fn retire(&self, id: &str) {
+        let was_pending = self
+            .pending
+            .lock()
+            .map(|mut pending| pending.remove(id).is_some())
+            .unwrap_or(false);
+        if !was_pending {
+            return;
+        }
+        let mut retired = self
+            .retired
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if retired.len() == MAX_RETIRED_PRODUCT_IDS {
+            retired.pop_front();
+        }
+        retired.push_back(id.to_owned());
     }
 }
 
@@ -1155,7 +1206,7 @@ impl ProductWaiter {
 impl Drop for ProductWaiter {
     fn drop(&mut self) {
         if !self.id.is_empty() {
-            self.waiters.cancel(&self.id);
+            self.waiters.retire(&self.id);
         }
     }
 }
@@ -2612,6 +2663,98 @@ process.stdin.resume();
             Err("sidecar write timed out".into())
         );
         assert!(!small_control.is_active());
+    }
+
+    fn product_response(id: &str) -> Envelope {
+        serde_json::from_value(serde_json::json!({
+            "version":1,"kind":"response","id":format!("sidecar-{id}"),
+            "correlationId":id,"sequence":1,"payload":{"schemaVersion":1}
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_timed_out_product_waiter_retires_its_correlation_for_one_late_answer() {
+        let control = Arc::new(GenerationControl::new(i32::MAX, Arc::new(Mutex::new(None))));
+        let waiters = Arc::new(ProductWaiters::new());
+        let (sender, receiver) = sync_channel(1);
+        waiters.register("rust-product-1-1", 1, sender).unwrap();
+        let waiter = ProductWaiter {
+            id: "rust-product-1-1".into(),
+            generation: 1,
+            receiver,
+            waiters: Arc::clone(&waiters),
+            control: Arc::clone(&control),
+        };
+        assert_eq!(
+            waiter.wait(Duration::from_millis(20)).unwrap_err(),
+            "product response timed out"
+        );
+        assert!(control.is_active(), "a timeout leaves the sidecar running");
+        assert_eq!(
+            waiters.deliver(1, product_response("rust-product-1-1")),
+            Ok(ProductDelivery::LateDiscarded)
+        );
+        assert!(
+            waiters
+                .deliver(1, product_response("rust-product-1-1"))
+                .is_err()
+        );
+        assert!(
+            waiters
+                .deliver(1, product_response("rust-product-1-2"))
+                .is_err()
+        );
+
+        // An answered waiter leaves nothing behind to be excused later.
+        let (sender, receiver) = sync_channel(1);
+        waiters.register("rust-product-1-3", 1, sender).unwrap();
+        let waiter = ProductWaiter {
+            id: "rust-product-1-3".into(),
+            generation: 1,
+            receiver,
+            waiters: Arc::clone(&waiters),
+            control,
+        };
+        assert_eq!(
+            waiters.deliver(1, product_response("rust-product-1-3")),
+            Ok(ProductDelivery::Delivered)
+        );
+        waiter.wait(Duration::from_secs(1)).unwrap();
+        assert!(
+            waiters
+                .deliver(1, product_response("rust-product-1-3"))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn retired_product_correlations_are_bounded() {
+        let waiters = ProductWaiters::new();
+        let mut receivers = Vec::new();
+        for index in 0..(MAX_RETIRED_PRODUCT_IDS + 1) {
+            let id = format!("rust-product-1-{index}");
+            let (sender, receiver) = sync_channel(1);
+            receivers.push(receiver);
+            waiters.register(&id, 1, sender).unwrap();
+            waiters.retire(&id);
+        }
+        assert_eq!(
+            waiters.retired.lock().unwrap().len(),
+            MAX_RETIRED_PRODUCT_IDS
+        );
+        assert!(
+            waiters
+                .deliver(1, product_response("rust-product-1-0"))
+                .is_err()
+        );
+        assert_eq!(
+            waiters.deliver(
+                1,
+                product_response(&format!("rust-product-1-{MAX_RETIRED_PRODUCT_IDS}"))
+            ),
+            Ok(ProductDelivery::LateDiscarded)
+        );
     }
 
     #[test]

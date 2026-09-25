@@ -1,5 +1,6 @@
 use super::process::{
-    APPROVAL_WRITE_MAX_DURATION, GenerationWriter, ProductWaiters, WorkspaceWaiters,
+    APPROVAL_WRITE_MAX_DURATION, GenerationWriter, ProductDelivery, ProductWaiters,
+    WorkspaceWaiters,
 };
 use super::router::{SequenceOutcome, SequenceRouter};
 use super::stdio::{GenerationControl, RawFrame, fail_generation};
@@ -340,13 +341,20 @@ fn dispatch_loop(
                 fatal("sidecar product response invalid", &control, &public_sender);
                 return;
             }
-            if product_waiters.deliver(generation, envelope).is_err() {
-                fatal(
-                    "sidecar product response unavailable",
-                    &control,
-                    &public_sender,
-                );
-                return;
+            match product_waiters.deliver(generation, envelope) {
+                Ok(ProductDelivery::Delivered) => {}
+                Ok(ProductDelivery::LateDiscarded) => record_diagnostic(
+                    &diagnostics,
+                    "A product response arrived after its request timed out and was discarded.",
+                ),
+                Ok(ProductDelivery::NotProduct) | Err(_) => {
+                    fatal(
+                        "sidecar product response unavailable",
+                        &control,
+                        &public_sender,
+                    );
+                    return;
+                }
             }
             continue;
         }
@@ -445,14 +453,10 @@ fn dispatch_loop(
         if envelope.kind == ProtocolKind::Event
             && envelope.payload.get("eventType") == Some(&Value::String("unknown-event".into()))
         {
-            if let Ok(mut diagnostics) = diagnostics.lock() {
-                if diagnostics.len() == 64 {
-                    diagnostics.pop_front();
-                }
-                diagnostics.push_back(
-                    "Unknown sidecar event was redacted and withheld from the interface.".into(),
-                );
-            }
+            record_diagnostic(
+                &diagnostics,
+                "Unknown sidecar event was redacted and withheld from the interface.",
+            );
             continue;
         }
 
@@ -465,6 +469,16 @@ fn dispatch_loop(
             return;
         }
     }
+}
+
+fn record_diagnostic(diagnostics: &Mutex<VecDeque<String>>, message: &str) {
+    let mut diagnostics = diagnostics
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if diagnostics.len() == 64 {
+        diagnostics.pop_front();
+    }
+    diagnostics.push_back(message.into());
 }
 
 fn reserve_private_work(outstanding: &Arc<AtomicUsize>) -> Option<WorkPermit> {
@@ -1039,6 +1053,8 @@ mod tests {
         writer: Arc<Mutex<GenerationWriter>>,
         approval_registry: Arc<ApprovalRegistry>,
         workspace_registry: Arc<WorkspaceRegistry>,
+        product_waiters: Arc<ProductWaiters>,
+        diagnostics: Arc<Mutex<VecDeque<String>>>,
         sink: SharedSink,
         handles: DispatcherHandles,
     }
@@ -1067,19 +1083,21 @@ mod tests {
             }))).unwrap();
             let approval_registry = Arc::new(ApprovalRegistry::default());
             let workspace_registry = Arc::new(WorkspaceRegistry::default());
+            let product_waiters = Arc::new(ProductWaiters::new());
+            let diagnostics = Arc::new(Mutex::new(VecDeque::new()));
             let handles = start_dispatcher(
                 1,
                 decoder,
                 raw_receiver,
                 public_sender,
                 workspace_waiters,
-                Arc::new(ProductWaiters::new()),
+                Arc::clone(&product_waiters),
                 proxy,
                 Arc::clone(&approval_registry),
                 Arc::clone(&workspace_registry),
                 Arc::clone(&writer),
                 Arc::clone(&control),
-                Arc::new(Mutex::new(VecDeque::new())),
+                Arc::clone(&diagnostics),
                 0,
             );
             Self {
@@ -1091,6 +1109,8 @@ mod tests {
                 writer,
                 approval_registry,
                 workspace_registry,
+                product_waiters,
+                diagnostics,
                 sink,
                 handles,
             }
@@ -1579,6 +1599,54 @@ mod tests {
             Some("rust-workspace-1-1")
         );
         assert!(matches!(rig.public.try_recv(), Err(TryRecvError::Empty)));
+        rig.shutdown();
+    }
+
+    #[test]
+    fn a_late_product_response_is_discarded_without_ending_the_generation() {
+        let rig = Rig::new(CredentialProxy::in_memory_for_dispatcher_test());
+        let (sender, receiver) = sync_channel(1);
+        rig.product_waiters
+            .register("rust-product-1-7", 1, sender)
+            .unwrap();
+        // The command gave up waiting, exactly as the waiter's Drop does.
+        drop(receiver);
+        rig.product_waiters.retire("rust-product-1-7");
+        rig.send(serde_json::json!({
+            "version":1,"kind":"response","id":"sidecar-late-product",
+            "correlationId":"rust-product-1-7","sequence":1,
+            "payload":{"schemaVersion":1,"compacted":true}
+        }))
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while rig.diagnostics.lock().unwrap().is_empty() {
+            assert!(Instant::now() < deadline, "late response not recorded");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(rig.control.is_active(), "a late answer must not be fatal");
+        assert!(rig.failure.lock().unwrap().is_none());
+        assert!(
+            rig.diagnostics.lock().unwrap()[0].contains("after its request timed out"),
+            "{:?}",
+            rig.diagnostics.lock().unwrap()
+        );
+
+        // A correlation that was never issued is still a protocol violation.
+        rig.send(serde_json::json!({
+            "version":1,"kind":"response","id":"sidecar-unknown-product",
+            "correlationId":"rust-product-1-8","sequence":2,
+            "payload":{"schemaVersion":1,"compacted":true}
+        }))
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while rig.control.is_active() {
+            assert!(Instant::now() < deadline, "unknown response was accepted");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(
+            rig.failure.lock().unwrap().as_deref(),
+            Some("sidecar product response unavailable")
+        );
         rig.shutdown();
     }
 
