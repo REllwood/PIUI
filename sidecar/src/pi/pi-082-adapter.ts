@@ -92,6 +92,7 @@ export class Pi082Adapter implements PiAdapter {
       allowModelNetwork: options.allowModelNetwork === true,
       modelsPath: hostModelsPath(),
     });
+    await options.prepareModelRuntime?.(runtime);
     return new Pi082Adapter(runtime, options);
   }
 
