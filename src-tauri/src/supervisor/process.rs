@@ -1648,7 +1648,7 @@ impl SidecarSupervisor {
                 running
                     .diagnostics
                     .lock()
-                    .expect("diagnostic ring poisoned")
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .iter()
                     .cloned()
                     .collect()
