@@ -59,9 +59,12 @@ const australianChecks = [
   [/\bauthorization\b/iu, 'authorisation'],
   [/\binitialization\b/iu, 'initialisation'],
 ];
+// Exact technical identifiers keep their official spelling.
+const technicalIdentifiers = /prefers-color-scheme/giu;
 for (const [file, text] of contents) {
+  const prose = text.replace(technicalIdentifiers, '');
   for (const [american, preferred] of australianChecks) {
-    if (american.test(text)) throw new Error(`${file}: use Australian English “${preferred}”`);
+    if (american.test(prose)) throw new Error(`${file}: use Australian English “${preferred}”`);
   }
 }
 

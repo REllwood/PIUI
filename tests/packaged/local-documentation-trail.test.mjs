@@ -4,6 +4,7 @@ import {
   copyFile,
   mkdir,
   mkdtemp,
+  readFile,
   realpath,
   rm,
   writeFile,
@@ -51,6 +52,18 @@ async function fixtureRoot(t) {
   for (const path of trackedFiles) {
     await mkdir(dirname(join(root, path)), { recursive: true });
     await copyFile(join(repositoryRoot, path), join(root, path));
+  }
+  // The documentation check follows local Markdown links, so the fixture carries
+  // whatever the tracked README and changelog link to.
+  for (const document of ['README.md', 'CHANGELOG.md']) {
+    const text = await readFile(join(repositoryRoot, document), 'utf8');
+    for (const match of text.matchAll(/\[[^\]]+\]\(([^)]+)\)/gu)) {
+      const target = match[1].split('#')[0];
+      if (!target || /^(?:https?:|mailto:)/u.test(target)) continue;
+      const path = join(dirname(document), decodeURI(target));
+      await mkdir(dirname(join(root, path)), { recursive: true });
+      await copyFile(join(repositoryRoot, path), join(root, path));
+    }
   }
   return root;
 }
