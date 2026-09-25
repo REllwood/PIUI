@@ -56,19 +56,6 @@
   align-items: center;
   margin-bottom: 28px;
 }
-.welcome-signature > span:first-child {
-  display: grid;
-  place-items: center;
-  width: 54px;
-  height: 54px;
-  border: 1px solid var(--divider);
-  border-radius: 16px;
-  color: var(--work);
-  background: var(--work-surface);
-  font:
-    500 40px/1 Georgia,
-    serif;
-}
 .welcome-signature i {
   width: 7px;
   height: 7px;

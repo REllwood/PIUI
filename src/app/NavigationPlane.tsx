@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { RouteId } from '../domain/types';
+import { BrandMark } from '../components/brand/BrandMark';
 import { Icon, type IconName } from '../components/icons/Icon';
 import { LoadingLabel } from '../components/primitives/LoadingLabel';
 import { StatusPill } from '../components/primitives/StatusPill';
@@ -98,9 +99,7 @@ export function NavigationPlane({
       inert={compact && !open}
     >
       <header className="navigation-plane__brand" data-tauri-drag-region>
-        <span className="brand-mark" aria-hidden="true">
-          π
-        </span>
+        <BrandMark />
         <span>
           <strong>PIUI</strong>
           <small>Your ideas, with Pi</small>

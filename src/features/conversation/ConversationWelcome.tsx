@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useProduct } from '../../app/ProductContext';
+import { BrandMark } from '../../components/brand/BrandMark';
 import { Icon, type IconName } from '../../components/icons/Icon';
 import { LoadingLabel } from '../../components/primitives/LoadingLabel';
 import { useComposerDraft } from '../composer/ComposerDrafts';
@@ -77,7 +78,7 @@ export function ConversationWelcome({ draftKey }: Readonly<{ draftKey: string }>
     <div className="conversation-welcome" tabIndex={0} aria-label="Get started with Pi">
       <div className="conversation-welcome__content">
         <div className="welcome-signature" aria-hidden="true">
-          <span>π</span>
+          <BrandMark size={54} />
           <i />
           <span className="welcome-signature__line" />
         </div>
