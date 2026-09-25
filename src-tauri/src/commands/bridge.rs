@@ -3,6 +3,7 @@ use super::event_output::{EventOutputQueue, EventReceipt};
 use super::projector::{PublicOperationClass, WebViewProjector};
 use crate::credentials::CredentialProxy;
 use crate::domain::approval::ApprovalRegistry;
+use crate::domain::product_sessions::ProductSessionRegistry;
 use crate::domain::workspace::WorkspaceRegistry;
 use crate::protocol::{Envelope, ProtocolKind, validate_envelope};
 use crate::supervisor::{
@@ -34,6 +35,7 @@ pub struct BridgeState {
     event_output: Arc<EventOutputQueue>,
     approval_registry: Arc<ApprovalRegistry>,
     workspace_registry: Arc<WorkspaceRegistry>,
+    product_sessions: Arc<ProductSessionRegistry>,
     #[cfg(feature = "a23-credential-test")]
     a23_evidence: Option<super::a23_native_evidence::A23NativeEvidenceState>,
 }
@@ -61,6 +63,7 @@ impl BridgeState {
             event_output: Arc::new(EventOutputQueue::default()),
             approval_registry,
             workspace_registry,
+            product_sessions: Arc::new(ProductSessionRegistry::default()),
             #[cfg(feature = "a23-credential-test")]
             a23_evidence: None,
         }
@@ -154,11 +157,16 @@ impl BridgeState {
         self.projector.deactivate_generation(generation)?;
         self.workspace_registry.invalidate_generation(generation);
         self.approval_registry.invalidate_generation(generation);
+        self.product_sessions.forget_generation(generation);
         Ok(())
     }
 
     pub(crate) fn approval_registry(&self) -> Arc<ApprovalRegistry> {
         Arc::clone(&self.approval_registry)
+    }
+
+    pub(crate) fn product_sessions(&self) -> Arc<ProductSessionRegistry> {
+        Arc::clone(&self.product_sessions)
     }
 
     pub(crate) fn workspace_registry(&self) -> Arc<WorkspaceRegistry> {

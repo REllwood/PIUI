@@ -367,6 +367,10 @@ pub(crate) struct OpenedStream {
 }
 
 impl OpenedStream {
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+
     fn complete(mut self) {
         self.completed = true;
     }
