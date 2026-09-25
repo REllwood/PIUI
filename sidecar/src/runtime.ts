@@ -2,6 +2,7 @@ import { ProtocolDecoder } from '@piui/protocol/codec';
 import type { ProtocolEnvelope } from '@piui/protocol';
 import { createHandshake, REQUIRED_CAPABILITIES } from './bridge/handshake.js';
 import { HostRequestClient, HostRequestError } from './bridge/host-requests.js';
+import { productOperationError } from './bridge/product-errors.js';
 import { createZeroingProtocolWriter } from './bridge/protocol-writer.js';
 import { SidecarRouter } from './bridge/router.js';
 import { assertPublicSdk, publicSdkMetadata } from './pi/public-sdk.js';
@@ -177,15 +178,11 @@ export function runSidecar(privateFixture?: SidecarPrivateFixture): void {
         const payload = await productRuntime.handle(incoming);
         if (outputFailed) return;
         write(router.next('response', `response-${incoming.id}`, payload, incoming.id));
-      } catch {
+      } catch (error) {
         if (outputFailed) return;
         write({
           ...router.next('response', `error-${incoming.id}`, {}, incoming.id),
-          error: {
-            category: 'unavailable',
-            message: 'Product operation failed',
-            retryable: true,
-          },
+          error: productOperationError(error),
         });
       }
     } else if (incoming.kind === 'request' && method === 'product.auth.start') {
