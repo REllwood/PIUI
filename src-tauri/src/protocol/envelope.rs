@@ -16,6 +16,17 @@ const PRIVATE_HOST_REQUEST_MAX_DEPTH: usize = MAX_DEPTH + 2;
 const MAX_RECENT_IDS: usize = 4_096;
 const MAX_SEQUENCE: u64 = 9_007_199_254_740_991;
 const MAX_PAYLOAD_PROPERTIES: usize = 128;
+/// Event types the host forwards; anything else is redacted to
+/// `unknown-event`. `packages/protocol/fixtures/known-events.json` is the
+/// shared contract with the TypeScript validator and is asserted in tests.
+const KNOWN_EVENT_TYPES: [&str; 6] = [
+    "sidecar.status",
+    "stream.delta",
+    "stream.complete",
+    "stream.cancelled",
+    "stream.failed",
+    "tool.activity",
+];
 
 #[cfg(test)]
 static PRIVATE_DECODE_ZEROISED_BYTES: AtomicUsize = AtomicUsize::new(0);
@@ -183,15 +194,8 @@ impl ProtocolDecoder {
             if contains_secret_key(&Value::Object(envelope.payload.clone())) {
                 return Err(ProtocolError("secret-shaped diagnostic field"));
             }
-            let known_event = matches!(
-                event_type,
-                "sidecar.status"
-                    | "stream.delta"
-                    | "stream.complete"
-                    | "stream.cancelled"
-                    | "tool.activity"
-            ) || cfg!(feature = "a25-approval-test")
-                && event_type == "approval-matrix.complete";
+            let known_event = KNOWN_EVENT_TYPES.contains(&event_type)
+                || cfg!(feature = "a25-approval-test") && event_type == "approval-matrix.complete";
             if !known_event {
                 let keys = envelope
                     .payload
@@ -794,6 +798,51 @@ mod tests {
             decoder.decode(recent).unwrap_err().to_string(),
             "duplicate envelope ID"
         );
+    }
+
+    #[test]
+    fn known_event_list_matches_the_shared_protocol_fixture() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../packages/protocol/fixtures/known-events.json"
+        ))
+        .unwrap();
+        let mut shared = fixture["knownEvents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        shared.sort();
+        let mut rust = super::KNOWN_EVENT_TYPES
+            .iter()
+            .map(|value| (*value).to_owned())
+            .collect::<Vec<_>>();
+        rust.sort();
+        assert_eq!(rust, shared, "Rust and shared known-event lists drifted");
+
+        let mut decoder = super::ProtocolDecoder::default();
+        for (index, event_type) in shared.iter().enumerate() {
+            let line = format!(
+                "{{\"version\":1,\"kind\":\"event\",\"id\":\"sidecar-known-{index}\",\"sequence\":{},\"correlationId\":\"web-stream-1\",\"payload\":{{\"eventType\":\"{event_type}\",\"terminal\":\"failed\",\"code\":\"provider-turn-failed\"}}}}\n",
+                index + 1
+            );
+            let decoded = decoder.decode(line.as_bytes()).unwrap();
+            assert_eq!(
+                decoded.payload.get("eventType"),
+                Some(&Value::String(event_type.clone())),
+                "{event_type} must reach the stream projector"
+            );
+            assert_eq!(decoded.payload.get("redacted"), None);
+        }
+    }
+
+    #[test]
+    fn stream_failed_terminal_is_not_redacted_to_an_unknown_event() {
+        let line = b"{\"version\":1,\"kind\":\"event\",\"id\":\"sidecar-failed-1\",\"sequence\":1,\"correlationId\":\"web-turn-1\",\"payload\":{\"eventType\":\"stream.failed\",\"terminal\":\"failed\",\"code\":\"provider-turn-failed\"}}\n";
+        let decoded = super::ProtocolDecoder::default().decode(line).unwrap();
+        assert_eq!(decoded.payload["eventType"], "stream.failed");
+        assert_eq!(decoded.payload["terminal"], "failed");
+        assert_eq!(decoded.payload["code"], "provider-turn-failed");
     }
 
     #[test]

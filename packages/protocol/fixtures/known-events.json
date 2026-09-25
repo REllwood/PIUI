@@ -1,0 +1,10 @@
+{
+  "knownEvents": [
+    "sidecar.status",
+    "stream.delta",
+    "stream.complete",
+    "stream.cancelled",
+    "stream.failed",
+    "tool.activity"
+  ]
+}
