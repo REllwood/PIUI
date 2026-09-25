@@ -254,7 +254,43 @@ describe('async and recovery component states', () => {
       '**not bold** <img src=x onerror=alert(1)> rm -rf ./build⟨U+202E⟩',
     );
     expect(command.querySelector('*')).toBeNull();
-    expect(screen.getByText(/Shortened: the full command is longer than shown here/)).toBeTruthy();
+    expect(
+      screen.getByText('Shortened. Deny if you need to see the full command first.'),
+    ).toBeTruthy();
+  });
+
+  it('keeps what would run beside the decision, ahead of the buttons', () => {
+    const approval = productFixture.approvals[0];
+    if (!approval) throw new Error('fixture approval missing');
+    const { rerender } = render(
+      <ApprovalSurface
+        request={approval}
+        offline={false}
+        busy={false}
+        onDecision={async () => undefined}
+      />,
+    );
+    const decision = screen.getByRole('group', { name: approval.action });
+    const order = Array.from(decision.querySelectorAll('[role="region"], button'), (element) =>
+      element.getAttribute('aria-labelledby') ? 'subject' : element.textContent,
+    );
+    expect(order).toEqual(['subject', 'Deny', 'Approve once']);
+    expect(decision.querySelector('pre')?.textContent).toBe(approval.subject?.text);
+
+    // Without a subject the bar names the action instead, once for assistive technology.
+    rerender(
+      <ApprovalSurface
+        request={{ ...approval, subject: null }}
+        offline={false}
+        busy={false}
+        onDecision={async () => undefined}
+      />,
+    );
+    const fallback = screen.getByRole('group', { name: approval.action });
+    expect(fallback.querySelector('[role="region"]')).toBeNull();
+    const title = fallback.querySelector('.approval-decision__title');
+    expect(title?.textContent).toBe(approval.action);
+    expect(title?.getAttribute('aria-hidden')).toBe('true');
   });
 
   it('shows unknown versions instead of remembered release numbers', () => {

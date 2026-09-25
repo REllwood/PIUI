@@ -154,29 +154,36 @@ for (const viewport of [
     if (!(await review.isVisible())) {
       await page.getByRole('button', { name: /Open 1 pending approval/ }).click();
     }
-    const approve = review.getByRole('button', { name: 'Approve once' });
-    const deny = review.getByRole('button', { name: 'Deny' });
-    // Both decisions are on screen and uncovered without scrolling the request details.
-    for (const action of [approve, deny]) {
-      await expect(action).toBeInViewport({ ratio: 1 });
+    const decision = review.getByRole('group', { name: 'Run the local verification suite' });
+    const command = decision.getByRole('region', { name: 'Command' });
+    const approve = decision.getByRole('button', { name: 'Approve once' });
+    const deny = decision.getByRole('button', { name: 'Deny' });
+    await expect(command).toHaveText('pnpm typecheck && pnpm test:unit && pnpm build');
+    // What would run and both decisions are on screen together and uncovered, without
+    // scrolling the request details, so nothing can be approved unseen.
+    for (const target of [command, deny, approve]) {
+      await expect(target).toBeInViewport({ ratio: 1 });
       expect(
-        await action.evaluate((button) => {
-          const box = button.getBoundingClientRect();
-          return button.contains(
+        await target.evaluate((element) => {
+          const box = element.getBoundingClientRect();
+          return element.contains(
             document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2),
           );
         }),
       ).toBe(true);
     }
-    // The details still scroll beneath the pinned actions, and the actions follow them in
-    // reading and tab order.
+    // The details still scroll beneath the pinned bar, which stays put.
     const reversible = review.getByText('Reversible', { exact: true });
     await reversible.scrollIntoViewIfNeeded();
     await expect(reversible).toBeInViewport();
+    await expect(command).toBeInViewport({ ratio: 1 });
     await expect(approve).toBeInViewport({ ratio: 1 });
-    await review.getByRole('region', { name: 'Command' }).focus();
+    // Reading and tab order: what runs, then Deny, then Approve once.
+    await command.focus();
     await page.keyboard.press('Tab');
     await expect(deny).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(approve).toBeFocused();
   });
 }
 
