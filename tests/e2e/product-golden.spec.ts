@@ -118,6 +118,28 @@ test('Markdown colours follow the app theme rather than the macOS appearance', a
   expect(await codeSurface()).toBe('rgb(9, 11, 9)');
 });
 
+test('replaying the product tour shows only the tour, in place', async ({ page }) => {
+  await openFixture(page);
+  const url = page.url();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const replay = page.getByRole('button', { name: 'Replay product tour' });
+  await replay.click();
+  const tour = page.getByRole('dialog', { name: 'Ask in plain language' });
+  await expect(tour).toBeVisible();
+  expect(page.url()).toBe(url);
+  await tour.getByRole('button', { name: 'Next' }).click();
+  await tour.getByRole('button', { name: 'Next' }).click();
+  await tour.getByRole('button', { name: 'Tour complete' }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible();
+  await expect(replay).toBeFocused();
+
+  await replay.click();
+  await expect(page.getByRole('dialog', { name: 'Ask in plain language' })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+});
+
 test('minimum window and 200 percent zoom reflow without page overflow', async ({ page }) => {
   await openFixture(page, { width: 680, height: 560 });
   await page.evaluate(() => {

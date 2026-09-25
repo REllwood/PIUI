@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Icon, type IconName } from '../../components/icons/Icon';
+import './onboarding.css';
 
 const pages: readonly Readonly<{
   title: string;

@@ -15,6 +15,7 @@ import './dialog.css';
 // to whatever opened it. It works in WKWebView, where window.confirm may not appear.
 export function ModalDialog({
   title,
+  labelledBy,
   description,
   role = 'dialog',
   className,
@@ -22,7 +23,9 @@ export function ModalDialog({
   onDismiss,
   children,
 }: Readonly<{
-  title: string;
+  // Either a visible title, or the id of a heading the content already provides.
+  title?: string;
+  labelledBy?: string;
   description?: string;
   role?: 'dialog' | 'alertdialog';
   className?: string;
@@ -79,7 +82,7 @@ export function ModalDialog({
       ref={dialogRef}
       className={`modal-dialog${className ? ` ${className}` : ''}`}
       role={role}
-      aria-labelledby={titleId}
+      aria-labelledby={labelledBy ?? titleId}
       aria-describedby={description ? descriptionId : undefined}
       onCancel={(event) => {
         event.preventDefault();
@@ -87,9 +90,11 @@ export function ModalDialog({
       }}
       onKeyDown={trapFocus}
     >
-      <h2 id={titleId} className="modal-dialog__title">
-        {title}
-      </h2>
+      {title ? (
+        <h2 id={titleId} className="modal-dialog__title">
+          {title}
+        </h2>
+      ) : null}
       {description ? (
         <p id={descriptionId} className="modal-dialog__description">
           {description}

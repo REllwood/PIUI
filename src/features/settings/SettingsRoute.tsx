@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useProduct } from '../../app/ProductContext';
 import { Icon, type IconName } from '../../components/icons/Icon';
-import { useConfirmation } from '../../components/dialog/ModalDialog';
+import { ModalDialog, useConfirmation } from '../../components/dialog/ModalDialog';
 import { LoadingLabel } from '../../components/primitives/LoadingLabel';
 import { StatusPill } from '../../components/primitives/StatusPill';
 import { productErrorMessage, redactForDisplay } from '../../domain/errors';
@@ -10,6 +10,7 @@ import { isTurnActive } from '../../domain/machines';
 import { DEFAULT_THINKING_LEVEL, isThinkingLevel, thinkingChoices } from '../../domain/thinking';
 import { AppearanceControls, Toggle } from '../appearance/AppearanceControls';
 import { DiagnosticsRoute } from '../diagnostics/DiagnosticsRoute';
+import { ProductTour } from '../onboarding/ProductTour';
 import { UpdateStatus } from '../updates/UpdateStatus';
 import { AboutPanel } from './AboutPanel';
 import { SettingRow } from './SettingRow';
@@ -297,6 +298,7 @@ function SettingsSection({
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [confirm, confirmation] = useConfirmation();
+  const [tourOpen, setTourOpen] = useState(false);
   useEffect(() => {
     setPendingAction(null);
     setActionMessage(null);
@@ -349,10 +351,20 @@ function SettingsSection({
               product.activeOperation !== null ||
               isTurnActive(product.snapshot.turnStatus)
             }
-            onClick={() => window.location.assign(`${window.location.pathname}?onboarding=1`)}
+            onClick={() => setTourOpen(true)}
           >
             Replay product tour
           </button>
+          {tourOpen ? (
+            // Only the tour replays; onboarding and its saved progress are left alone.
+            <ModalDialog
+              labelledBy="product-tour-title"
+              className="modal-dialog--tour"
+              onDismiss={() => setTourOpen(false)}
+            >
+              <ProductTour onSkip={() => setTourOpen(false)} />
+            </ModalDialog>
+          ) : null}
         </SettingRow>
         <SettingRow
           label="Open last project"
