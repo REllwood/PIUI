@@ -297,6 +297,34 @@ describe('production conversation continuity', () => {
     expect(currentProduct().snapshot.turnStatus).toBe('streaming');
   });
 
+  it('leaves the store untouched when an approval poll finds nothing new', async () => {
+    vi.mocked(native.listPendingApprovals).mockResolvedValue([
+      {
+        approvalId: 'approval-1',
+        decisionId: 'decision-1',
+        revision: 1,
+        state: 'awaiting',
+        verb: 'Run command',
+        target: 'pnpm test',
+        risk: 'routine',
+        scopeIds: [],
+        expiresInMs: 60_000,
+      },
+    ]);
+    await boot();
+    await waitFor(() => expect(currentProduct().snapshot.approvals).toHaveLength(1));
+    const before = productionBridgeStore.getSnapshot().product;
+    const polls = vi.mocked(native.listPendingApprovals).mock.calls.length;
+    await waitFor(
+      () =>
+        expect(vi.mocked(native.listPendingApprovals).mock.calls.length).toBeGreaterThan(
+          polls + 1,
+        ),
+      { timeout: 2_500 },
+    );
+    expect(productionBridgeStore.getSnapshot().product).toBe(before);
+  });
+
   it('records a started tool as running work until it reports an outcome', async () => {
     await boot();
     await act(async () => {

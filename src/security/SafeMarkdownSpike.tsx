@@ -590,7 +590,7 @@ export function SafeMarkdownSpike({
   applicationOrigin = window.location.origin,
   embedded = false,
 }: SafeMarkdownSpikeProps) {
-  const prepared = prepareMarkdown(markdown);
+  const prepared = useMemo(() => prepareMarkdown(markdown), [markdown]);
   const highlightJobs = useMemo(() => createHighlightJobRegistry(), [markdown]);
   const authority: MarkdownAuthority = useMemo(
     () =>

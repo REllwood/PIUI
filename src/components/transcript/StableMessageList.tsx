@@ -1,10 +1,14 @@
-import { useMemo } from 'react';
+import { memo, useMemo } from 'react';
 import type { Message } from '../../domain/types';
 import { SafeMarkdown } from '../markdown/SafeMarkdown';
 
 export type TranscriptAnchor = Readonly<{ messageId: string; offsetPx: number }>;
 
-export function MessageArticle({ message }: Readonly<{ message: Message }>) {
+// Messages keep their identity until they change, so memoising here stops approval
+// polls and unrelated store updates from re-parsing every message's Markdown.
+export const MessageArticle = memo(function MessageArticle({
+  message,
+}: Readonly<{ message: Message }>) {
   return (
     <article
       id={`transcript-${message.id}`}
@@ -22,7 +26,7 @@ export function MessageArticle({ message }: Readonly<{ message: Message }>) {
       <SafeMarkdown markdown={message.markdown} />
     </article>
   );
-}
+});
 
 export function StableMessageList({
   messages,

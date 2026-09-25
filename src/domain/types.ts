@@ -106,6 +106,8 @@ export type ApprovalDecision = 'approve-once' | 'approve-project' | 'deny';
 export type ApprovalRequest = Readonly<{
   id: string;
   decisionId: string;
+  // The host's revision of this approval; a new revision may carry a new expiry.
+  revision?: number;
   state:
     | 'policy-check'
     | 'awaiting'

@@ -10,6 +10,7 @@ import {
 } from 'react';
 import { productionBridgeStore } from '../bridge/store';
 import { useBridgeSelector } from '../bridge/useBridgeSelector';
+import { reconcileApprovals } from '../domain/approvals';
 import { createQueueItem, failQueueItem, isTurnActive, submitApproval } from '../domain/machines';
 import {
   canReconcileTranscript,
@@ -266,11 +267,12 @@ function messageView(message: import('../platform/native').NativeProductMessage)
   });
 }
 
-function approvalView(approval: NativeApproval) {
+function approvalView(approval: NativeApproval, now: number) {
   const consequential = approval.risk === 'destructive' || approval.risk === 'external';
   return Object.freeze({
     id: approval.approvalId,
     decisionId: approval.decisionId,
+    revision: approval.revision,
     state: approval.state,
     action: approval.verb,
     target: approval.target,
@@ -283,7 +285,8 @@ function approvalView(approval: NativeApproval) {
       ? 'Review the target carefully; this action may be difficult to reverse.'
       : 'The action is limited to the displayed target and current request.',
     reversible: !consequential,
-    expiresAt: new Date(Date.now() + approval.expiresInMs).toISOString(),
+    // Derived once per revision; reconcileApprovals keeps it steady across polls.
+    expiresAt: new Date(now + approval.expiresInMs).toISOString(),
     permittedDecisions: ['approve-once', 'deny'] as const,
     rememberedScopeEligible: false,
     scopeIds: approval.scopeIds,
@@ -530,7 +533,14 @@ export function ProductProvider({
   const refreshApprovals = useCallback(async () => {
     try {
       const approvals = await listPendingApprovals();
-      productionBridgeStore.updateLocalFixture({ approvals: approvals.map(approvalView) });
+      const now = Date.now();
+      const live = productionBridgeStore.getSnapshot().product;
+      const next = reconcileApprovals(
+        live.approvals,
+        approvals.map((approval) => approvalView(approval, now)),
+      );
+      // The poll runs every 750 ms; only a real change may patch the store and re-render.
+      if (next !== live.approvals) productionBridgeStore.updateLocalFixture({ approvals: next });
     } catch {
       // Connection recovery owns the global offline state. A failed background
       // refresh must not discard an approval already visible to the user.
