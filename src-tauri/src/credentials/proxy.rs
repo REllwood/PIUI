@@ -320,6 +320,13 @@ impl PendingHostResponse {
         }
     }
 
+    /// An honest failure for a request whose repository operation did not
+    /// finish in time. The sidecar treats silence as fatal, so this goes out
+    /// instead while the stuck operation's own result is discarded.
+    pub(crate) fn unavailable(correlation_id: String) -> Self {
+        Self::new(correlation_id, Err(OperationError::Unavailable))
+    }
+
     pub(crate) fn bind(
         mut self,
         response_id: String,

@@ -20,14 +20,21 @@ use std::collections::VecDeque;
 use std::sync::{
     Arc, Mutex, MutexGuard, TryLockError,
     atomic::{AtomicUsize, Ordering},
-    mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_channel},
+    mpsc::{Receiver, RecvTimeoutError, SyncSender, TrySendError, sync_channel},
 };
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
+use zeroize::Zeroizing;
 
 pub(super) const RAW_QUEUE_CAPACITY: usize = 32;
 pub(super) const PUBLIC_QUEUE_CAPACITY: usize = 256;
 const PRIVATE_QUEUE_CAPACITY: usize = 128;
+// Coordinators block on their own signals; this is only a safety net.
+const COORDINATOR_IDLE_WAIT: Duration = Duration::from_secs(1);
+// The sidecar abandons a credential request it has not heard back on within
+// 120 s and treats a later reply as fatal. Every request is answered before
+// this budget, measured from when it was decoded, even if storage hangs.
+pub(super) const CREDENTIAL_REPLY_BUDGET: Duration = Duration::from_secs(100);
 
 struct WorkPermit(Arc<AtomicUsize>);
 
@@ -40,6 +47,7 @@ impl Drop for WorkPermit {
 struct PrivateWork {
     request: Option<Envelope>,
     permit: Option<WorkPermit>,
+    reply_deadline: Instant,
 }
 
 impl PrivateWork {
@@ -47,6 +55,7 @@ impl PrivateWork {
         Self {
             request: Some(request),
             permit: Some(permit),
+            reply_deadline: Instant::now() + CREDENTIAL_REPLY_BUDGET,
         }
     }
 
@@ -70,6 +79,22 @@ impl Drop for PrivateWork {
 struct CompletedWork {
     pending: crate::credentials::proxy::PendingHostResponse,
     _permit: WorkPermit,
+}
+
+/// Everything the credential coordinator waits for arrives on one channel,
+/// so it can block rather than poll.
+enum CoordinatorEvent {
+    Work(PrivateWork),
+    Completed(u64, CompletedWork),
+    Wake,
+}
+
+/// The one repository operation in flight: its token, the correlation of
+/// the request it answers, and the latest moment its answer may be sent.
+struct RunningOperation {
+    token: u64,
+    correlation_id: Zeroizing<String>,
+    reply_deadline: Instant,
 }
 
 #[derive(Clone)]
@@ -102,14 +127,17 @@ pub(super) fn start_dispatcher(
     diagnostics: Arc<Mutex<VecDeque<String>>>,
     handshake_sequence: u64,
 ) -> DispatcherHandles {
-    let (private_sender, private_receiver) = sync_channel(PRIVATE_QUEUE_CAPACITY);
+    // Room for every permitted request plus one completion and one wake.
+    let (private_sender, private_receiver) = sync_channel(PRIVATE_QUEUE_CAPACITY + 2);
     let outstanding = Arc::new(AtomicUsize::new(0));
     let coordinator_writer = Arc::clone(&writer);
     let coordinator_control = Arc::clone(&control);
+    let coordinator_events = private_sender.clone();
     let credential_coordinator = thread::spawn(move || {
         credential_coordinator_loop(
             generation,
             private_receiver,
+            coordinator_events,
             proxy,
             coordinator_writer,
             coordinator_control,
@@ -168,7 +196,7 @@ fn dispatch_loop(
     product_waiters: Arc<ProductWaiters>,
     approval_registry: Arc<ApprovalRegistry>,
     workspace_registry: Arc<WorkspaceRegistry>,
-    private_sender: SyncSender<PrivateWork>,
+    private_sender: SyncSender<CoordinatorEvent>,
     outstanding: Arc<AtomicUsize>,
     writer: Arc<Mutex<GenerationWriter>>,
     control: Arc<GenerationControl>,
@@ -402,7 +430,9 @@ fn dispatch_loop(
                 drop(permit);
                 return;
             }
-            match private_sender.try_send(PrivateWork::new(envelope, permit)) {
+            match private_sender
+                .try_send(CoordinatorEvent::Work(PrivateWork::new(envelope, permit)))
+            {
                 Ok(()) => {}
                 Err(TrySendError::Full(work)) | Err(TrySendError::Disconnected(work)) => {
                     drop(work);
@@ -661,7 +691,13 @@ fn approval_coordinator_loop(
     writer: Arc<Mutex<GenerationWriter>>,
     control: Arc<GenerationControl>,
 ) {
+    // Jobs are still taken in the same order; only the idle wait changed
+    // from polling to blocking until a decision, an expiry or the end of
+    // the generation can have produced one.
+    let waker_registry = Arc::clone(&registry);
+    control.on_deactivate(Box::new(move || waker_registry.wake_coordinators()));
     while control.is_active() {
+        let observed = registry.work_epoch();
         match registry.take_group_response_job(generation) {
             Ok(Some(job)) => {
                 let response_token = job.response_token.clone();
@@ -712,7 +748,10 @@ fn approval_coordinator_loop(
                     }
                 }
             }
-            Ok(None) => thread::sleep(Duration::from_millis(10)),
+            Ok(None) if control.is_active() => {
+                registry.wait_for_work(observed, COORDINATOR_IDLE_WAIT);
+            }
+            Ok(None) => {}
             Err(_) => {
                 control.invalidate("approval state unavailable");
                 break;
@@ -724,98 +763,171 @@ fn approval_coordinator_loop(
 
 fn credential_coordinator_loop(
     generation: u64,
-    private_receiver: Receiver<PrivateWork>,
+    events: Receiver<CoordinatorEvent>,
+    events_sender: SyncSender<CoordinatorEvent>,
     proxy: CredentialProxy,
     writer: Arc<Mutex<GenerationWriter>>,
     control: Arc<GenerationControl>,
 ) {
-    let (completion_sender, completion_receiver) = sync_channel::<CompletedWork>(1);
+    // The end of the generation wakes a blocked wait at once. The waker only
+    // queues an event, so it is safe from whatever context invalidates.
+    let waker = events_sender.clone();
+    control.on_deactivate(Box::new(move || {
+        let _ = waker.try_send(CoordinatorEvent::Wake);
+    }));
     let mut buffered = VecDeque::with_capacity(PRIVATE_QUEUE_CAPACITY);
-    let mut operation_running = false;
+    let mut running: Option<RunningOperation> = None;
+    let mut next_token = 0_u64;
 
     loop {
         if !control.is_active() {
             cancel_buffered_work(&proxy, &mut buffered);
-            while let Ok(work) = private_receiver.try_recv() {
-                cancel_private_work(&proxy, work);
+            while let Ok(event) = events.try_recv() {
+                if let CoordinatorEvent::Work(work) = event {
+                    cancel_private_work(&proxy, work);
+                }
             }
             return;
         }
 
-        if operation_running {
-            match completion_receiver.try_recv() {
-                Ok(completed) => {
-                    operation_running = false;
-                    if !control.is_active() {
-                        drop(completed);
-                        continue;
-                    }
-                    let CompletedWork { pending, _permit } = completed;
-                    let result = writer
-                        .lock()
-                        .map_err(|_| "sidecar writer unavailable".to_string())
-                        .and_then(|mut writer| writer.write_private_response(generation, pending));
-                    drop(_permit);
-                    if result.is_err() && control.is_active() {
-                        fail_generation("sidecar private response write failed", &control, None);
-                        return;
-                    }
-                    continue;
-                }
-                Err(TryRecvError::Empty) => {}
-                Err(TryRecvError::Disconnected) => {
-                    fail_generation("sidecar credential worker unavailable", &control, None);
-                    return;
-                }
+        // Answer anything that has run out of time before the sidecar gives
+        // up on it. A request still queued is cancelled without running; an
+        // operation still inside storage is detached and its eventual
+        // result is dropped.
+        let now = Instant::now();
+        if let Some(operation) = running.take_if(|operation| now >= operation.reply_deadline) {
+            let pending = crate::credentials::proxy::PendingHostResponse::unavailable(
+                operation.correlation_id.to_string(),
+            );
+            if !write_private_reply(generation, &writer, &control, pending) {
+                return;
+            }
+        }
+        while buffered
+            .front()
+            .is_some_and(|work: &PrivateWork| now >= work.reply_deadline)
+        {
+            let mut work = buffered.pop_front().expect("expired work present");
+            let (request, permit) = work.take();
+            let written =
+                write_private_reply(generation, &writer, &control, proxy.cancel_request(request));
+            drop(permit);
+            if !written {
+                return;
             }
         }
 
-        while buffered.len() < PRIVATE_QUEUE_CAPACITY {
-            match private_receiver.try_recv() {
-                Ok(work) => buffered.push_back(work),
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) if buffered.is_empty() && !operation_running => {
-                    return;
-                }
-                Err(TryRecvError::Disconnected) => break,
-            }
-        }
-
-        if !operation_running && let Some(work) = buffered.pop_front() {
+        if running.is_none()
+            && let Some(work) = buffered.pop_front()
+        {
+            next_token = next_token.wrapping_add(1);
+            let token = next_token;
+            let correlation_id = Zeroizing::new(
+                work.request
+                    .as_ref()
+                    .map(|request| request.id.clone())
+                    .unwrap_or_default(),
+            );
+            let reply_deadline = work.reply_deadline;
             let operation_proxy = proxy.clone();
-            let operation_sender = completion_sender.clone();
+            let operation_sender = events_sender.clone();
             let mut candidate = Some(work);
             let promoted = control.authorised_attempt(|| {
                 let mut work = candidate.take().expect("promotion candidate owned");
-                operation_running = true;
                 thread::spawn(move || {
                     let (request, permit) = work.take();
                     let pending = operation_proxy.try_execute_request(request);
-                    let _ = operation_sender.send(CompletedWork {
-                        pending,
-                        _permit: permit,
-                    });
+                    let _ = operation_sender.send(CoordinatorEvent::Completed(
+                        token,
+                        CompletedWork {
+                            pending,
+                            _permit: permit,
+                        },
+                    ));
                 });
             });
-            if promoted.is_err()
-                && let Some(work) = candidate.take()
-            {
-                cancel_private_work(&proxy, work);
+            match promoted {
+                Ok(()) => {
+                    running = Some(RunningOperation {
+                        token,
+                        correlation_id,
+                        reply_deadline,
+                    });
+                }
+                Err(()) => {
+                    if let Some(work) = candidate.take() {
+                        cancel_private_work(&proxy, work);
+                    }
+                }
             }
             continue;
         }
 
-        match private_receiver.recv_timeout(Duration::from_millis(10)) {
-            Ok(work) => buffered.push_back(work),
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected)
-                if buffered.is_empty() && !operation_running =>
-            {
+        let next_deadline = running
+            .as_ref()
+            .map(|operation| operation.reply_deadline)
+            .into_iter()
+            .chain(buffered.front().map(|work| work.reply_deadline))
+            .min();
+        let wait = next_deadline.map_or(COORDINATOR_IDLE_WAIT, |deadline| {
+            deadline
+                .saturating_duration_since(Instant::now())
+                .min(COORDINATOR_IDLE_WAIT)
+        });
+        match events.recv_timeout(wait) {
+            Ok(CoordinatorEvent::Work(work)) => buffered.push_back(work),
+            Ok(CoordinatorEvent::Completed(token, completed)) => {
+                if running
+                    .as_ref()
+                    .is_none_or(|operation| operation.token != token)
+                {
+                    // Already answered as unavailable; this late result must
+                    // never become a second reply.
+                    drop(completed);
+                    continue;
+                }
+                running = None;
+                if !control.is_active() {
+                    drop(completed);
+                    continue;
+                }
+                let CompletedWork { pending, _permit } = completed;
+                let written = write_private_reply(generation, &writer, &control, pending);
+                drop(_permit);
+                if !written {
+                    return;
+                }
+            }
+            Ok(CoordinatorEvent::Wake) | Err(RecvTimeoutError::Timeout) => {}
+            // The coordinator holds a sender itself, so this cannot occur
+            // while it runs; treat it as the end of the generation.
+            Err(RecvTimeoutError::Disconnected) => {
+                cancel_buffered_work(&proxy, &mut buffered);
                 return;
             }
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {}
         }
     }
+}
+
+/// Writes one credential reply. `false` means the generation has ended and
+/// the coordinator must stop.
+fn write_private_reply(
+    generation: u64,
+    writer: &Mutex<GenerationWriter>,
+    control: &Arc<GenerationControl>,
+    pending: crate::credentials::proxy::PendingHostResponse,
+) -> bool {
+    let result = writer
+        .lock()
+        .map_err(|_| "sidecar writer unavailable".to_string())
+        .and_then(|mut writer| writer.write_private_response(generation, pending));
+    if result.is_err() && control.is_active() {
+        fail_generation("sidecar private response write failed", control, None);
+        return false;
+    }
+    // A write refused because the generation already ended is not a new
+    // failure; the next pass cancels what remains.
+    true
 }
 
 fn cancel_buffered_work(proxy: &CredentialProxy, buffered: &mut VecDeque<PrivateWork>) {
@@ -867,6 +979,7 @@ mod tests {
     use crate::supervisor::public_router::PublicMessage;
     use std::io::Error;
     use std::sync::mpsc::SyncSender;
+    use std::sync::mpsc::TryRecvError;
     use std::time::{Duration, Instant};
     use zeroize::Zeroizing;
 
@@ -1749,15 +1862,14 @@ mod tests {
         ))
         .unwrap();
         sender
-            .send(PrivateWork::new(
+            .send(CoordinatorEvent::Work(PrivateWork::new(
                 request,
                 reserve_private_work(&outstanding).unwrap(),
-            ))
+            )))
             .unwrap();
-        drop(sender);
         let coordinator_control = Arc::clone(&control);
         let coordinator = thread::spawn(move || {
-            credential_coordinator_loop(1, receiver, proxy, writer, coordinator_control)
+            credential_coordinator_loop(1, receiver, sender, proxy, writer, coordinator_control)
         });
         reached.wait();
         assert!(control.deactivate());
@@ -1780,6 +1892,131 @@ mod tests {
         let mut decoder = ProtocolDecoder::default();
         let listed = decoder.decode(&listed).unwrap();
         assert_eq!(listed.payload["entries"].as_array().map(Vec::len), Some(0));
+    }
+
+    fn coordinator_rig(
+        proxy: CredentialProxy,
+    ) -> (
+        Arc<GenerationControl>,
+        SharedSink,
+        SyncSender<CoordinatorEvent>,
+        Arc<AtomicUsize>,
+        JoinHandle<()>,
+    ) {
+        let control = Arc::new(GenerationControl::new(i32::MAX, Arc::new(Mutex::new(None))));
+        let sink = SharedSink::default();
+        let writer = Arc::new(Mutex::new(GenerationWriter::with_sink_for_test(
+            1,
+            Box::new(sink.clone()),
+            Arc::clone(&control),
+        )));
+        let (sender, receiver) = sync_channel(PRIVATE_QUEUE_CAPACITY + 2);
+        let coordinator_sender = sender.clone();
+        let coordinator_control = Arc::clone(&control);
+        let coordinator = thread::spawn(move || {
+            credential_coordinator_loop(
+                1,
+                receiver,
+                coordinator_sender,
+                proxy,
+                writer,
+                coordinator_control,
+            )
+        });
+        (
+            control,
+            sink,
+            sender,
+            Arc::new(AtomicUsize::new(0)),
+            coordinator,
+        )
+    }
+
+    fn written_replies(sink: &SharedSink) -> Vec<Envelope> {
+        let bytes = sink.0.lock().unwrap().clone();
+        let mut decoder = ProtocolDecoder::default();
+        bytes
+            .split_inclusive(|byte| *byte == b'\n')
+            .map(|line| decoder.decode(line).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn a_credential_request_stuck_in_storage_is_answered_before_the_sidecar_gives_up() {
+        assert!(CREDENTIAL_REPLY_BUDGET < Duration::from_secs(120));
+        let (proxy, gate) = CredentialProxy::in_memory_with_dispatcher_gate_for_test();
+        let (control, sink, sender, outstanding, coordinator) = coordinator_rig(proxy);
+        let short_budget = |id: &str, provider: &str| {
+            let request: Envelope = serde_json::from_value(host(
+                1,
+                id,
+                serde_json::json!({
+                    "method":"credential.set","providerId":provider,
+                    "credential":{"type":"api_key","key":"stuck-value"}
+                }),
+            ))
+            .unwrap();
+            let mut work = PrivateWork::new(request, reserve_private_work(&outstanding).unwrap());
+            work.reply_deadline = Instant::now() + Duration::from_millis(80);
+            CoordinatorEvent::Work(work)
+        };
+        sender
+            .send(short_budget("stuck-set", "stuck-provider"))
+            .unwrap();
+        gate.wait_until_entered();
+        // Queued behind the stuck operation; its own budget also runs out.
+        sender
+            .send(short_budget("queued-set", "queued-provider"))
+            .unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while written_replies(&sink).len() < 2 {
+            assert!(
+                Instant::now() < deadline,
+                "stuck requests were not answered"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let replies = written_replies(&sink);
+        let by_correlation = |id: &str| {
+            replies
+                .iter()
+                .find(|reply| reply.correlation_id.as_deref() == Some(id))
+                .unwrap_or_else(|| panic!("no reply for {id}"))
+        };
+        assert_eq!(
+            by_correlation("stuck-set")
+                .error
+                .as_ref()
+                .map(|error| error.category),
+            Some(crate::protocol::ErrorCategory::Unavailable)
+        );
+        assert!(by_correlation("queued-set").error.is_some());
+        assert!(
+            control.is_active(),
+            "an honest failure keeps the generation"
+        );
+
+        // The stuck operation eventually finishes; its late result must not
+        // become a second reply.
+        gate.release();
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(written_replies(&sink).len(), 2);
+        assert_eq!(outstanding.load(Ordering::Acquire), 0);
+        control.deactivate();
+        coordinator.join().unwrap();
+    }
+
+    #[test]
+    fn an_idle_credential_coordinator_stops_as_soon_as_the_generation_ends() {
+        let (control, _sink, _sender, _outstanding, coordinator) =
+            coordinator_rig(CredentialProxy::in_memory_for_dispatcher_test());
+        std::thread::sleep(Duration::from_millis(50));
+        let started = Instant::now();
+        assert!(control.deactivate());
+        coordinator.join().unwrap();
+        // Far below the idle safety-net wait: the deactivation woke it.
+        assert!(started.elapsed() < COORDINATOR_IDLE_WAIT / 2);
     }
 
     #[test]

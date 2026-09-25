@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 use zeroize::Zeroize;
@@ -471,8 +471,47 @@ struct Inner {
     retired_ids: RetiredIds,
 }
 
+/// Wakes the response coordinator when a decision may be ready to write.
+/// It has its own lock, never held with `inner` by a waiter, so it can be
+/// signalled from any context, including while `inner` is held.
+#[derive(Default)]
+struct WorkSignal {
+    epoch: Mutex<u64>,
+    changed: Condvar,
+}
+
+impl WorkSignal {
+    fn epoch(&self) -> u64 {
+        *self.epoch.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn notify(&self) {
+        let mut epoch = self.epoch.lock().unwrap_or_else(PoisonError::into_inner);
+        *epoch = epoch.wrapping_add(1);
+        self.changed.notify_all();
+    }
+
+    fn wait_past(&self, observed: u64, timeout: Duration) {
+        let epoch = self.epoch.lock().unwrap_or_else(PoisonError::into_inner);
+        let _ = self
+            .changed
+            .wait_timeout_while(epoch, timeout, |epoch| *epoch == observed);
+    }
+}
+
+/// Signals the coordinator when a state-changing call returns, after its
+/// `inner` guard has been released.
+struct WorkNotice<'a>(&'a WorkSignal);
+
+impl Drop for WorkNotice<'_> {
+    fn drop(&mut self) {
+        self.0.notify();
+    }
+}
+
 pub struct ApprovalRegistry {
     inner: Mutex<Inner>,
+    work: WorkSignal,
     clock: Arc<dyn ApprovalClock>,
     ids: Arc<dyn ApprovalIdSource>,
     response_tokens: Arc<dyn ApprovalResponseTokenSource>,
@@ -485,6 +524,7 @@ impl Default for ApprovalRegistry {
     fn default() -> Self {
         Self {
             inner: Mutex::new(Inner::default()),
+            work: WorkSignal::default(),
             clock: Arc::new(SystemClock),
             ids: Arc::new(RandomIds),
             response_tokens: Arc::new(RandomResponseTokens),
@@ -506,6 +546,7 @@ impl ApprovalRegistry {
     ) -> Self {
         Self {
             inner: Mutex::new(Inner::default()),
+            work: WorkSignal::default(),
             clock,
             ids,
             response_tokens,
@@ -519,6 +560,7 @@ impl ApprovalRegistry {
         request: ApprovalRequest,
         workspace_binding: WorkspaceApprovalBinding,
     ) -> Result<ApprovalView, String> {
+        let _work = WorkNotice(&self.work);
         validate_private_correlation(&request.correlation_id)?;
         validate_prefixed_id(&request.session_id, "session-")?;
         validate_prefixed_id(&request.workspace_id, "workspace-")?;
@@ -775,6 +817,7 @@ impl ApprovalRegistry {
     }
 
     pub fn submit(&self, submission: ApprovalSubmission) -> Result<(), String> {
+        let _work = WorkNotice(&self.work);
         validate_prefixed_id(&submission.approval_id, "approval-")?;
         validate_prefixed_id(&submission.decision_id, "decision-")?;
         if submission.scope_ids.len() > 1 || has_duplicates(&submission.scope_ids) {
@@ -863,6 +906,7 @@ impl ApprovalRegistry {
     }
 
     pub fn submit_group(&self, submission: ApprovalGroupSubmission) -> Result<(), String> {
+        let _work = WorkNotice(&self.work);
         validate_prefixed_id(&submission.group_id, "group-")?;
         validate_prefixed_id(&submission.decision_id, "decision-")?;
         validate_prefixed_id(&submission.scope_id, "scope-")?;
@@ -954,6 +998,7 @@ impl ApprovalRegistry {
         &self,
         request: ApprovalReadyRequest,
     ) -> Result<ApprovalReadyAck, String> {
+        let _work = WorkNotice(&self.work);
         validate_private_correlation(&request.correlation_id)?;
         validate_prefixed_id(&request.invocation_id, "invocation-")?;
         validate_wire_coordinate(&request.tool_call_id)?;
@@ -993,6 +1038,7 @@ impl ApprovalRegistry {
         &self,
         request: ApprovalAbandonRequest,
     ) -> Result<ApprovalAbandonAck, String> {
+        let _work = WorkNotice(&self.work);
         validate_private_correlation(&request.correlation_id)?;
         let mut inner = self
             .inner
@@ -1050,6 +1096,42 @@ impl ApprovalRegistry {
             correlation_id: request.correlation_id,
             cohort_digest: request.cohort_digest,
         })
+    }
+
+    /// Marker to pass to [`Self::wait_for_work`] after finding no job.
+    pub(crate) fn work_epoch(&self) -> u64 {
+        self.work.epoch()
+    }
+
+    /// Blocks until state changes after `observed`, the next approval
+    /// expires, or `max_wait` passes, whichever is first. Expiry needs no
+    /// signal: the wait is simply no longer than the time until it.
+    pub(crate) fn wait_for_work(&self, observed: u64, max_wait: Duration) {
+        let until_expiry = {
+            let Ok(inner) = self.inner.lock() else {
+                return;
+            };
+            let now = self.clock.now();
+            inner
+                .records
+                .values()
+                .filter(|record| {
+                    record.phase == ApprovalState::Awaiting
+                        || (record.phase == ApprovalState::Submitting
+                            && record.pending_outcome == Some(ApprovalState::Approved))
+                })
+                .map(|record| record.expires_at.saturating_duration_since(now))
+                .min()
+        };
+        let wait = until_expiry.map_or(max_wait, |until| max_wait.min(until));
+        if !wait.is_zero() {
+            self.work.wait_past(observed, wait);
+        }
+    }
+
+    /// Wakes any coordinator blocked in [`Self::wait_for_work`].
+    pub(crate) fn wake_coordinators(&self) {
+        self.work.notify();
     }
 
     pub(crate) fn take_response_job(
@@ -1368,6 +1450,7 @@ impl ApprovalRegistry {
     }
 
     pub(crate) fn cancel_response(&self, response_token: &str) {
+        let _work = WorkNotice(&self.work);
         let Ok(mut inner) = self.inner.lock() else {
             return;
         };
@@ -1388,6 +1471,7 @@ impl ApprovalRegistry {
     }
 
     pub(crate) fn cancel_workspace(&self, workspace_id: &str) -> Result<(), String> {
+        let _work = WorkNotice(&self.work);
         validate_prefixed_id(workspace_id, "workspace-")?;
         let mut inner = self
             .inner
@@ -1424,6 +1508,7 @@ impl ApprovalRegistry {
     }
 
     pub(crate) fn invalidate_generation(&self, generation: u64) {
+        let _work = WorkNotice(&self.work);
         let Ok(mut inner) = self.inner.lock() else {
             return;
         };
@@ -3159,6 +3244,58 @@ mod tests {
                 .count(),
             2
         );
+    }
+
+    #[test]
+    fn the_response_coordinator_wait_ends_on_a_decision_or_the_next_expiry() {
+        let (registry, _) = registry();
+        let registry = Arc::new(registry);
+        // Idle and nothing pending: the full safety-net wait applies.
+        let observed = registry.work_epoch();
+        let started = Instant::now();
+        registry.wait_for_work(observed, Duration::from_millis(60));
+        assert!(started.elapsed() >= Duration::from_millis(50));
+
+        // A decision made while the coordinator waits wakes it at once.
+        let view = registry.register(request(1, "read"), binding()).unwrap();
+        let observed = registry.work_epoch();
+        let submitter = Arc::clone(&registry);
+        let submit = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30));
+            submitter
+                .submit(ApprovalSubmission {
+                    approval_id: view.approval_id.clone(),
+                    decision_id: view.decision_id.clone(),
+                    scope_ids: Vec::new(),
+                    choice: ApprovalChoice::Deny,
+                })
+                .unwrap();
+        });
+        let started = Instant::now();
+        registry.wait_for_work(observed, Duration::from_secs(5));
+        assert!(started.elapsed() < Duration::from_secs(2));
+        submit.join().unwrap();
+        assert!(registry.take_response_job(1).unwrap().is_some());
+
+        // With nothing signalled, the wait still ends by the next expiry
+        // (this registry's approvals live for 100 ms of its clock).
+        registry.register(request(2, "read"), binding()).unwrap();
+        let observed = registry.work_epoch();
+        let started = Instant::now();
+        registry.wait_for_work(observed, Duration::from_secs(5));
+        assert!(started.elapsed() < Duration::from_secs(1));
+
+        // An explicit wake (the end of a generation) also ends it.
+        let observed = registry.work_epoch();
+        let waker = Arc::clone(&registry);
+        let wake = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30));
+            waker.wake_coordinators();
+        });
+        let started = Instant::now();
+        registry.wait_for_work(observed, Duration::from_secs(5));
+        assert!(started.elapsed() < Duration::from_secs(1));
+        wake.join().unwrap();
     }
 
     fn abandon_for(request: &ApprovalRequest, correlation: &str) -> ApprovalAbandonRequest {
