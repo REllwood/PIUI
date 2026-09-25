@@ -2,9 +2,12 @@ use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
 const MAX_JS_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
-pub(crate) const MAX_APPROVAL_INPUT_BYTES: usize = 65_536;
+// Shared with the sidecar's canonicaliser and approval.schema.json. Real
+// `write` and `edit` calls carry whole files, so the bound is sized for them
+// while still fitting a complete approval request inside one envelope payload.
+pub(crate) const MAX_APPROVAL_INPUT_BYTES: usize = 393_216;
 pub(crate) const MAX_APPROVAL_INPUT_DEPTH: usize = 16;
-pub(crate) const MAX_APPROVAL_INPUT_NODES: usize = 256;
+pub(crate) const MAX_APPROVAL_INPUT_NODES: usize = 4_096;
 
 pub(crate) fn validate_approval_request(payload: &Map<String, Value>) -> Result<(), String> {
     let legacy = payload.get("schemaVersion") == Some(&Value::from(1));
@@ -622,14 +625,102 @@ mod tests {
         too_deep = Value::Array(vec![too_deep]);
         assert!(canonical_json_bytes(&serde_json::json!({"v": too_deep})).is_err());
 
-        assert!(canonical_json_bytes(&serde_json::json!({"v": vec![0; 254]})).is_ok());
-        assert!(canonical_json_bytes(&serde_json::json!({"v": vec![0; 255]})).is_err());
+        // The object and array count as two of the 4,096 nodes.
+        assert!(canonical_json_bytes(&serde_json::json!({"v": vec![0; 4_094]})).is_ok());
+        assert!(canonical_json_bytes(&serde_json::json!({"v": vec![0; 4_095]})).is_err());
+        // `{"v":"` and `"}` frame the string with eight bytes.
         assert_eq!(
-            canonical_json_bytes(&serde_json::json!({"v": "x".repeat(65_528)}))
+            canonical_json_bytes(&serde_json::json!({"v": "x".repeat(393_208)}))
                 .unwrap()
                 .len(),
-            65_536
+            393_216
         );
-        assert!(canonical_json_bytes(&serde_json::json!({"v": "x".repeat(65_529)})).is_err());
+        assert!(canonical_json_bytes(&serde_json::json!({"v": "x".repeat(393_209)})).is_err());
+        // Multi-byte characters count as UTF-8 bytes, not characters.
+        assert!(canonical_json_bytes(&serde_json::json!({"v": "é".repeat(196_604)})).is_ok());
+        assert!(canonical_json_bytes(&serde_json::json!({"v": "é".repeat(196_605)})).is_err());
+    }
+
+    fn maximal_approval_request() -> Map<String, Value> {
+        // A whole-file write at the canonical byte bound, with the largest
+        // cohort the protocol admits.
+        let input = serde_json::json!({
+            "content": "x".repeat(393_216 - r#"{"content":"","path":"src/generated.rs"}"#.len()),
+            "path": "src/generated.rs"
+        });
+        let canonical = canonical_json_bytes(&input).unwrap();
+        assert_eq!(canonical.len(), MAX_APPROVAL_INPUT_BYTES);
+        let members = (0..32)
+            .map(|ordinal| {
+                serde_json::json!({
+                    "ordinal": ordinal,
+                    "toolCallId": format!("tool-call-{ordinal:0>100}"),
+                    "toolName": if ordinal == 0 { "write" } else { "read" }
+                })
+            })
+            .collect::<Vec<_>>();
+        let assistant_entry_id = "a".repeat(128);
+        let descriptor = serde_json::json!({
+            "assistantEntryId": assistant_entry_id,
+            "orderedMembers": members
+        });
+        let cohort_digest = format!(
+            "{:x}",
+            Sha256::digest(canonical_json_bytes(&descriptor).unwrap())
+        );
+        serde_json::json!({
+            "method": "approval.request",
+            "schemaVersion": 2,
+            "generation": 9_007_199_254_740_991_u64,
+            "sessionId": format!("session-{}", "a".repeat(32)),
+            "workspaceId": format!("workspace-{}", "b".repeat(32)),
+            "workspaceRevision": 9_007_199_254_740_991_u64,
+            "invocationId": format!("invocation-{}", "c".repeat(32)),
+            "toolCallId": format!("tool-call-{:0>100}", 0),
+            "toolName": "write",
+            "inputDigest": format!("{:x}", Sha256::digest(&canonical)),
+            "input": input,
+            "cohort": {
+                "assistantEntryId": assistant_entry_id,
+                "cohortDigest": cohort_digest,
+                "orderedMembers": members
+            }
+        })
+        .as_object()
+        .unwrap()
+        .clone()
+    }
+
+    #[test]
+    fn a_maximal_approval_request_fits_the_envelope_and_payload_limits() {
+        let payload = maximal_approval_request();
+        validate_approval_request(&payload).unwrap();
+        let line = serde_json::to_vec(&serde_json::json!({
+            "version": 1,
+            "kind": "host-request",
+            "id": format!("sidecar-{}", "d".repeat(120)),
+            "sequence": 9_007_199_254_740_991_u64,
+            "payload": payload
+        }))
+        .unwrap();
+        let mut line = line;
+        line.push(b'\n');
+        let decoded = crate::protocol::ProtocolDecoder::default()
+            .decode(&line)
+            .expect("a maximal approval request must pass envelope validation");
+        crate::credentials::proxy::discard_private_envelope(decoded);
+
+        let mut deeper = maximal_approval_request();
+        let mut nested = Value::from(0);
+        for _ in 0..16 {
+            nested = Value::Array(vec![nested]);
+        }
+        deeper.insert("input".into(), serde_json::json!({"v": nested}));
+        let digest = format!(
+            "{:x}",
+            Sha256::digest(canonical_json_bytes(&deeper["input"]).unwrap_or_default())
+        );
+        deeper.insert("inputDigest".into(), Value::String(digest));
+        assert!(validate_approval_request(&deeper).is_err());
     }
 }

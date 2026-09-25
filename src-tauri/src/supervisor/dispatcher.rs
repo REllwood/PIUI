@@ -1,6 +1,8 @@
 use super::process::{
-    APPROVAL_WRITE_MAX_DURATION, GenerationWriter, ProductWaiters, WorkspaceWaiters,
+    APPROVAL_WRITE_MAX_DURATION, GenerationWriter, ProductDelivery, ProductWaiters,
+    WorkspaceWaiters,
 };
+use super::public_router::PublicRouter;
 use super::router::{SequenceOutcome, SequenceRouter};
 use super::stdio::{GenerationControl, RawFrame, fail_generation};
 use crate::credentials::CredentialProxy;
@@ -18,16 +20,21 @@ use std::collections::VecDeque;
 use std::sync::{
     Arc, Mutex, MutexGuard, TryLockError,
     atomic::{AtomicUsize, Ordering},
-    mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_channel},
+    mpsc::{Receiver, RecvTimeoutError, SyncSender, TrySendError, sync_channel},
 };
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
+use zeroize::Zeroizing;
 
 pub(super) const RAW_QUEUE_CAPACITY: usize = 32;
 pub(super) const PUBLIC_QUEUE_CAPACITY: usize = 256;
 const PRIVATE_QUEUE_CAPACITY: usize = 128;
-
-type PublicMessage = Result<Envelope, String>;
+// Coordinators block on their own signals; this is only a safety net.
+const COORDINATOR_IDLE_WAIT: Duration = Duration::from_secs(1);
+// The sidecar abandons a credential request it has not heard back on within
+// 120 s and treats a later reply as fatal. Every request is answered before
+// this budget, measured from when it was decoded, even if storage hangs.
+pub(super) const CREDENTIAL_REPLY_BUDGET: Duration = Duration::from_secs(100);
 
 struct WorkPermit(Arc<AtomicUsize>);
 
@@ -40,6 +47,7 @@ impl Drop for WorkPermit {
 struct PrivateWork {
     request: Option<Envelope>,
     permit: Option<WorkPermit>,
+    reply_deadline: Instant,
 }
 
 impl PrivateWork {
@@ -47,6 +55,7 @@ impl PrivateWork {
         Self {
             request: Some(request),
             permit: Some(permit),
+            reply_deadline: Instant::now() + CREDENTIAL_REPLY_BUDGET,
         }
     }
 
@@ -72,6 +81,22 @@ struct CompletedWork {
     _permit: WorkPermit,
 }
 
+/// Everything the credential coordinator waits for arrives on one channel,
+/// so it can block rather than poll.
+enum CoordinatorEvent {
+    Work(PrivateWork),
+    Completed(u64, CompletedWork),
+    Wake,
+}
+
+/// The one repository operation in flight: its token, the correlation of
+/// the request it answers, and the latest moment its answer may be sent.
+struct RunningOperation {
+    token: u64,
+    correlation_id: Zeroizing<String>,
+    reply_deadline: Instant,
+}
+
 #[derive(Clone)]
 struct SnapshotRequest {
     id: String,
@@ -91,7 +116,7 @@ pub(super) fn start_dispatcher(
     generation: u64,
     decoder: ProtocolDecoder,
     raw_receiver: Receiver<RawFrame>,
-    public_sender: SyncSender<PublicMessage>,
+    public: Arc<PublicRouter>,
     workspace_waiters: Arc<WorkspaceWaiters>,
     product_waiters: Arc<ProductWaiters>,
     proxy: CredentialProxy,
@@ -102,14 +127,17 @@ pub(super) fn start_dispatcher(
     diagnostics: Arc<Mutex<VecDeque<String>>>,
     handshake_sequence: u64,
 ) -> DispatcherHandles {
-    let (private_sender, private_receiver) = sync_channel(PRIVATE_QUEUE_CAPACITY);
+    // Room for every permitted request plus one completion and one wake.
+    let (private_sender, private_receiver) = sync_channel(PRIVATE_QUEUE_CAPACITY + 2);
     let outstanding = Arc::new(AtomicUsize::new(0));
     let coordinator_writer = Arc::clone(&writer);
     let coordinator_control = Arc::clone(&control);
+    let coordinator_events = private_sender.clone();
     let credential_coordinator = thread::spawn(move || {
         credential_coordinator_loop(
             generation,
             private_receiver,
+            coordinator_events,
             proxy,
             coordinator_writer,
             coordinator_control,
@@ -137,7 +165,7 @@ pub(super) fn start_dispatcher(
             generation,
             decoder,
             raw_receiver,
-            public_sender,
+            public,
             workspace_waiters,
             product_waiters,
             approval_registry,
@@ -163,12 +191,12 @@ fn dispatch_loop(
     generation: u64,
     mut decoder: ProtocolDecoder,
     raw_receiver: Receiver<RawFrame>,
-    public_sender: SyncSender<PublicMessage>,
+    public: Arc<PublicRouter>,
     workspace_waiters: Arc<WorkspaceWaiters>,
     product_waiters: Arc<ProductWaiters>,
     approval_registry: Arc<ApprovalRegistry>,
     workspace_registry: Arc<WorkspaceRegistry>,
-    private_sender: SyncSender<PrivateWork>,
+    private_sender: SyncSender<CoordinatorEvent>,
     outstanding: Arc<AtomicUsize>,
     writer: Arc<Mutex<GenerationWriter>>,
     control: Arc<GenerationControl>,
@@ -184,18 +212,14 @@ fn dispatch_loop(
             Ok(frame) => frame,
             Err(_) if !control.is_active() => return,
             Err(_) => {
-                fatal(
-                    "sidecar raw response channel closed",
-                    &control,
-                    &public_sender,
-                );
+                fatal("sidecar raw response channel closed", &control, &public);
                 return;
             }
         };
         let line = match frame {
             RawFrame::Line(line) => line,
             RawFrame::Failure(message) => {
-                let _ = public_sender.try_send(Err(message));
+                public.fail(&message);
                 return;
             }
         };
@@ -206,17 +230,13 @@ fn dispatch_loop(
             .and_then(|writer| writer.capture_a23_inbound_frame(&line))
             .is_err()
         {
-            fatal("A.23 raw capture unavailable", &control, &public_sender);
+            fatal("A.23 raw capture unavailable", &control, &public);
             return;
         }
         let envelope = match decoder.decode(&line) {
             Ok(envelope) => envelope,
             Err(_) => {
-                fatal(
-                    "sidecar stdout protocol violation",
-                    &control,
-                    &public_sender,
-                );
+                fatal("sidecar stdout protocol violation", &control, &public);
                 return;
             }
         };
@@ -233,11 +253,7 @@ fn dispatch_loop(
             ) {
                 discard_private_envelope(envelope);
             }
-            fatal(
-                "sidecar identifier namespace invalid",
-                &control,
-                &public_sender,
-            );
+            fatal("sidecar identifier namespace invalid", &control, &public);
             return;
         }
 
@@ -246,7 +262,7 @@ fn dispatch_loop(
             fatal(
                 "sidecar private response direction invalid",
                 &control,
-                &public_sender,
+                &public,
             );
             return;
         }
@@ -260,18 +276,14 @@ fn dispatch_loop(
                 if envelope.kind == ProtocolKind::HostRequest {
                     discard_private_envelope(envelope);
                 }
-                fatal("sidecar snapshot invalid", &control, &public_sender);
+                fatal("sidecar snapshot invalid", &control, &public);
                 return;
             }
             snapshot_request = None;
             let mut authenticated = envelope;
             authenticated.correlation_id = Some(AUTHENTICATED_INTERNAL_SNAPSHOT_CORRELATION.into());
-            if !send_public(authenticated, &public_sender) {
-                fatal(
-                    "sidecar public response queue overflow",
-                    &control,
-                    &public_sender,
-                );
+            if !send_public(authenticated, &public) {
+                fatal("sidecar public response queue overflow", &control, &public);
                 return;
             }
             continue;
@@ -290,7 +302,7 @@ fn dispatch_loop(
                             .ok()
                     });
                     let Some(request_id) = request_id else {
-                        fatal("sidecar snapshot request failed", &control, &public_sender);
+                        fatal("sidecar snapshot request failed", &control, &public);
                         return;
                     };
                     snapshot_request = Some(SnapshotRequest {
@@ -302,7 +314,7 @@ fn dispatch_loop(
             }
             _ => {
                 discard_private_envelope(envelope);
-                fatal("sidecar private sequence invalid", &control, &public_sender);
+                fatal("sidecar private sequence invalid", &control, &public);
                 return;
             }
         }
@@ -313,19 +325,11 @@ fn dispatch_loop(
             .is_some_and(|correlation| correlation.starts_with("rust-workspace-"))
         {
             if envelope.kind != ProtocolKind::Response {
-                fatal(
-                    "sidecar workspace response invalid",
-                    &control,
-                    &public_sender,
-                );
+                fatal("sidecar workspace response invalid", &control, &public);
                 return;
             }
             if workspace_waiters.deliver(generation, envelope).is_err() {
-                fatal(
-                    "sidecar workspace response unavailable",
-                    &control,
-                    &public_sender,
-                );
+                fatal("sidecar workspace response unavailable", &control, &public);
                 return;
             }
             continue;
@@ -337,16 +341,19 @@ fn dispatch_loop(
             .is_some_and(|correlation| correlation.starts_with("rust-product-"))
         {
             if envelope.kind != ProtocolKind::Response {
-                fatal("sidecar product response invalid", &control, &public_sender);
+                fatal("sidecar product response invalid", &control, &public);
                 return;
             }
-            if product_waiters.deliver(generation, envelope).is_err() {
-                fatal(
-                    "sidecar product response unavailable",
-                    &control,
-                    &public_sender,
-                );
-                return;
+            match product_waiters.deliver(generation, envelope) {
+                Ok(ProductDelivery::Delivered) => {}
+                Ok(ProductDelivery::LateDiscarded) => record_diagnostic(
+                    &diagnostics,
+                    "A product response arrived after its request timed out and was discarded.",
+                ),
+                Ok(ProductDelivery::NotProduct) | Err(_) => {
+                    fatal("sidecar product response unavailable", &control, &public);
+                    return;
+                }
             }
             continue;
         }
@@ -368,7 +375,7 @@ fn dispatch_loop(
                     Ok(()) => discard_private_envelope(private_envelope),
                     Err(_) => {
                         discard_private_envelope(private_envelope);
-                        fatal("sidecar approval request invalid", &control, &public_sender);
+                        fatal("sidecar approval request invalid", &control, &public);
                         return;
                     }
                 }
@@ -385,7 +392,7 @@ fn dispatch_loop(
                     });
                 discard_private_envelope(envelope);
                 if result.is_err() {
-                    fatal("sidecar approval ready invalid", &control, &public_sender);
+                    fatal("sidecar approval ready invalid", &control, &public);
                     return;
                 }
                 continue;
@@ -403,23 +410,19 @@ fn dispatch_loop(
                     });
                 discard_private_envelope(envelope);
                 if result.is_err() {
-                    fatal("sidecar approval abandon invalid", &control, &public_sender);
+                    fatal("sidecar approval abandon invalid", &control, &public);
                     return;
                 }
                 continue;
             }
             if !method.is_some_and(|method| method.starts_with("credential.")) {
                 discard_private_envelope(envelope);
-                fatal("sidecar private method invalid", &control, &public_sender);
+                fatal("sidecar private method invalid", &control, &public);
                 return;
             }
             let Some(permit) = reserve_private_work(&outstanding) else {
                 discard_private_envelope(envelope);
-                fatal(
-                    "sidecar credential queue unavailable",
-                    &control,
-                    &public_sender,
-                );
+                fatal("sidecar credential queue unavailable", &control, &public);
                 return;
             };
             if !control.is_active() {
@@ -427,15 +430,13 @@ fn dispatch_loop(
                 drop(permit);
                 return;
             }
-            match private_sender.try_send(PrivateWork::new(envelope, permit)) {
+            match private_sender
+                .try_send(CoordinatorEvent::Work(PrivateWork::new(envelope, permit)))
+            {
                 Ok(()) => {}
                 Err(TrySendError::Full(work)) | Err(TrySendError::Disconnected(work)) => {
                     drop(work);
-                    fatal(
-                        "sidecar credential queue unavailable",
-                        &control,
-                        &public_sender,
-                    );
+                    fatal("sidecar credential queue unavailable", &control, &public);
                     return;
                 }
             }
@@ -445,26 +446,28 @@ fn dispatch_loop(
         if envelope.kind == ProtocolKind::Event
             && envelope.payload.get("eventType") == Some(&Value::String("unknown-event".into()))
         {
-            if let Ok(mut diagnostics) = diagnostics.lock() {
-                if diagnostics.len() == 64 {
-                    diagnostics.pop_front();
-                }
-                diagnostics.push_back(
-                    "Unknown sidecar event was redacted and withheld from the interface.".into(),
-                );
-            }
+            record_diagnostic(
+                &diagnostics,
+                "Unknown sidecar event was redacted and withheld from the interface.",
+            );
             continue;
         }
 
-        if !send_public(envelope, &public_sender) {
-            fatal(
-                "sidecar public response queue overflow",
-                &control,
-                &public_sender,
-            );
+        if !send_public(envelope, &public) {
+            fatal("sidecar public response queue overflow", &control, &public);
             return;
         }
     }
+}
+
+fn record_diagnostic(diagnostics: &Mutex<VecDeque<String>>, message: &str) {
+    let mut diagnostics = diagnostics
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if diagnostics.len() == 64 {
+        diagnostics.pop_front();
+    }
+    diagnostics.push_back(message.into());
 }
 
 fn reserve_private_work(outstanding: &Arc<AtomicUsize>) -> Option<WorkPermit> {
@@ -688,7 +691,13 @@ fn approval_coordinator_loop(
     writer: Arc<Mutex<GenerationWriter>>,
     control: Arc<GenerationControl>,
 ) {
+    // Jobs are still taken in the same order; only the idle wait changed
+    // from polling to blocking until a decision, an expiry or the end of
+    // the generation can have produced one.
+    let waker_registry = Arc::clone(&registry);
+    control.on_deactivate(Box::new(move || waker_registry.wake_coordinators()));
     while control.is_active() {
+        let observed = registry.work_epoch();
         match registry.take_group_response_job(generation) {
             Ok(Some(job)) => {
                 let response_token = job.response_token.clone();
@@ -739,7 +748,10 @@ fn approval_coordinator_loop(
                     }
                 }
             }
-            Ok(None) => thread::sleep(Duration::from_millis(10)),
+            Ok(None) if control.is_active() => {
+                registry.wait_for_work(observed, COORDINATOR_IDLE_WAIT);
+            }
+            Ok(None) => {}
             Err(_) => {
                 control.invalidate("approval state unavailable");
                 break;
@@ -751,98 +763,171 @@ fn approval_coordinator_loop(
 
 fn credential_coordinator_loop(
     generation: u64,
-    private_receiver: Receiver<PrivateWork>,
+    events: Receiver<CoordinatorEvent>,
+    events_sender: SyncSender<CoordinatorEvent>,
     proxy: CredentialProxy,
     writer: Arc<Mutex<GenerationWriter>>,
     control: Arc<GenerationControl>,
 ) {
-    let (completion_sender, completion_receiver) = sync_channel::<CompletedWork>(1);
+    // The end of the generation wakes a blocked wait at once. The waker only
+    // queues an event, so it is safe from whatever context invalidates.
+    let waker = events_sender.clone();
+    control.on_deactivate(Box::new(move || {
+        let _ = waker.try_send(CoordinatorEvent::Wake);
+    }));
     let mut buffered = VecDeque::with_capacity(PRIVATE_QUEUE_CAPACITY);
-    let mut operation_running = false;
+    let mut running: Option<RunningOperation> = None;
+    let mut next_token = 0_u64;
 
     loop {
         if !control.is_active() {
             cancel_buffered_work(&proxy, &mut buffered);
-            while let Ok(work) = private_receiver.try_recv() {
-                cancel_private_work(&proxy, work);
+            while let Ok(event) = events.try_recv() {
+                if let CoordinatorEvent::Work(work) = event {
+                    cancel_private_work(&proxy, work);
+                }
             }
             return;
         }
 
-        if operation_running {
-            match completion_receiver.try_recv() {
-                Ok(completed) => {
-                    operation_running = false;
-                    if !control.is_active() {
-                        drop(completed);
-                        continue;
-                    }
-                    let CompletedWork { pending, _permit } = completed;
-                    let result = writer
-                        .lock()
-                        .map_err(|_| "sidecar writer unavailable".to_string())
-                        .and_then(|mut writer| writer.write_private_response(generation, pending));
-                    drop(_permit);
-                    if result.is_err() && control.is_active() {
-                        fail_generation("sidecar private response write failed", &control, None);
-                        return;
-                    }
-                    continue;
-                }
-                Err(TryRecvError::Empty) => {}
-                Err(TryRecvError::Disconnected) => {
-                    fail_generation("sidecar credential worker unavailable", &control, None);
-                    return;
-                }
+        // Answer anything that has run out of time before the sidecar gives
+        // up on it. A request still queued is cancelled without running; an
+        // operation still inside storage is detached and its eventual
+        // result is dropped.
+        let now = Instant::now();
+        if let Some(operation) = running.take_if(|operation| now >= operation.reply_deadline) {
+            let pending = crate::credentials::proxy::PendingHostResponse::unavailable(
+                operation.correlation_id.to_string(),
+            );
+            if !write_private_reply(generation, &writer, &control, pending) {
+                return;
+            }
+        }
+        while buffered
+            .front()
+            .is_some_and(|work: &PrivateWork| now >= work.reply_deadline)
+        {
+            let mut work = buffered.pop_front().expect("expired work present");
+            let (request, permit) = work.take();
+            let written =
+                write_private_reply(generation, &writer, &control, proxy.cancel_request(request));
+            drop(permit);
+            if !written {
+                return;
             }
         }
 
-        while buffered.len() < PRIVATE_QUEUE_CAPACITY {
-            match private_receiver.try_recv() {
-                Ok(work) => buffered.push_back(work),
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) if buffered.is_empty() && !operation_running => {
-                    return;
-                }
-                Err(TryRecvError::Disconnected) => break,
-            }
-        }
-
-        if !operation_running && let Some(work) = buffered.pop_front() {
+        if running.is_none()
+            && let Some(work) = buffered.pop_front()
+        {
+            next_token = next_token.wrapping_add(1);
+            let token = next_token;
+            let correlation_id = Zeroizing::new(
+                work.request
+                    .as_ref()
+                    .map(|request| request.id.clone())
+                    .unwrap_or_default(),
+            );
+            let reply_deadline = work.reply_deadline;
             let operation_proxy = proxy.clone();
-            let operation_sender = completion_sender.clone();
+            let operation_sender = events_sender.clone();
             let mut candidate = Some(work);
             let promoted = control.authorised_attempt(|| {
                 let mut work = candidate.take().expect("promotion candidate owned");
-                operation_running = true;
                 thread::spawn(move || {
                     let (request, permit) = work.take();
                     let pending = operation_proxy.try_execute_request(request);
-                    let _ = operation_sender.send(CompletedWork {
-                        pending,
-                        _permit: permit,
-                    });
+                    let _ = operation_sender.send(CoordinatorEvent::Completed(
+                        token,
+                        CompletedWork {
+                            pending,
+                            _permit: permit,
+                        },
+                    ));
                 });
             });
-            if promoted.is_err()
-                && let Some(work) = candidate.take()
-            {
-                cancel_private_work(&proxy, work);
+            match promoted {
+                Ok(()) => {
+                    running = Some(RunningOperation {
+                        token,
+                        correlation_id,
+                        reply_deadline,
+                    });
+                }
+                Err(()) => {
+                    if let Some(work) = candidate.take() {
+                        cancel_private_work(&proxy, work);
+                    }
+                }
             }
             continue;
         }
 
-        match private_receiver.recv_timeout(Duration::from_millis(10)) {
-            Ok(work) => buffered.push_back(work),
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected)
-                if buffered.is_empty() && !operation_running =>
-            {
+        let next_deadline = running
+            .as_ref()
+            .map(|operation| operation.reply_deadline)
+            .into_iter()
+            .chain(buffered.front().map(|work| work.reply_deadline))
+            .min();
+        let wait = next_deadline.map_or(COORDINATOR_IDLE_WAIT, |deadline| {
+            deadline
+                .saturating_duration_since(Instant::now())
+                .min(COORDINATOR_IDLE_WAIT)
+        });
+        match events.recv_timeout(wait) {
+            Ok(CoordinatorEvent::Work(work)) => buffered.push_back(work),
+            Ok(CoordinatorEvent::Completed(token, completed)) => {
+                if running
+                    .as_ref()
+                    .is_none_or(|operation| operation.token != token)
+                {
+                    // Already answered as unavailable; this late result must
+                    // never become a second reply.
+                    drop(completed);
+                    continue;
+                }
+                running = None;
+                if !control.is_active() {
+                    drop(completed);
+                    continue;
+                }
+                let CompletedWork { pending, _permit } = completed;
+                let written = write_private_reply(generation, &writer, &control, pending);
+                drop(_permit);
+                if !written {
+                    return;
+                }
+            }
+            Ok(CoordinatorEvent::Wake) | Err(RecvTimeoutError::Timeout) => {}
+            // The coordinator holds a sender itself, so this cannot occur
+            // while it runs; treat it as the end of the generation.
+            Err(RecvTimeoutError::Disconnected) => {
+                cancel_buffered_work(&proxy, &mut buffered);
                 return;
             }
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {}
         }
     }
+}
+
+/// Writes one credential reply. `false` means the generation has ended and
+/// the coordinator must stop.
+fn write_private_reply(
+    generation: u64,
+    writer: &Mutex<GenerationWriter>,
+    control: &Arc<GenerationControl>,
+    pending: crate::credentials::proxy::PendingHostResponse,
+) -> bool {
+    let result = writer
+        .lock()
+        .map_err(|_| "sidecar writer unavailable".to_string())
+        .and_then(|mut writer| writer.write_private_response(generation, pending));
+    if result.is_err() && control.is_active() {
+        fail_generation("sidecar private response write failed", control, None);
+        return false;
+    }
+    // A write refused because the generation already ended is not a new
+    // failure; the next pass cancels what remains.
+    true
 }
 
 fn cancel_buffered_work(proxy: &CredentialProxy, buffered: &mut VecDeque<PrivateWork>) {
@@ -873,27 +958,17 @@ fn valid_snapshot(envelope: &Envelope, after_sequence: u64) -> bool {
         && snapshot.get("state").is_some_and(Value::is_object)
 }
 
-fn send_public(envelope: Envelope, sender: &SyncSender<PublicMessage>) -> bool {
+fn send_public(envelope: Envelope, public: &PublicRouter) -> bool {
     debug_assert!(!matches!(
         envelope.kind,
         ProtocolKind::HostRequest | ProtocolKind::HostResponse
     ));
-    match sender.try_send(Ok(envelope)) {
-        Ok(()) => true,
-        Err(TrySendError::Full(message)) | Err(TrySendError::Disconnected(message)) => {
-            drop(message);
-            false
-        }
-    }
+    public.route(envelope)
 }
 
-fn fatal(
-    message: &str,
-    control: &Arc<GenerationControl>,
-    public_sender: &SyncSender<PublicMessage>,
-) {
+fn fatal(message: &str, control: &Arc<GenerationControl>, public: &PublicRouter) {
     fail_generation(message, control, None);
-    let _ = public_sender.try_send(Err(message.to_string()));
+    public.fail(message);
 }
 
 #[cfg(test)]
@@ -901,8 +976,10 @@ mod tests {
     use super::*;
     use crate::protocol::validate_envelope;
     use crate::supervisor::process::NonblockingSink;
+    use crate::supervisor::public_router::PublicMessage;
     use std::io::Error;
     use std::sync::mpsc::SyncSender;
+    use std::sync::mpsc::TryRecvError;
     use std::time::{Duration, Instant};
     use zeroize::Zeroizing;
 
@@ -1032,13 +1109,15 @@ mod tests {
 
     struct Rig {
         raw: SyncSender<RawFrame>,
-        public: Receiver<PublicMessage>,
+        public: Arc<PublicRouter>,
         workspace: Receiver<PublicMessage>,
         control: Arc<GenerationControl>,
         failure: crate::supervisor::stdio::FailureSignal,
         writer: Arc<Mutex<GenerationWriter>>,
         approval_registry: Arc<ApprovalRegistry>,
         workspace_registry: Arc<WorkspaceRegistry>,
+        product_waiters: Arc<ProductWaiters>,
+        diagnostics: Arc<Mutex<VecDeque<String>>>,
         sink: SharedSink,
         handles: DispatcherHandles,
     }
@@ -1054,7 +1133,7 @@ mod tests {
                 Arc::clone(&control),
             )));
             let (raw, raw_receiver) = sync_channel(RAW_QUEUE_CAPACITY);
-            let (public_sender, public) = sync_channel(PUBLIC_QUEUE_CAPACITY);
+            let public = Arc::new(PublicRouter::new(PUBLIC_QUEUE_CAPACITY));
             let workspace_waiters = Arc::new(WorkspaceWaiters::new());
             let (workspace_sender, workspace) = sync_channel(1);
             workspace_waiters
@@ -1067,19 +1146,21 @@ mod tests {
             }))).unwrap();
             let approval_registry = Arc::new(ApprovalRegistry::default());
             let workspace_registry = Arc::new(WorkspaceRegistry::default());
+            let product_waiters = Arc::new(ProductWaiters::new());
+            let diagnostics = Arc::new(Mutex::new(VecDeque::new()));
             let handles = start_dispatcher(
                 1,
                 decoder,
                 raw_receiver,
-                public_sender,
+                Arc::clone(&public),
                 workspace_waiters,
-                Arc::new(ProductWaiters::new()),
+                Arc::clone(&product_waiters),
                 proxy,
                 Arc::clone(&approval_registry),
                 Arc::clone(&workspace_registry),
                 Arc::clone(&writer),
                 Arc::clone(&control),
-                Arc::new(Mutex::new(VecDeque::new())),
+                Arc::clone(&diagnostics),
                 0,
             );
             Self {
@@ -1091,6 +1172,8 @@ mod tests {
                 writer,
                 approval_registry,
                 workspace_registry,
+                product_waiters,
+                diagnostics,
                 sink,
                 handles,
             }
@@ -1583,6 +1666,108 @@ mod tests {
     }
 
     #[test]
+    fn an_abandon_for_a_cohort_the_host_already_cleaned_up_is_acknowledged() {
+        let rig = Rig::new(CredentialProxy::in_memory_for_dispatcher_test());
+        rig.send(host(
+            1,
+            "sidecar-abandon-unknown-1",
+            serde_json::json!({
+                "method":"approval.abandon","schemaVersion":2,"generation":1,
+                "sessionId":format!("session-{:032x}", 1),
+                "workspaceId":format!("workspace-{:032x}", 2),
+                "workspaceRevision":1,
+                "assistantEntryId":"assistant-entry-gone",
+                "cohortDigest":"c".repeat(64),
+                "reason":"pi-abort"
+            }),
+        ))
+        .unwrap();
+        let written = rig.wait_for_lines(1);
+        assert_eq!(written[0].kind, ProtocolKind::HostResponse);
+        assert_eq!(
+            written[0].correlation_id.as_deref(),
+            Some("sidecar-abandon-unknown-1")
+        );
+        assert_eq!(written[0].payload["method"], "approval.abandon-ack");
+        assert_eq!(written[0].payload["cohortDigest"], "c".repeat(64));
+        assert_eq!(written[0].payload["cancelled"], true);
+        assert!(
+            rig.control.is_active(),
+            "a racing abandon must not be fatal"
+        );
+
+        // A malformed abandon is still a protocol violation.
+        rig.send(host(
+            2,
+            "sidecar-abandon-malformed-1",
+            serde_json::json!({
+                "method":"approval.abandon","schemaVersion":2,"generation":1,
+                "sessionId":format!("session-{:032x}", 1),
+                "workspaceId":format!("workspace-{:032x}", 2),
+                "workspaceRevision":1,
+                "assistantEntryId":"assistant-entry-gone",
+                "cohortDigest":"c".repeat(64),
+                "reason":"not-a-reason"
+            }),
+        ))
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while rig.control.is_active() {
+            assert!(Instant::now() < deadline, "malformed abandon was accepted");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        rig.shutdown();
+    }
+
+    #[test]
+    fn a_late_product_response_is_discarded_without_ending_the_generation() {
+        let rig = Rig::new(CredentialProxy::in_memory_for_dispatcher_test());
+        let (sender, receiver) = sync_channel(1);
+        rig.product_waiters
+            .register("rust-product-1-7", 1, sender)
+            .unwrap();
+        // The command gave up waiting, exactly as the waiter's Drop does.
+        drop(receiver);
+        rig.product_waiters.retire("rust-product-1-7");
+        rig.send(serde_json::json!({
+            "version":1,"kind":"response","id":"sidecar-late-product",
+            "correlationId":"rust-product-1-7","sequence":1,
+            "payload":{"schemaVersion":1,"compacted":true}
+        }))
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while rig.diagnostics.lock().unwrap().is_empty() {
+            assert!(Instant::now() < deadline, "late response not recorded");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(rig.control.is_active(), "a late answer must not be fatal");
+        assert!(rig.failure.lock().unwrap().is_none());
+        assert!(
+            rig.diagnostics.lock().unwrap()[0].contains("after its request timed out"),
+            "{:?}",
+            rig.diagnostics.lock().unwrap()
+        );
+
+        // A correlation that was never issued is still a protocol violation.
+        rig.send(serde_json::json!({
+            "version":1,"kind":"response","id":"sidecar-unknown-product",
+            "correlationId":"rust-product-1-8","sequence":2,
+            "payload":{"schemaVersion":1,"compacted":true}
+        }))
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while rig.control.is_active() {
+            assert!(Instant::now() < deadline, "unknown response was accepted");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(
+            rig.failure.lock().unwrap().as_deref(),
+            Some("sidecar product response unavailable")
+        );
+        rig.shutdown();
+    }
+
+    #[test]
     fn shutdown_drains_queued_canaries_when_executing_repository_never_returns() {
         let (proxy, gate) = CredentialProxy::in_memory_with_dispatcher_gate_for_test();
         let replacement_proxy = proxy.clone();
@@ -1677,15 +1862,14 @@ mod tests {
         ))
         .unwrap();
         sender
-            .send(PrivateWork::new(
+            .send(CoordinatorEvent::Work(PrivateWork::new(
                 request,
                 reserve_private_work(&outstanding).unwrap(),
-            ))
+            )))
             .unwrap();
-        drop(sender);
         let coordinator_control = Arc::clone(&control);
         let coordinator = thread::spawn(move || {
-            credential_coordinator_loop(1, receiver, proxy, writer, coordinator_control)
+            credential_coordinator_loop(1, receiver, sender, proxy, writer, coordinator_control)
         });
         reached.wait();
         assert!(control.deactivate());
@@ -1708,6 +1892,131 @@ mod tests {
         let mut decoder = ProtocolDecoder::default();
         let listed = decoder.decode(&listed).unwrap();
         assert_eq!(listed.payload["entries"].as_array().map(Vec::len), Some(0));
+    }
+
+    fn coordinator_rig(
+        proxy: CredentialProxy,
+    ) -> (
+        Arc<GenerationControl>,
+        SharedSink,
+        SyncSender<CoordinatorEvent>,
+        Arc<AtomicUsize>,
+        JoinHandle<()>,
+    ) {
+        let control = Arc::new(GenerationControl::new(i32::MAX, Arc::new(Mutex::new(None))));
+        let sink = SharedSink::default();
+        let writer = Arc::new(Mutex::new(GenerationWriter::with_sink_for_test(
+            1,
+            Box::new(sink.clone()),
+            Arc::clone(&control),
+        )));
+        let (sender, receiver) = sync_channel(PRIVATE_QUEUE_CAPACITY + 2);
+        let coordinator_sender = sender.clone();
+        let coordinator_control = Arc::clone(&control);
+        let coordinator = thread::spawn(move || {
+            credential_coordinator_loop(
+                1,
+                receiver,
+                coordinator_sender,
+                proxy,
+                writer,
+                coordinator_control,
+            )
+        });
+        (
+            control,
+            sink,
+            sender,
+            Arc::new(AtomicUsize::new(0)),
+            coordinator,
+        )
+    }
+
+    fn written_replies(sink: &SharedSink) -> Vec<Envelope> {
+        let bytes = sink.0.lock().unwrap().clone();
+        let mut decoder = ProtocolDecoder::default();
+        bytes
+            .split_inclusive(|byte| *byte == b'\n')
+            .map(|line| decoder.decode(line).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn a_credential_request_stuck_in_storage_is_answered_before_the_sidecar_gives_up() {
+        assert!(CREDENTIAL_REPLY_BUDGET < Duration::from_secs(120));
+        let (proxy, gate) = CredentialProxy::in_memory_with_dispatcher_gate_for_test();
+        let (control, sink, sender, outstanding, coordinator) = coordinator_rig(proxy);
+        let short_budget = |id: &str, provider: &str| {
+            let request: Envelope = serde_json::from_value(host(
+                1,
+                id,
+                serde_json::json!({
+                    "method":"credential.set","providerId":provider,
+                    "credential":{"type":"api_key","key":"stuck-value"}
+                }),
+            ))
+            .unwrap();
+            let mut work = PrivateWork::new(request, reserve_private_work(&outstanding).unwrap());
+            work.reply_deadline = Instant::now() + Duration::from_millis(80);
+            CoordinatorEvent::Work(work)
+        };
+        sender
+            .send(short_budget("stuck-set", "stuck-provider"))
+            .unwrap();
+        gate.wait_until_entered();
+        // Queued behind the stuck operation; its own budget also runs out.
+        sender
+            .send(short_budget("queued-set", "queued-provider"))
+            .unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while written_replies(&sink).len() < 2 {
+            assert!(
+                Instant::now() < deadline,
+                "stuck requests were not answered"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let replies = written_replies(&sink);
+        let by_correlation = |id: &str| {
+            replies
+                .iter()
+                .find(|reply| reply.correlation_id.as_deref() == Some(id))
+                .unwrap_or_else(|| panic!("no reply for {id}"))
+        };
+        assert_eq!(
+            by_correlation("stuck-set")
+                .error
+                .as_ref()
+                .map(|error| error.category),
+            Some(crate::protocol::ErrorCategory::Unavailable)
+        );
+        assert!(by_correlation("queued-set").error.is_some());
+        assert!(
+            control.is_active(),
+            "an honest failure keeps the generation"
+        );
+
+        // The stuck operation eventually finishes; its late result must not
+        // become a second reply.
+        gate.release();
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(written_replies(&sink).len(), 2);
+        assert_eq!(outstanding.load(Ordering::Acquire), 0);
+        control.deactivate();
+        coordinator.join().unwrap();
+    }
+
+    #[test]
+    fn an_idle_credential_coordinator_stops_as_soon_as_the_generation_ends() {
+        let (control, _sink, _sender, _outstanding, coordinator) =
+            coordinator_rig(CredentialProxy::in_memory_for_dispatcher_test());
+        std::thread::sleep(Duration::from_millis(50));
+        let started = Instant::now();
+        assert!(control.deactivate());
+        coordinator.join().unwrap();
+        // Far below the idle safety-net wait: the deactivation woke it.
+        assert!(started.elapsed() < COORDINATOR_IDLE_WAIT / 2);
     }
 
     #[test]
@@ -1787,13 +2096,13 @@ mod tests {
             Arc::clone(&control),
         )));
         let (raw, raw_receiver) = sync_channel(RAW_QUEUE_CAPACITY);
-        let (public_sender, _public) = sync_channel(PUBLIC_QUEUE_CAPACITY);
+        let public = Arc::new(PublicRouter::new(PUBLIC_QUEUE_CAPACITY));
         let workspace_waiters = Arc::new(WorkspaceWaiters::new());
         let handles = start_dispatcher(
             1,
             ProtocolDecoder::default(),
             raw_receiver,
-            public_sender,
+            public,
             workspace_waiters,
             Arc::new(ProductWaiters::new()),
             CredentialProxy::in_memory_for_dispatcher_test(),

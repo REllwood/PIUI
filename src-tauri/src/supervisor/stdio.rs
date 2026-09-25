@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use zeroize::Zeroizing;
 
 pub(super) type FailureSignal = Arc<Mutex<Option<String>>>;
+pub(super) type DeactivationWaker = Box<dyn FnOnce() + Send>;
 
 pub(super) enum AttemptAuthorisationError {
     Inactive,
@@ -29,6 +30,9 @@ pub(super) struct GenerationControl {
     process_group: i32,
     failure: FailureSignal,
     stdin: Mutex<Option<ChildStdin>>,
+    // Coordinators block instead of polling, so the end of a generation has
+    // to wake them. `None` once the wakers have run.
+    wakers: Mutex<Option<Vec<DeactivationWaker>>>,
     #[cfg(test)]
     authorisation_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
@@ -41,6 +45,7 @@ impl GenerationControl {
             process_group,
             failure,
             stdin: Mutex::new(None),
+            wakers: Mutex::new(Some(Vec::new())),
             #[cfg(test)]
             authorisation_hook: Mutex::new(None),
         }
@@ -48,6 +53,34 @@ impl GenerationControl {
 
     pub(super) fn is_active(&self) -> bool {
         self.active.load(Ordering::Acquire)
+    }
+
+    /// Runs `waker` once this generation stops being active, or at once if
+    /// it already has.
+    pub(super) fn on_deactivate(&self, waker: DeactivationWaker) {
+        let mut wakers = self
+            .wakers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(pending) = wakers.as_mut()
+            && self.is_active()
+        {
+            pending.push(waker);
+            return;
+        }
+        drop(wakers);
+        waker();
+    }
+
+    fn run_wakers(&self) {
+        let wakers = self
+            .wakers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        for waker in wakers.into_iter().flatten() {
+            waker();
+        }
     }
 
     pub(super) fn attach_stdin(&self, stdin: ChildStdin) -> Result<(), String> {
@@ -151,17 +184,24 @@ impl GenerationControl {
         unsafe {
             libc::kill(-self.process_group, libc::SIGKILL);
         }
+        self.run_wakers();
         true
     }
 
     pub(super) fn deactivate(&self) -> bool {
-        let _gate = self
-            .transition
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let transitioned = self.active.swap(false, Ordering::AcqRel);
+        let transitioned = {
+            let _gate = self
+                .transition
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let transitioned = self.active.swap(false, Ordering::AcqRel);
+            if transitioned {
+                self.close_stdin();
+            }
+            transitioned
+        };
         if transitioned {
-            self.close_stdin();
+            self.run_wakers();
         }
         transitioned
     }
@@ -330,7 +370,11 @@ pub(super) fn stderr_reader(
             if text.is_empty() {
                 continue;
             }
-            let mut ring = diagnostics.lock().expect("diagnostic ring poisoned");
+            // Diagnostics are best-effort text; a panic elsewhere while the
+            // ring was held must not take the stderr drain down with it.
+            let mut ring = diagnostics
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if ring.len() == 64 {
                 ring.pop_front();
             }
@@ -422,6 +466,48 @@ mod tests {
         control.deactivate();
         let _ = child.kill();
         let _ = child.wait();
+    }
+
+    /// A panic elsewhere while the diagnostic ring was held poisons it. The
+    /// stderr drain must keep recording rather than panic and stop draining,
+    /// which would eventually block the sidecar on a full stderr pipe.
+    #[test]
+    fn a_poisoned_diagnostic_ring_keeps_draining_stderr() {
+        let ring = Arc::new(Mutex::new(VecDeque::new()));
+        let poisoner = Arc::clone(&ring);
+        let _ = thread::spawn(move || {
+            let _held = poisoner.lock().unwrap();
+            panic!("poison the diagnostic ring");
+        })
+        .join();
+        assert!(ring.is_poisoned());
+        let mut child = Command::new("/bin/sh")
+            .args([
+                "-c",
+                "echo first diagnostic >&2; echo second diagnostic >&2",
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("stderr child spawns");
+        let stderr = child.stderr.take().expect("child stderr");
+        let handle = stderr_reader(
+            stderr,
+            Arc::clone(&ring),
+            StderrRedactor::with_home("/nonexistent-piui-home"),
+        );
+        handle
+            .join()
+            .expect("stderr drain survives a poisoned ring");
+        let _ = child.wait();
+        let lines = ring
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(lines.len(), 2, "both diagnostics recorded: {lines:?}");
     }
 
     /// End to end over a real pipe: one flush many times the queue's size must

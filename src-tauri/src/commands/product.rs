@@ -1,4 +1,5 @@
 use super::bridge::{BridgeState, DeliveryAcceptance, bridge_start_transport};
+use crate::domain::product_sessions::{SESSION_WORKSPACE_UNTRUSTED, SessionBinding};
 use crate::platform::attachments::AttachmentRegistry;
 use crate::protocol::{Envelope, ProtocolKind};
 use crate::supervisor::pi_agent_dir_within;
@@ -11,6 +12,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Manager, State, WebviewWindow};
 
 const PRODUCT_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+const PRODUCT_LONG_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -205,7 +207,11 @@ pub async fn product_create_session(
             .to_str()
             .ok_or_else(|| "workspace path unavailable".to_string())?;
         let agent_dir = pi_agent_dir(&app)?;
-        request(
+        let binding = SessionBinding {
+            workspace_id: workspace.workspace_id.clone(),
+            workspace_revision: workspace.revision,
+        };
+        let (response, generation) = request_in_generation(
             &transport,
             "product.session.create",
             Map::from_iter([
@@ -227,7 +233,11 @@ pub async fn product_create_session(
                     request_data.model_id.map_or(Value::Null, Value::from),
                 ),
             ]),
-        )
+        )?;
+        let sessions = transport.product_sessions();
+        sessions.bind_answered(&response, &binding);
+        sessions.mark_live(&binding.workspace_id, generation);
+        Ok(response)
     })
     .await
     .map_err(|_| "session creation worker failed".to_string())?
@@ -250,17 +260,26 @@ pub async fn product_list_sessions(
             .to_str()
             .ok_or_else(|| "workspace path unavailable".to_string())?;
         let agent_dir = pi_agent_dir(&app)?;
-        request(
+        let response = request(
             &transport,
             "product.sessions.list",
             Map::from_iter([
                 ("schemaVersion".into(), Value::from(1)),
-                ("workspaceId".into(), Value::from(workspace.workspace_id)),
+                (
+                    "workspaceId".into(),
+                    Value::from(workspace.workspace_id.clone()),
+                ),
                 ("workspaceRevision".into(), Value::from(workspace.revision)),
                 ("workspacePath".into(), Value::from(path)),
                 ("agentDir".into(), Value::from(agent_dir)),
             ]),
-        )
+        )?;
+        transport.product_sessions().bind_listed(
+            &response,
+            &workspace.workspace_id,
+            workspace.revision,
+        );
+        Ok(response)
     })
     .await
     .map_err(|_| "session listing worker failed".to_string())?
@@ -438,7 +457,7 @@ fn validated_session_path(value: &str, home: &Path) -> Result<PathBuf, String> {
     let canonical = path
         .canonicalize()
         .map_err(|_| "session-trash-target-invalid".to_string())?;
-    let session_root = home.join(".pi").join("agent").join("sessions");
+    let session_root = session_root_within(home);
     let canonical_root = session_root
         .canonicalize()
         .map_err(|_| "session-trash-target-invalid".to_string())?;
@@ -448,6 +467,10 @@ fn validated_session_path(value: &str, home: &Path) -> Result<PathBuf, String> {
         return Err("session-trash-target-invalid".into());
     }
     Ok(canonical)
+}
+
+fn session_root_within(home: &Path) -> PathBuf {
+    pi_agent_dir_within(home).join("sessions")
 }
 
 #[cfg(unix)]
@@ -561,9 +584,11 @@ pub async fn product_set_resource_enabled(
     let transport = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         bridge_start_transport(&transport)?;
-        request(
+        let session_id = request_data.session_id.clone();
+        trusted_session_request(
             &transport,
             "product.resource.set-enabled",
+            &session_id,
             Map::from_iter([
                 ("schemaVersion".into(), Value::from(1)),
                 ("sessionId".into(), Value::from(request_data.session_id)),
@@ -592,9 +617,11 @@ pub async fn product_install_package(
     let transport = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         bridge_start_transport(&transport)?;
-        request(
+        let session_id = request_data.session_id.clone();
+        trusted_session_request(
             &transport,
             "product.package.install",
+            &session_id,
             Map::from_iter([
                 ("schemaVersion".into(), Value::from(1)),
                 ("sessionId".into(), Value::from(request_data.session_id)),
@@ -624,9 +651,11 @@ pub async fn product_mutate_package(
     let transport = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         bridge_start_transport(&transport)?;
-        request(
+        let session_id = request_data.session_id.clone();
+        trusted_session_request(
             &transport,
             "product.package.mutate",
+            &session_id,
             Map::from_iter([
                 ("schemaVersion".into(), Value::from(1)),
                 ("sessionId".into(), Value::from(request_data.session_id)),
@@ -656,9 +685,11 @@ pub async fn product_save_setting(
     let transport = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         bridge_start_transport(&transport)?;
-        request(
+        let session_id = request_data.session_id.clone();
+        trusted_session_request(
             &transport,
             "product.setting.save",
+            &session_id,
             Map::from_iter([
                 ("schemaVersion".into(), Value::from(1)),
                 ("sessionId".into(), Value::from(request_data.session_id)),
@@ -714,9 +745,11 @@ pub async fn product_queue_follow_up(
     let transport = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         bridge_start_transport(&transport)?;
-        request(
+        let session_id = request_data.session_id.clone();
+        trusted_session_request(
             &transport,
             "product.queue.followup",
+            &session_id,
             Map::from_iter([
                 ("schemaVersion".into(), Value::from(1)),
                 ("sessionId".into(), Value::from(request_data.session_id)),
@@ -740,9 +773,11 @@ pub async fn product_replace_follow_up_queue(
     let transport = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         bridge_start_transport(&transport)?;
-        request(
+        let session_id = request_data.session_id.clone();
+        trusted_session_request(
             &transport,
             "product.queue.replace",
+            &session_id,
             Map::from_iter([
                 ("schemaVersion".into(), Value::from(1)),
                 ("sessionId".into(), Value::from(request_data.session_id)),
@@ -821,9 +856,11 @@ pub async fn product_session_export(
     let transport = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         bridge_start_transport(&transport)?;
-        let result = request(
+        let session_id = request_data.session_id.clone();
+        let result = trusted_session_request(
             &transport,
             "product.session.export",
+            &session_id,
             Map::from_iter([
                 ("schemaVersion".into(), Value::from(1)),
                 ("sessionId".into(), Value::from(request_data.session_id)),
@@ -853,18 +890,27 @@ async fn session_reference_request(
     let transport = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         bridge_start_transport(&transport)?;
-        request(
-            &transport,
+        let payload = Map::from_iter([
+            ("schemaVersion".into(), Value::from(1)),
+            (
+                "sessionId".into(),
+                Value::from(request_data.session_id.clone()),
+            ),
+            (
+                "expectedGeneration".into(),
+                Value::from(request_data.expected_generation),
+            ),
+        ]);
+        // Resuming or forking builds a runtime in the workspace and
+        // compacting runs the model there; reading back state does neither.
+        if matches!(
             method,
-            Map::from_iter([
-                ("schemaVersion".into(), Value::from(1)),
-                ("sessionId".into(), Value::from(request_data.session_id)),
-                (
-                    "expectedGeneration".into(),
-                    Value::from(request_data.expected_generation),
-                ),
-            ]),
-        )
+            "product.session.resume" | "product.session.fork" | "product.session.compact"
+        ) {
+            trusted_session_request(&transport, method, &request_data.session_id, payload)
+        } else {
+            request(&transport, method, payload)
+        }
     })
     .await
     .map_err(|_| "session operation worker failed".to_string())?
@@ -878,7 +924,13 @@ async fn change_request(
     let transport = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         bridge_start_transport(&transport)?;
-        request(&transport, method, change_payload(request_data))
+        let session_id = request_data.session_id.clone();
+        trusted_session_request(
+            &transport,
+            method,
+            &session_id,
+            change_payload(request_data),
+        )
     })
     .await
     .map_err(|_| "change operation worker failed".to_string())?
@@ -924,6 +976,7 @@ pub async fn product_turn_start(
             ])))
         })
         .collect::<Result<Vec<_>, String>>()?;
+    let session_id = request_data.session_id.clone();
     let envelope = Envelope {
         version: 1,
         kind: ProtocolKind::Request,
@@ -945,28 +998,48 @@ pub async fn product_turn_start(
         ]),
         error: None,
     };
-    let readiness = transport.clone();
-    tauri::async_runtime::spawn_blocking(move || bridge_start_transport(&readiness))
-        .await
-        .map_err(|_| "turn readiness worker failed".to_string())??;
-    let _worker = tauri::async_runtime::spawn_blocking(move || {
-        super::stream::run_stream_transport_receipted(&transport, envelope, |generation, event| {
-            if event.kind == ProtocolKind::Ack {
-                transport
-                    .enqueue_ack_event(generation, event)
-                    .map(DeliveryAcceptance::Receipt)
-            } else {
-                transport
-                    .enqueue_event(generation, event)
-                    .map(|()| DeliveryAcceptance::Immediate)
-            }
-        })
+    // Everything up to and including writing the request is awaited, so a
+    // turn that cannot start rejects this command. The turn itself runs on
+    // after the command returns; if it fails later the interface receives a
+    // `stream.failed` terminal instead of waiting for one that never comes.
+    let starting = transport.clone();
+    let opened = tauri::async_runtime::spawn_blocking(move || {
+        bridge_start_transport(&starting)?;
+        let binding = require_trusted_session(&starting, &session_id)?;
+        let opened = super::stream::open_stream(&starting, envelope)?;
+        starting
+            .product_sessions()
+            .mark_live(&binding.workspace_id, opened.generation());
+        Ok::<_, String>(opened)
+    })
+    .await
+    .map_err(|_| "turn start worker failed".to_string())??;
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = super::stream::drive_stream_transport_receipted(
+            opened,
+            super::stream::FailureNotice::Project,
+            |generation, event| {
+                if event.kind == ProtocolKind::Ack {
+                    transport
+                        .enqueue_ack_event(generation, event)
+                        .map(DeliveryAcceptance::Receipt)
+                } else {
+                    transport
+                        .enqueue_event(generation, event)
+                        .map(|()| DeliveryAcceptance::Immediate)
+                }
+            },
+        );
+        if let Err(reason) = result {
+            // Fixed host strings only; no payload or path reaches the log.
+            eprintln!("PIUI product turn ended early reason={reason}");
+        }
     });
     Ok(())
 }
 
 #[tauri::command]
-pub fn product_turn_stop(
+pub async fn product_turn_stop(
     state: State<'_, BridgeState>,
     request_data: ProductTurnStopRequest,
 ) -> Result<(), String> {
@@ -980,7 +1053,12 @@ pub fn product_turn_stop(
         payload: Map::new(),
         error: None,
     };
-    super::stream::cancel_stream_transport(state.inner(), cancellation)
+    let transport = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        super::stream::cancel_stream_transport(&transport, cancellation)
+    })
+    .await
+    .map_err(|_| "turn stop worker failed".to_string())?
 }
 
 #[tauri::command]
@@ -999,6 +1077,50 @@ fn request(
     method: &str,
     payload: Map<String, Value>,
 ) -> Result<Value, String> {
+    request_in_generation(state, method, payload).map(|(response, _)| response)
+}
+
+/// Requires the session's workspace to still be trusted at the revision the
+/// session was bound under. Every command that runs the agent or changes a
+/// workspace goes through here, so a revoke stops them even when the
+/// session's runtime was never part of a resource load.
+fn require_trusted_session(
+    state: &BridgeState,
+    session_id: &str,
+) -> Result<SessionBinding, String> {
+    let binding = state
+        .product_sessions()
+        .binding(session_id)
+        .ok_or_else(|| SESSION_WORKSPACE_UNTRUSTED.to_string())?;
+    state
+        .workspace_registry()
+        .execution_context(&binding.workspace_id, binding.workspace_revision)
+        .map_err(|_| SESSION_WORKSPACE_UNTRUSTED.to_string())?;
+    Ok(binding)
+}
+
+/// Runs a trusted session operation and records the runtime it leaves live.
+fn trusted_session_request(
+    state: &BridgeState,
+    method: &str,
+    session_id: &str,
+    payload: Map<String, Value>,
+) -> Result<Value, String> {
+    let binding = require_trusted_session(state, session_id)?;
+    let (response, generation) = request_in_generation(state, method, payload)?;
+    let sessions = state.product_sessions();
+    if matches!(method, "product.session.resume" | "product.session.fork") {
+        sessions.bind_answered(&response, &binding);
+    }
+    sessions.mark_live(&binding.workspace_id, generation);
+    Ok(response)
+}
+
+fn request_in_generation(
+    state: &BridgeState,
+    method: &str,
+    payload: Map<String, Value>,
+) -> Result<(Value, u64), String> {
     let supervisor = state.supervisor();
     let generation = supervisor
         .lock()
@@ -1010,9 +1132,157 @@ fn request(
         .map_err(|_| "sidecar state unavailable".to_string())?
         .begin_product_request(generation, method, payload)?;
     debug_assert_eq!(waiter.generation(), generation);
-    let envelope = waiter.wait(PRODUCT_REQUEST_TIMEOUT)?;
-    if envelope.error.is_some() {
-        return Err("product operation failed".into());
+    let envelope = waiter.wait(product_request_timeout(method))?;
+    if let Some(error) = envelope.error.as_ref() {
+        return Err(product_error_code(&error.message));
     }
-    Ok(Value::Object(envelope.payload))
+    Ok((Value::Object(envelope.payload), generation))
+}
+
+/// Compaction is a model call and package operations may reach the network,
+/// so they get longer than the default budget. A waiter that still times out
+/// leaves the sidecar running; its late response is discarded.
+fn product_request_timeout(method: &str) -> Duration {
+    match method {
+        "product.session.compact" | "product.package.install" | "product.package.mutate" => {
+            PRODUCT_LONG_REQUEST_TIMEOUT
+        }
+        _ => PRODUCT_REQUEST_TIMEOUT,
+    }
+}
+
+/// The sidecar reports product failures as stable kebab-case codes the
+/// interface can explain. Anything else could carry paths or provider text,
+/// so it collapses to one generic code before reaching the WebView.
+fn product_error_code(message: &str) -> String {
+    let bytes = message.as_bytes();
+    let code_shaped = (3..=64).contains(&bytes.len())
+        && bytes[0].is_ascii_lowercase()
+        && bytes[1..]
+            .iter()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-');
+    if code_shaped {
+        message.to_owned()
+    } else {
+        "product-operation-failed".into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn product_error_codes_reach_the_interface_only_when_code_shaped() {
+        for code in [
+            "session-generation-stale",
+            "provider-auth-required",
+            "abc",
+            "model2-unavailable",
+            &format!("a{}", "b".repeat(63)),
+        ] {
+            assert_eq!(product_error_code(code), code);
+        }
+        for rejected in [
+            "",
+            "ab",
+            "Session-stale",
+            "1session",
+            "-session",
+            "session stale",
+            "session_stale",
+            "/Users/someone/.pi/agent/auth.json",
+            "failed: ENOENT",
+            "sessión-stale",
+            &format!("a{}", "b".repeat(64)),
+        ] {
+            assert_eq!(
+                product_error_code(rejected),
+                "product-operation-failed",
+                "{rejected:?} must not reach the interface"
+            );
+        }
+    }
+
+    #[test]
+    fn model_and_network_product_calls_outlive_the_default_budget() {
+        assert_eq!(
+            product_request_timeout("product.session.compact"),
+            PRODUCT_LONG_REQUEST_TIMEOUT
+        );
+        assert_eq!(
+            product_request_timeout("product.package.install"),
+            PRODUCT_LONG_REQUEST_TIMEOUT
+        );
+        assert_eq!(
+            product_request_timeout("product.sessions.list"),
+            PRODUCT_REQUEST_TIMEOUT
+        );
+        assert!(PRODUCT_LONG_REQUEST_TIMEOUT >= Duration::from_secs(300));
+    }
+
+    #[test]
+    fn session_commands_require_their_workspace_to_stay_trusted_at_the_bound_revision() {
+        let state = BridgeState::new(crate::supervisor::SupervisorPaths {
+            node: PathBuf::from("unused-node"),
+            resource_root: PathBuf::from("unused-resources"),
+            entrypoint: PathBuf::from("unused-entrypoint"),
+        });
+        let root = std::env::temp_dir().join(format!(
+            "piui-product-trust-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let registry = state.workspace_registry();
+        let acquired = registry.acquire_selected_directory(&root).unwrap();
+        registry.inspect_metadata(&acquired.workspace_id).unwrap();
+        registry.open_untrusted(&acquired.workspace_id, 0).unwrap();
+        let (trusted, _) = registry.authorise(&acquired.workspace_id, 0).unwrap();
+        let session = format!("session-{:032x}", 7);
+
+        // Unknown sessions fail closed.
+        assert_eq!(
+            require_trusted_session(&state, &session).unwrap_err(),
+            SESSION_WORKSPACE_UNTRUSTED
+        );
+        state
+            .product_sessions()
+            .bind(&session, &trusted.workspace_id, trusted.revision);
+        let binding = require_trusted_session(&state, &session).unwrap();
+        assert_eq!(binding.workspace_id, trusted.workspace_id);
+
+        // Revocation stops every session-scoped operation at once.
+        let revoked = registry
+            .revoke(&trusted.workspace_id, trusted.revision)
+            .unwrap()
+            .cleanup();
+        assert_eq!(
+            require_trusted_session(&state, &session).unwrap_err(),
+            SESSION_WORKSPACE_UNTRUSTED
+        );
+
+        // Trusting it again is a new revision; the session must be listed
+        // again under that revision before it may run.
+        let (retrusted, _) = registry
+            .authorise(&trusted.workspace_id, revoked.revision)
+            .unwrap();
+        assert!(retrusted.revision > trusted.revision);
+        assert!(require_trusted_session(&state, &session).is_err());
+        state.product_sessions().bind_listed(
+            &serde_json::json!({"sessions":[{"id":session,"workspaceId":trusted.workspace_id}]}),
+            &retrusted.workspace_id,
+            retrusted.revision,
+        );
+        assert!(require_trusted_session(&state, &session).is_ok());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn session_trash_root_is_the_shared_pi_agent_directory() {
+        let home = Path::new("/Users/example");
+        assert_eq!(
+            session_root_within(home),
+            Path::new("/Users/example/.pi/agent/sessions")
+        );
+    }
 }

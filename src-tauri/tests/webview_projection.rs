@@ -370,6 +370,64 @@ fn real_child_recovers_after_more_than_replay_window_abandonments_and_rejects_la
 }
 
 #[test]
+fn concurrent_real_streams_each_receive_every_one_of_their_own_events() {
+    let root = temporary_fixture_root();
+    fs::create_dir_all(root.join("dist")).unwrap();
+    fs::write(root.join("manifest.json"), "{}\n").unwrap();
+    fs::write(root.join("dist/index.js"), INTERLEAVED_STREAMS_FIXTURE).unwrap();
+    let paths = SupervisorPaths::validated(find_program("node").unwrap(), root.clone()).unwrap();
+    let state = BridgeState::new(paths);
+    let workers = ["web-stream-left", "web-stream-right"]
+        .into_iter()
+        .map(|id| {
+            let worker_state = state.clone();
+            let request: Envelope = serde_json::from_value(serde_json::json!({
+                "version":1,"kind":"request","id":id,"sequence":1,
+                "payload":{"method":"stream.fixture"}
+            }))
+            .unwrap();
+            std::thread::spawn(move || {
+                let mut delivered = Vec::new();
+                let result = run_stream_transport(&worker_state, request, |envelope| {
+                    delivered.push(envelope.clone());
+                    Ok(())
+                });
+                (result, delivered)
+            })
+        })
+        .collect::<Vec<_>>();
+    for (worker, id) in workers
+        .into_iter()
+        .zip(["web-stream-left", "web-stream-right"])
+    {
+        let (result, delivered) = worker.join().unwrap();
+        assert_eq!(result, Ok(()), "{id} must complete");
+        assert!(
+            delivered
+                .iter()
+                .all(|envelope| envelope.correlation_id.as_deref() == Some(id)),
+            "{id} received another stream's events: {delivered:?}"
+        );
+        let texts = delivered
+            .iter()
+            .filter_map(|envelope| envelope.payload.get("text").and_then(Value::as_str))
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        let expected = (0..20)
+            .map(|index| format!("{id}-{index}"))
+            .collect::<Vec<_>>();
+        assert_eq!(texts, expected, "{id} lost or reordered events");
+        assert_eq!(
+            delivered.last().unwrap().payload["terminal"],
+            "complete",
+            "{id} terminal"
+        );
+    }
+    bridge_stop_transport(&state).unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn malformed_process_ack_does_not_settle_native_cancellation_or_suppress_terminal() {
     let root = temporary_fixture_root();
     fs::create_dir_all(root.join("dist")).unwrap();
@@ -705,6 +763,45 @@ process.stdin.on('data', (chunk) => {
         state:{status:'ready',streams:{[streamId]:{text:'healthy'}}}}}});
       write({version:1,kind:'event',id:`sidecar-${sequence}`,sequence:sequence++,
         correlationId:streamId,payload:{eventType:'stream.complete',terminal:'complete'}});
+    }
+  }
+});
+process.stdin.resume();
+const keepAlive = setInterval(() => undefined, 60000);
+process.stdin.on('end', () => { clearInterval(keepAlive); process.exit(0); });
+"#;
+
+const INTERLEAVED_STREAMS_FIXTURE: &str = r#"
+const write = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
+write({version:1,kind:'handshake',id:'sidecar-handshake',sequence:0,payload:{
+  nonce:process.env.PIUI_HANDSHAKE_NONCE,desktopVersion:process.env.PIUI_DESKTOP_VERSION,
+  protocolVersion:1,nodeVersion:'22.23.1',piVersion:'0.82.0',architecture:'arm64',
+  capabilities:['cancel','status','stream','host-credentials','workspace-trust-v1']
+}});
+let input = '';
+let sequence = 1;
+const streams = [];
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', (chunk) => {
+  input += chunk;
+  while (input.includes('\n')) {
+    const newline = input.indexOf('\n');
+    const envelope = JSON.parse(input.slice(0, newline));
+    input = input.slice(newline + 1);
+    if (envelope.payload.method !== 'stream.fixture') continue;
+    streams.push(envelope.id);
+    if (streams.length < 2) continue;
+    // Strictly alternate the two streams so each reader sees the other's
+    // traffic arrive between its own events.
+    for (let index = 0; index < 20; index += 1) {
+      for (const id of streams) {
+        write({version:1,kind:'event',id:`sidecar-${sequence}`,sequence:sequence++,
+          correlationId:id,payload:{eventType:'stream.delta',text:`${id}-${index}`}});
+      }
+    }
+    for (const id of streams) {
+      write({version:1,kind:'event',id:`sidecar-${sequence}`,sequence:sequence++,
+        correlationId:id,payload:{eventType:'stream.complete',terminal:'complete'}});
     }
   }
 });

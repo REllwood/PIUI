@@ -2,6 +2,7 @@ use super::dispatcher::{
     DispatcherHandles, PUBLIC_QUEUE_CAPACITY, RAW_QUEUE_CAPACITY, start_dispatcher,
 };
 use super::handshake::{HandshakeExpectation, protocol_architecture, validate_handshake};
+use super::public_router::{PublicRoute, PublicRouter};
 use super::redact::StderrRedactor;
 use super::stdio::{
     AttemptAuthorisationError, FailureSignal, GenerationControl, RawFrame, stderr_reader,
@@ -23,7 +24,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{
     Arc, Mutex,
-    mpsc::{self, Receiver, SyncSender, sync_channel},
+    mpsc::{self, Receiver, SyncSender, TrySendError, sync_channel},
 };
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -32,6 +33,7 @@ use zeroize::Zeroizing;
 const MAX_JS_SAFE_SEQUENCE: u64 = 9_007_199_254_740_991;
 const MAX_WORKSPACE_WAITERS: usize = 32;
 const MAX_PRODUCT_WAITERS: usize = 32;
+const MAX_RETIRED_PRODUCT_IDS: usize = 256;
 
 #[cfg(feature = "a23-credential-test")]
 const A23_RAW_CAPTURE_MAX_BYTES: usize = 262_144;
@@ -142,6 +144,27 @@ fn host_pi_agent_dir() -> Option<PathBuf> {
     pi_agent_dir_for_home(std::env::var_os("HOME"))
 }
 
+/// The host user's real, absolute home directory, if `HOME` names one.
+fn host_user_home() -> Option<PathBuf> {
+    user_home_for(std::env::var_os("HOME"))
+}
+
+fn user_home_for(home: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    home.map(PathBuf::from)
+        .filter(|path| path.is_absolute() && !path.as_os_str().is_empty())
+}
+
+/// Sidecar methods that exist only for fixtures and architecture probes
+/// (`stream.fixture` and friends) are reachable only in debug builds and the
+/// dedicated architecture/probe twins, never in a plain release build.
+pub(crate) const TEST_METHODS_ENABLED: bool = cfg!(any(
+    debug_assertions,
+    feature = "architecture-test",
+    feature = "a23-credential-test",
+    feature = "a25-approval-test",
+    feature = "a27-lifecycle-test"
+));
+
 #[derive(Debug, Clone)]
 pub struct SupervisorPaths {
     pub node: PathBuf,
@@ -247,6 +270,23 @@ pub struct SidecarStatus {
 
 pub(super) const APPROVAL_WRITE_MAX_DURATION: Duration = Duration::from_millis(250);
 const WRITE_POLL_SLICE: Duration = Duration::from_millis(20);
+// A frame larger than the pipe buffer needs Node to drain it several times.
+// Each further 64 KiB earns more time so a briefly busy event loop does not
+// end the generation, but no single write may hold the writer indefinitely.
+const FRAME_WRITE_BASE_BUDGET: Duration = Duration::from_millis(250);
+const FRAME_WRITE_BUDGET_PER_CHUNK: Duration = Duration::from_millis(125);
+const FRAME_WRITE_BUDGET_CHUNK_BYTES: usize = 65_536;
+const FRAME_WRITE_MAX_BUDGET: Duration = Duration::from_secs(2);
+
+/// Time allowed for one complete non-approval frame. Approval frames keep
+/// their own dispatcher-minted absolute deadline.
+fn frame_write_budget(frame_bytes: usize) -> Duration {
+    let extra_chunks = frame_bytes.saturating_sub(1) / FRAME_WRITE_BUDGET_CHUNK_BYTES;
+    FRAME_WRITE_BUDGET_PER_CHUNK
+        .saturating_mul(u32::try_from(extra_chunks).unwrap_or(u32::MAX))
+        .saturating_add(FRAME_WRITE_BASE_BUDGET)
+        .min(FRAME_WRITE_MAX_BUDGET)
+}
 const RESERVED_INTERNAL_ID_PREFIX: &str = "rust-";
 const RESERVED_UI_ID_PREFIX: &str = "ui-";
 
@@ -814,7 +854,7 @@ impl GenerationWriter {
 
     fn write_bytes(&mut self, bytes: Zeroizing<Vec<u8>>) -> Result<(), String> {
         let deadline = Instant::now()
-            .checked_add(APPROVAL_WRITE_MAX_DURATION)
+            .checked_add(frame_write_budget(bytes.len()))
             .ok_or_else(|| "sidecar write timed out".to_string())?;
         self.write_slice_until(&bytes, deadline)
     }
@@ -898,12 +938,24 @@ pub(super) struct WorkspaceWaiters {
 
 pub(super) struct ProductWaiters {
     pending: PendingEnvelopeWaiters,
+    // Requests whose waiter gave up before the sidecar answered. Their one
+    // late response is expected and harmless; any other unknown correlation
+    // is still a protocol violation.
+    retired: Mutex<VecDeque<String>>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum ProductDelivery {
+    NotProduct,
+    Delivered,
+    LateDiscarded,
 }
 
 impl ProductWaiters {
     pub(super) fn new() -> Self {
         Self {
             pending: Mutex::new(HashMap::with_capacity(MAX_PRODUCT_WAITERS)),
+            retired: Mutex::new(VecDeque::with_capacity(MAX_RETIRED_PRODUCT_IDS)),
         }
     }
 
@@ -924,12 +976,16 @@ impl ProductWaiters {
         Ok(())
     }
 
-    pub(super) fn deliver(&self, generation: u64, envelope: Envelope) -> Result<bool, String> {
+    pub(super) fn deliver(
+        &self,
+        generation: u64,
+        envelope: Envelope,
+    ) -> Result<ProductDelivery, String> {
         let Some(correlation) = envelope.correlation_id.as_deref() else {
-            return Ok(false);
+            return Ok(ProductDelivery::NotProduct);
         };
         if !correlation.starts_with("rust-product-") {
-            return Ok(false);
+            return Ok(ProductDelivery::NotProduct);
         }
         let waiter = self
             .pending
@@ -937,21 +993,55 @@ impl ProductWaiters {
             .map_err(|_| "product waiter unavailable".to_string())?
             .remove(correlation);
         let Some((expected_generation, sender)) = waiter else {
-            return Err("product response correlation unavailable".into());
+            let mut retired = self
+                .retired
+                .lock()
+                .map_err(|_| "product waiter unavailable".to_string())?;
+            return match retired.iter().position(|id| id == correlation) {
+                Some(position) => {
+                    retired.remove(position);
+                    Ok(ProductDelivery::LateDiscarded)
+                }
+                None => Err("product response correlation unavailable".into()),
+            };
         };
         if expected_generation != generation {
             return Err("stale product response".into());
         }
-        sender
-            .try_send(Ok(envelope))
-            .map_err(|_| "product waiter unavailable".to_string())?;
-        Ok(true)
+        match sender.try_send(Ok(envelope)) {
+            Ok(()) => Ok(ProductDelivery::Delivered),
+            // The waiter timed out between our claim and its own retirement.
+            Err(TrySendError::Disconnected(_)) => Ok(ProductDelivery::LateDiscarded),
+            Err(TrySendError::Full(_)) => Err("product waiter unavailable".into()),
+        }
     }
 
     fn cancel(&self, id: &str) {
         if let Ok(mut pending) = self.pending.lock() {
             pending.remove(id);
         }
+    }
+
+    /// A waiter abandoned without a response: stop routing to it, but
+    /// remember the correlation so the sidecar's eventual answer is dropped
+    /// rather than treated as a protocol violation.
+    pub(super) fn retire(&self, id: &str) {
+        let was_pending = self
+            .pending
+            .lock()
+            .map(|mut pending| pending.remove(id).is_some())
+            .unwrap_or(false);
+        if !was_pending {
+            return;
+        }
+        let mut retired = self
+            .retired
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if retired.len() == MAX_RETIRED_PRODUCT_IDS {
+            retired.pop_front();
+        }
+        retired.push_back(id.to_owned());
     }
 }
 
@@ -1117,7 +1207,7 @@ impl ProductWaiter {
 impl Drop for ProductWaiter {
     fn drop(&mut self) {
         if !self.id.is_empty() {
-            self.waiters.cancel(&self.id);
+            self.waiters.retire(&self.id);
         }
     }
 }
@@ -1126,7 +1216,7 @@ struct RunningSidecar {
     generation: u64,
     child: Child,
     writer: Arc<Mutex<GenerationWriter>>,
-    messages: Receiver<Result<Envelope, String>>,
+    public: Arc<PublicRouter>,
     workspace_waiters: Arc<WorkspaceWaiters>,
     product_waiters: Arc<ProductWaiters>,
     stdout: Option<JoinHandle<()>>,
@@ -1227,6 +1317,16 @@ impl SidecarSupervisor {
         if let Some(agent_dir) = host_pi_agent_dir() {
             command.env("PIUI_PI_AGENT_DIR", agent_dir);
         }
+        // Tools the agent runs (bash, package managers) need the user's real
+        // home and login PATH; the sealed HOME above is only for dependency
+        // discovery inside the bundle.
+        if let Some(home) = host_user_home() {
+            command.env("PIUI_USER_HOME", home);
+        }
+        command.env("PIUI_USER_PATH", super::login_path::user_login_path());
+        if TEST_METHODS_ENABLED {
+            command.env("PIUI_ENABLE_TEST_METHODS", "1");
+        }
         configure_architecture_test_sidecar(&mut command)?;
         let mut child = command
             .spawn()
@@ -1297,7 +1397,7 @@ impl SidecarSupervisor {
                 return self.abort_start(child, process_group, control, error);
             }
         };
-        let (public_sender, public_receiver) = mpsc::sync_channel(PUBLIC_QUEUE_CAPACITY);
+        let public = Arc::new(PublicRouter::new(PUBLIC_QUEUE_CAPACITY));
         let workspace_waiters = Arc::new(WorkspaceWaiters::new());
         let product_waiters = Arc::new(ProductWaiters::new());
         let DispatcherHandles {
@@ -1308,7 +1408,7 @@ impl SidecarSupervisor {
             generation,
             decoder,
             raw_receiver,
-            public_sender,
+            Arc::clone(&public),
             Arc::clone(&workspace_waiters),
             Arc::clone(&product_waiters),
             self.credential_proxy.clone(),
@@ -1323,7 +1423,7 @@ impl SidecarSupervisor {
             generation,
             child,
             writer,
-            messages: public_receiver,
+            public,
             workspace_waiters,
             product_waiters,
             stdout: Some(stdout_handle),
@@ -1584,6 +1684,35 @@ impl SidecarSupervisor {
             .write_public(generation, envelope)
     }
 
+    /// Opens the mailbox a stream reads its own events from. It must exist
+    /// before the stream request is written so no event can precede it.
+    pub(crate) fn open_public_route(
+        &self,
+        generation: u64,
+        request_id: &str,
+    ) -> Result<PublicRoute, String> {
+        let running = self
+            .running
+            .as_ref()
+            .filter(|running| running.generation == generation)
+            .ok_or_else(|| "stale sidecar generation".to_string())?;
+        PublicRoute::open(&running.public, &running.control, request_id)
+    }
+
+    /// Delivers the acknowledgement of `cancellation_id` to the stream it
+    /// cancels, when that stream is still listening.
+    pub(crate) fn route_acknowledgement(
+        &self,
+        generation: u64,
+        cancellation_id: &str,
+        stream_id: &str,
+    ) -> bool {
+        self.running
+            .as_ref()
+            .filter(|running| running.generation == generation)
+            .is_some_and(|running| running.public.alias(cancellation_id, stream_id))
+    }
+
     pub fn receive_envelope(&mut self, timeout: Duration) -> Result<Envelope, String> {
         let status = self.status();
         if !status.running {
@@ -1592,7 +1721,7 @@ impl SidecarSupervisor {
                 .unwrap_or_else(|| "sidecar is not running".into()));
         }
         let running = self.running.as_ref().expect("running status has sidecar");
-        match running.messages.recv_timeout(timeout) {
+        match running.public.recv_timeout(timeout) {
             Ok(Ok(envelope)) => Ok(envelope),
             Ok(Err(error)) => Err(error),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
@@ -1648,7 +1777,7 @@ impl SidecarSupervisor {
                 running
                     .diagnostics
                     .lock()
-                    .expect("diagnostic ring poisoned")
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .iter()
                     .cloned()
                     .collect()
@@ -2484,6 +2613,248 @@ process.stdin.resume();
         assert!(!marker.exists());
         supervisor.stop().unwrap();
         assert!(!marker.exists());
+    }
+
+    /// Refuses every byte until the reader "wakes up", as Node does while its
+    /// event loop is busy, then accepts writes normally.
+    struct BusyReaderSink {
+        ready_at: Instant,
+    }
+
+    impl NonblockingSink for BusyReaderSink {
+        fn try_write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if Instant::now() < self.ready_at {
+                return Err(io::ErrorKind::WouldBlock.into());
+            }
+            let accepted = bytes.len().min(65_536);
+            Ok(accepted)
+        }
+
+        fn wait_writable(&mut self, timeout: Duration) -> io::Result<bool> {
+            std::thread::sleep(
+                self.ready_at
+                    .saturating_duration_since(Instant::now())
+                    .min(timeout),
+            );
+            Ok(Instant::now() >= self.ready_at)
+        }
+    }
+
+    #[test]
+    fn frame_write_budget_scales_with_size_up_to_a_hard_ceiling() {
+        assert_eq!(frame_write_budget(0), FRAME_WRITE_BASE_BUDGET);
+        assert_eq!(frame_write_budget(512), FRAME_WRITE_BASE_BUDGET);
+        assert_eq!(frame_write_budget(65_536), FRAME_WRITE_BASE_BUDGET);
+        assert_eq!(
+            frame_write_budget(65_537),
+            FRAME_WRITE_BASE_BUDGET + FRAME_WRITE_BUDGET_PER_CHUNK
+        );
+        assert_eq!(
+            frame_write_budget(300_000),
+            FRAME_WRITE_BASE_BUDGET + FRAME_WRITE_BUDGET_PER_CHUNK * 4
+        );
+        assert_eq!(
+            frame_write_budget(crate::protocol::MAX_LINE_BYTES),
+            FRAME_WRITE_MAX_BUDGET
+        );
+        assert_eq!(frame_write_budget(usize::MAX), FRAME_WRITE_MAX_BUDGET);
+    }
+
+    #[test]
+    fn a_large_frame_survives_a_briefly_busy_reader() {
+        let failure = Arc::new(Mutex::new(None));
+        let control = Arc::new(GenerationControl::new(i32::MAX, failure));
+        let mut writer = GenerationWriter::with_sink_for_test(
+            1,
+            Box::new(BusyReaderSink {
+                ready_at: Instant::now() + Duration::from_millis(400),
+            }),
+            Arc::clone(&control),
+        );
+        let mut payload = Map::new();
+        payload.insert("text".into(), Value::String("x".repeat(300_000)));
+        writer
+            .write_internal_request(1, "status", payload)
+            .expect("a 300 KB frame must outlast a 400 ms stall");
+        assert!(control.is_active());
+
+        // A small frame keeps the original tight budget.
+        let small_failure = Arc::new(Mutex::new(None));
+        let small_control = Arc::new(GenerationControl::new(i32::MAX, small_failure));
+        let mut small_writer = GenerationWriter::with_sink_for_test(
+            1,
+            Box::new(BusyReaderSink {
+                ready_at: Instant::now() + Duration::from_millis(400),
+            }),
+            Arc::clone(&small_control),
+        );
+        assert_eq!(
+            small_writer.write_internal_request(1, "status", Map::new()),
+            Err("sidecar write timed out".into())
+        );
+        assert!(!small_control.is_active());
+    }
+
+    fn product_response(id: &str) -> Envelope {
+        serde_json::from_value(serde_json::json!({
+            "version":1,"kind":"response","id":format!("sidecar-{id}"),
+            "correlationId":id,"sequence":1,"payload":{"schemaVersion":1}
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_timed_out_product_waiter_retires_its_correlation_for_one_late_answer() {
+        let control = Arc::new(GenerationControl::new(i32::MAX, Arc::new(Mutex::new(None))));
+        let waiters = Arc::new(ProductWaiters::new());
+        let (sender, receiver) = sync_channel(1);
+        waiters.register("rust-product-1-1", 1, sender).unwrap();
+        let waiter = ProductWaiter {
+            id: "rust-product-1-1".into(),
+            generation: 1,
+            receiver,
+            waiters: Arc::clone(&waiters),
+            control: Arc::clone(&control),
+        };
+        assert_eq!(
+            waiter.wait(Duration::from_millis(20)).unwrap_err(),
+            "product response timed out"
+        );
+        assert!(control.is_active(), "a timeout leaves the sidecar running");
+        assert_eq!(
+            waiters.deliver(1, product_response("rust-product-1-1")),
+            Ok(ProductDelivery::LateDiscarded)
+        );
+        assert!(
+            waiters
+                .deliver(1, product_response("rust-product-1-1"))
+                .is_err()
+        );
+        assert!(
+            waiters
+                .deliver(1, product_response("rust-product-1-2"))
+                .is_err()
+        );
+
+        // An answered waiter leaves nothing behind to be excused later.
+        let (sender, receiver) = sync_channel(1);
+        waiters.register("rust-product-1-3", 1, sender).unwrap();
+        let waiter = ProductWaiter {
+            id: "rust-product-1-3".into(),
+            generation: 1,
+            receiver,
+            waiters: Arc::clone(&waiters),
+            control,
+        };
+        assert_eq!(
+            waiters.deliver(1, product_response("rust-product-1-3")),
+            Ok(ProductDelivery::Delivered)
+        );
+        waiter.wait(Duration::from_secs(1)).unwrap();
+        assert!(
+            waiters
+                .deliver(1, product_response("rust-product-1-3"))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn retired_product_correlations_are_bounded() {
+        let waiters = ProductWaiters::new();
+        let mut receivers = Vec::new();
+        for index in 0..(MAX_RETIRED_PRODUCT_IDS + 1) {
+            let id = format!("rust-product-1-{index}");
+            let (sender, receiver) = sync_channel(1);
+            receivers.push(receiver);
+            waiters.register(&id, 1, sender).unwrap();
+            waiters.retire(&id);
+        }
+        assert_eq!(
+            waiters.retired.lock().unwrap().len(),
+            MAX_RETIRED_PRODUCT_IDS
+        );
+        assert!(
+            waiters
+                .deliver(1, product_response("rust-product-1-0"))
+                .is_err()
+        );
+        assert_eq!(
+            waiters.deliver(
+                1,
+                product_response(&format!("rust-product-1-{MAX_RETIRED_PRODUCT_IDS}"))
+            ),
+            Ok(ProductDelivery::LateDiscarded)
+        );
+    }
+
+    #[test]
+    fn user_home_is_passed_only_when_absolute() {
+        assert_eq!(
+            user_home_for(Some("/Users/example".into())),
+            Some(PathBuf::from("/Users/example"))
+        );
+        assert_eq!(user_home_for(Some("relative/home".into())), None);
+        assert_eq!(user_home_for(Some("".into())), None);
+        assert_eq!(user_home_for(None), None);
+    }
+
+    #[test]
+    fn sidecar_environment_carries_user_home_login_path_and_test_method_gate() {
+        let root =
+            std::env::temp_dir().join(format!("piui-spawn-env-{}", uuid::Uuid::new_v4().simple()));
+        fs::create_dir_all(root.join("dist")).unwrap();
+        fs::write(root.join("manifest.json"), b"{}\n").unwrap();
+        fs::write(
+            root.join("dist/index.js"),
+            r#"
+const fs = require('node:fs');
+fs.writeFileSync('observed-env.json', JSON.stringify({
+  home: process.env.HOME ?? null,
+  userHome: process.env.PIUI_USER_HOME ?? null,
+  userPath: process.env.PIUI_USER_PATH ?? null,
+  testMethods: process.env.PIUI_ENABLE_TEST_METHODS ?? null,
+}));
+process.stdout.write(`${JSON.stringify({version:1,kind:'handshake',id:'sidecar-handshake',
+  sequence:0,payload:{nonce:process.env.PIUI_HANDSHAKE_NONCE,
+  desktopVersion:process.env.PIUI_DESKTOP_VERSION,protocolVersion:1,nodeVersion:'22.23.1',
+  piVersion:'0.82.0',architecture:'arm64',
+  capabilities:['cancel','status','stream','host-credentials','workspace-trust-v1']}})}\n`);
+process.stdin.resume();
+"#,
+        )
+        .unwrap();
+        let node =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("binaries/piui-node-aarch64-apple-darwin");
+        let paths = SupervisorPaths::validated(node, root.clone()).unwrap();
+        let mut supervisor = SidecarSupervisor::default();
+        supervisor.start(&paths).unwrap();
+        let observed: Value = serde_json::from_slice(
+            &fs::read(paths.resource_root.join("observed-env.json")).unwrap(),
+        )
+        .unwrap();
+        supervisor.stop().unwrap();
+        fs::remove_dir_all(&root).unwrap();
+
+        // The dependency HOME stays sealed inside the resources.
+        assert_eq!(
+            observed["home"].as_str().map(PathBuf::from),
+            Some(paths.resource_root.clone())
+        );
+        assert_eq!(
+            observed["userHome"].as_str().map(PathBuf::from),
+            host_user_home()
+        );
+        let user_path = observed["userPath"].as_str().unwrap();
+        assert_eq!(user_path, super::super::login_path::user_login_path());
+        assert!(
+            user_path
+                .split(':')
+                .all(|entry| entry.starts_with('/') && !entry.is_empty())
+        );
+        assert_eq!(
+            observed["testMethods"].as_str(),
+            TEST_METHODS_ENABLED.then_some("1")
+        );
     }
 
     #[test]
