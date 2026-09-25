@@ -11,7 +11,10 @@ pub fn redact_text(value: &str) -> String {
     let home = Regex::new(r"/Users/[^/\s]+/?").expect("static home redaction pattern");
     let query = Regex::new(r"(?i)([?&](?:code|state|token|key)=)[^&\s]+")
         .expect("static query redaction pattern");
-    let result = credential.replace_all(value, "$1=[redacted]");
+    let user_info =
+        Regex::new(r"://[^/\s:@]+:[^/\s@]+@").expect("static URL user-info redaction pattern");
+    let result = user_info.replace_all(value, "://[redacted]@");
+    let result = credential.replace_all(&result, "$1=[redacted]");
     let result = bearer.replace_all(&result, "Bearer [redacted]");
     let result = home.replace_all(&result, "/Users/[home]/");
     query
@@ -59,9 +62,10 @@ mod tests {
             "PIUI_COOKIE_CANARY",
             "PIUI_QUERY_CANARY",
             "piuicanaryuser",
+            "PIUI_USERINFO_CANARY",
         ];
         let output = redact_text(
-            "Authorization: Bearer PIUI_AUTH_CANARY; Cookie=session=PIUI_COOKIE_CANARY; callback=https://example.test/?code=PIUI_QUERY_CANARY /Users/piuicanaryuser/Documents/project",
+            "Authorization: Bearer PIUI_AUTH_CANARY; Cookie=session=PIUI_COOKIE_CANARY; callback=https://example.test/?code=PIUI_QUERY_CANARY /Users/piuicanaryuser/Documents/project https://deploy:PIUI_USERINFO_CANARY@example.test/",
         );
         for canary in canaries {
             assert!(!output.contains(canary), "redaction leaked {canary}");

@@ -228,14 +228,31 @@ pub(crate) struct WorkspaceApprovalBinding {
     workspace_id: String,
     revision: u64,
     lease_id: String,
+    // Host-only: lets approval subjects show workspace paths relative to the
+    // root. It is never serialised or sent to the WebView.
+    root: PathBuf,
 }
 
 impl WorkspaceApprovalBinding {
+    pub(crate) fn root(&self) -> &Path {
+        &self.root
+    }
+
     #[cfg(test)]
     pub(crate) fn for_test(workspace_id: String, revision: u64) -> Self {
+        Self::for_test_at(
+            workspace_id,
+            revision,
+            PathBuf::from("/private/tmp/piui-workspace"),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test_at(workspace_id: String, revision: u64, root: PathBuf) -> Self {
         Self {
             workspace_id,
             revision,
+            root,
             lease_id: format!("trust-{}", Uuid::new_v4().simple()),
         }
     }
@@ -360,6 +377,7 @@ impl WorkspaceRegistry {
             workspace_id: record.id.clone(),
             revision,
             lease_id,
+            root: record.capability.canonical_path.clone(),
         })
     }
 

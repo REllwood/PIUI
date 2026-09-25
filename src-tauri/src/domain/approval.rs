@@ -1,3 +1,4 @@
+use super::approval_subject::{ApprovalSubjectView, SubjectContext, derive_subject};
 use super::workspace::WorkspaceApprovalBinding;
 use crate::protocol::approval::{canonical_json_bytes, valid_approval_tool_name};
 use serde::{Deserialize, Serialize};
@@ -5,6 +6,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -110,6 +112,9 @@ pub struct ApprovalView {
     pub verb: &'static str,
     pub target: &'static str,
     pub risk: ApprovalRisk,
+    /// What the tool call is about, or `null` for tools without a known
+    /// primary argument. Always serialised so the interface can rely on it.
+    pub subject: Option<ApprovalSubjectView>,
     pub scopes: Vec<ApprovalScopeView>,
     pub expires_in_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -349,6 +354,7 @@ struct Record {
     digest: String,
     canonical_input: Vec<u8>,
     classification: Classification,
+    subject: Option<ApprovalSubjectView>,
     scope_ids: Vec<String>,
     phase: ApprovalState,
     revision: u64,
@@ -414,6 +420,9 @@ impl Drop for Record {
         }
         self.digest.zeroize();
         self.canonical_input.zeroize();
+        if let Some(subject) = self.subject.as_mut() {
+            subject.text.zeroize();
+        }
     }
 }
 
@@ -468,6 +477,8 @@ pub struct ApprovalRegistry {
     ids: Arc<dyn ApprovalIdSource>,
     response_tokens: Arc<dyn ApprovalResponseTokenSource>,
     ttl: Duration,
+    // Host-only; approval subjects show paths under it as `~/…`.
+    home: Option<PathBuf>,
 }
 
 impl Default for ApprovalRegistry {
@@ -478,6 +489,9 @@ impl Default for ApprovalRegistry {
             ids: Arc::new(RandomIds),
             response_tokens: Arc::new(RandomResponseTokens),
             ttl: DEFAULT_TTL,
+            home: std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .filter(|home| home.is_absolute()),
         }
     }
 }
@@ -496,6 +510,7 @@ impl ApprovalRegistry {
             ids,
             response_tokens,
             ttl,
+            home: Some(PathBuf::from("/Users/example")),
         }
     }
 
@@ -522,6 +537,14 @@ impl ApprovalRegistry {
             return Err("approval input digest rejected".into());
         }
         let classification = classify(&request.tool_name, &request.input);
+        let subject = derive_subject(
+            &request.tool_name,
+            &request.input,
+            &SubjectContext {
+                workspace_root: workspace_binding.root(),
+                home: self.home.as_deref(),
+            },
+        );
         let now = self.clock.now();
         let mut inner = self
             .inner
@@ -626,6 +649,7 @@ impl ApprovalRegistry {
             digest,
             canonical_input,
             classification,
+            subject,
             scope_ids: vec![scope_id],
             phase: ApprovalState::PolicyCheck,
             revision: 0,
@@ -1761,6 +1785,7 @@ fn view(record: &Record, inner: &Inner, now: Instant) -> ApprovalView {
         verb: record.classification.verb,
         target: record.classification.target,
         risk: record.classification.risk,
+        subject: record.subject.clone(),
         scopes: record
             .scope_ids
             .iter()
@@ -3195,6 +3220,85 @@ mod tests {
                 .all(|view| view.state == ApprovalState::Expired)
         );
         assert_eq!(clock.millis.load(Ordering::SeqCst), 0);
+    }
+
+    fn request_with_input(invocation: u64, tool: &str, input: Value) -> ApprovalRequest {
+        let mut request = request(invocation, tool);
+        request.input_digest = format!(
+            "{:x}",
+            Sha256::digest(canonical_json_bytes(&input).unwrap())
+        );
+        request.input = input;
+        request
+    }
+
+    #[test]
+    fn pending_and_snapshot_views_carry_the_derived_subject() {
+        let (registry, _) = registry();
+        let binding = WorkspaceApprovalBinding::for_test_at(
+            format!("workspace-{:032x}", 2),
+            1,
+            std::path::PathBuf::from("/Users/example/Code/project"),
+        );
+        registry
+            .register(
+                request_with_input(
+                    1,
+                    "read",
+                    serde_json::json!({"path": "/Users/example/Code/project/src/main.rs"}),
+                ),
+                binding.clone(),
+            )
+            .unwrap();
+        registry
+            .register(
+                request_with_input(
+                    2,
+                    "bash",
+                    serde_json::json!({"command": "ls ~ && cat /Users/example/.netrc"}),
+                ),
+                binding.clone(),
+            )
+            .unwrap();
+        registry
+            .register(
+                request_with_input(3, "custom_tool", serde_json::json!({"path": "/etc"})),
+                binding,
+            )
+            .unwrap();
+
+        let pending = registry.pending().unwrap();
+        let subjects = pending
+            .iter()
+            .map(|view| view.subject.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            subjects,
+            [
+                Some(ApprovalSubjectView {
+                    label: "File",
+                    text: "src/main.rs".into(),
+                    truncated: false,
+                }),
+                Some(ApprovalSubjectView {
+                    label: "Command",
+                    text: "ls ~ && cat ~/.netrc".into(),
+                    truncated: false,
+                }),
+            ]
+            .to_vec(),
+            "the unsupported tool is denied at once and never pending"
+        );
+        let snapshot = serde_json::to_value(registry.snapshot().unwrap()).unwrap();
+        let records = snapshot["records"].as_array().unwrap();
+        assert_eq!(
+            records[0]["subject"],
+            serde_json::json!({"label":"File","text":"src/main.rs","truncated":false})
+        );
+        assert_eq!(records[2]["subject"], Value::Null);
+        assert!(records[2].as_object().unwrap().contains_key("subject"));
+        let encoded = snapshot.to_string();
+        assert!(!encoded.contains("/Users/example"), "{encoded}");
     }
 
     #[test]

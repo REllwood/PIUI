@@ -1,4 +1,5 @@
 pub mod approval;
+pub mod approval_subject;
 pub mod assets;
 pub mod changes;
 pub mod file_search;
