@@ -10,6 +10,7 @@ import { productFixture } from '../domain/fixtures';
 import { ActivityDetail } from './activity/ActivityDetail';
 import { ActivityRoute } from './activity/ActivityRoute';
 import { ApprovalSurface } from './approvals/ApprovalSurface';
+import { DiffReview } from './changes/DiffReview';
 import { CheckMacStep } from './onboarding/CheckMacStep';
 import { ProductTour } from './onboarding/ProductTour';
 import { ReadyStep } from './onboarding/ReadyStep';
@@ -76,6 +77,32 @@ describe('async and recovery component states', () => {
     );
     expect(screen.getByRole('note').textContent).toContain('Binary file preview unavailable');
     expect(screen.getByRole('button', { name: 'Copy' }).hasAttribute('disabled')).toBe(true);
+  });
+
+  it('counts changed lines in natural singular and plural copy', () => {
+    const change = {
+      id: 'change-1',
+      path: 'src/app/commands.ts',
+      state: 'modified',
+      additions: 1,
+      deletions: 1,
+      before: ["  | 'close-window';"],
+      after: ["  | 'toggle-theme';"],
+      undo: 'safe',
+    } as const;
+    const review = (additions: number, deletions: number) => (
+      <DiffReview
+        change={{ ...change, additions, deletions }}
+        busy={false}
+        onUndo={async () => undefined}
+        onReveal={async () => undefined}
+      />
+    );
+    const { rerender } = render(review(1, 1));
+    const heading = () => screen.getByRole('heading', { level: 2 }).textContent;
+    expect(heading()).toBe('1 addition, 1 deletion');
+    rerender(review(5, 0));
+    expect(heading()).toBe('5 additions, 0 deletions');
   });
 
   it('shows progress and disables repeated cancellation while activity cancellation waits', () => {
