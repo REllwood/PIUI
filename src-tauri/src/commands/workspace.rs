@@ -411,40 +411,80 @@ pub fn workspace_inspect(
     inspect_workspace(state.inner(), &workspace_id)
 }
 
-#[tauri::command]
-pub fn workspace_open_untrusted(
-    state: State<'_, BridgeState>,
+// Each trust transition can wait up to `WORKSPACE_TIMEOUT` for the sidecar,
+// so none of them may run on the main thread.
+async fn run_workspace_operation(
+    state: &BridgeState,
     workspace_id: String,
     expected_revision: u64,
+    operation: fn(&BridgeState, &str, u64) -> Result<WorkspaceSummary, String>,
 ) -> Result<WorkspaceSummary, String> {
-    open_workspace_untrusted(state.inner(), &workspace_id, expected_revision)
+    let transport = state.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        operation(&transport, &workspace_id, expected_revision)
+    })
+    .await
+    .map_err(|_| "workspace worker failed".to_string())?
 }
 
 #[tauri::command]
-pub fn workspace_authorise(
+pub async fn workspace_open_untrusted(
     state: State<'_, BridgeState>,
     workspace_id: String,
     expected_revision: u64,
 ) -> Result<WorkspaceSummary, String> {
-    authorise_workspace(state.inner(), &workspace_id, expected_revision)
+    run_workspace_operation(
+        state.inner(),
+        workspace_id,
+        expected_revision,
+        open_workspace_untrusted,
+    )
+    .await
 }
 
 #[tauri::command]
-pub fn workspace_load_trusted(
+pub async fn workspace_authorise(
     state: State<'_, BridgeState>,
     workspace_id: String,
     expected_revision: u64,
 ) -> Result<WorkspaceSummary, String> {
-    load_trusted_workspace(state.inner(), &workspace_id, expected_revision)
+    run_workspace_operation(
+        state.inner(),
+        workspace_id,
+        expected_revision,
+        authorise_workspace,
+    )
+    .await
 }
 
 #[tauri::command]
-pub fn workspace_revoke(
+pub async fn workspace_load_trusted(
     state: State<'_, BridgeState>,
     workspace_id: String,
     expected_revision: u64,
 ) -> Result<WorkspaceSummary, String> {
-    revoke_workspace(state.inner(), &workspace_id, expected_revision)
+    run_workspace_operation(
+        state.inner(),
+        workspace_id,
+        expected_revision,
+        load_trusted_workspace,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn workspace_revoke(
+    state: State<'_, BridgeState>,
+    workspace_id: String,
+    expected_revision: u64,
+) -> Result<WorkspaceSummary, String> {
+    run_workspace_operation(
+        state.inner(),
+        workspace_id,
+        expected_revision,
+        revoke_workspace,
+    )
+    .await
 }
 
 #[tauri::command]
