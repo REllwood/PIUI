@@ -393,7 +393,7 @@
 .resource-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px !important;
+  gap: 10px;
 }
 .package-install-panel {
   display: grid;
@@ -424,7 +424,7 @@
   border: 1px solid var(--control-border);
   border-radius: var(--radius-control);
   color: var(--text);
-  background: var(--control-surface);
+  background: var(--surface);
 }
 .resource-card__package-actions {
   display: flex;
@@ -445,7 +445,7 @@
 .resource-warning {
   padding-left: 10px;
   border-left: 2px solid var(--warning);
-  color: var(--warning) !important;
+  color: var(--warning);
 }
 .environment-table {
   display: grid;

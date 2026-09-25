@@ -4,6 +4,7 @@ import { Icon, type IconName } from '../../components/icons/Icon';
 import { LoadingLabel } from '../../components/primitives/LoadingLabel';
 import { StatusPill } from '../../components/primitives/StatusPill';
 import { redactForDisplay } from '../../domain/errors';
+import { isTurnActive } from '../../domain/machines';
 import { AppearanceControls, Toggle } from '../appearance/AppearanceControls';
 import { DiagnosticsRoute } from '../diagnostics/DiagnosticsRoute';
 import { UpdateStatus } from '../updates/UpdateStatus';
@@ -344,9 +345,7 @@ function SettingsSection({
             className="button"
             disabled={
               product.activeOperation !== null ||
-              ['sending', 'streaming', 'tool-running', 'stop-requested'].includes(
-                product.snapshot.turnStatus,
-              )
+              isTurnActive(product.snapshot.turnStatus)
             }
             onClick={() => window.location.assign(`${window.location.pathname}?onboarding=1`)}
           >
@@ -636,81 +635,7 @@ function SettingsSection({
       </SectionGroup>
     );
   if (id === 'models')
-    return (() => {
-      const providerId = typeof draft['model.provider'] === 'string' ? draft['model.provider'] : '';
-      const provider = snapshot.providers.find((candidate) => candidate.id === providerId);
-      return (
-        <SectionGroup
-          title="Model configuration"
-          description="Values show their scope and saved origin."
-        >
-          <SettingRow
-            label="Provider"
-            description="The provider used for new turns."
-            scope="Project"
-            origin={product.settings.find((setting) => setting.key === 'model.provider')?.origin}
-          >
-            <select
-              className="select"
-              value={providerId}
-              onChange={(event) => {
-                const next = snapshot.providers.find(
-                  (candidate) => candidate.id === event.target.value,
-                );
-                onChange('model.provider', event.target.value);
-                if (next?.models[0]) onChange('model.id', next.models[0].id);
-              }}
-            >
-              {snapshot.providers.map((candidate) => (
-                <option key={candidate.id} value={candidate.id} disabled={!candidate.connected}>
-                  {candidate.name}
-                  {candidate.connected ? '' : ' — not connected'}
-                </option>
-              ))}
-            </select>
-          </SettingRow>
-          <SettingRow
-            label="Model"
-            description="Only models reported by the connected provider are available."
-            scope="Project"
-            origin={product.settings.find((setting) => setting.key === 'model.id')?.origin}
-          >
-            <select
-              className="select"
-              value={typeof draft['model.id'] === 'string' ? draft['model.id'] : ''}
-              onChange={(event) => onChange('model.id', event.target.value)}
-              disabled={!provider?.connected}
-            >
-              {(provider?.models ?? []).map((model) => (
-                <option key={model.id} value={model.id}>
-                  {model.name}
-                  {model.acceptsImages ? ' · images' : ''}
-                </option>
-              ))}
-            </select>
-          </SettingRow>
-          <SettingRow
-            label="Reasoning"
-            description="Choose how deeply Pi reasons before responding."
-            scope="Project"
-            origin={product.settings.find((setting) => setting.key === 'reasoning.level')?.origin}
-          >
-            <select
-              className="select"
-              value={
-                typeof draft['reasoning.level'] === 'string' ? draft['reasoning.level'] : 'medium'
-              }
-              onChange={(event) => onChange('reasoning.level', event.target.value)}
-            >
-              <option value="low">Quick</option>
-              <option value="medium">Balanced</option>
-              <option value="high">Deep</option>
-              <option value="xhigh">Extended</option>
-            </select>
-          </SettingRow>
-        </SectionGroup>
-      );
-    })();
+    return <ModelsSection draft={draft} onChange={onChange} />;
   if (id === 'tools') {
     const availableTools = [
       { id: 'read', label: 'Read project files' },
@@ -839,6 +764,90 @@ function SectionGroup({
       </header>
       <div>{children}</div>
     </section>
+  );
+}
+
+function ModelsSection({
+  draft,
+  onChange,
+}: Readonly<{
+  draft: Readonly<Record<string, unknown>>;
+  onChange: (key: string, value: unknown) => void;
+}>) {
+  const product = useProduct();
+  const { snapshot } = product;
+  const providerId = typeof draft['model.provider'] === 'string' ? draft['model.provider'] : '';
+  const provider = snapshot.providers.find((candidate) => candidate.id === providerId);
+  return (
+    <SectionGroup
+      title="Model configuration"
+      description="Values show their scope and saved origin."
+    >
+      <SettingRow
+        label="Provider"
+        description="The provider used for new turns."
+        scope="Project"
+        origin={product.settings.find((setting) => setting.key === 'model.provider')?.origin}
+      >
+        <select
+          className="select"
+          value={providerId}
+          onChange={(event) => {
+            const next = snapshot.providers.find(
+              (candidate) => candidate.id === event.target.value,
+            );
+            onChange('model.provider', event.target.value);
+            if (next?.models[0]) onChange('model.id', next.models[0].id);
+          }}
+        >
+          {snapshot.providers.map((candidate) => (
+            <option key={candidate.id} value={candidate.id} disabled={!candidate.connected}>
+              {candidate.name}
+              {candidate.connected ? '' : ' — not connected'}
+            </option>
+          ))}
+        </select>
+      </SettingRow>
+      <SettingRow
+        label="Model"
+        description="Only models reported by the connected provider are available."
+        scope="Project"
+        origin={product.settings.find((setting) => setting.key === 'model.id')?.origin}
+      >
+        <select
+          className="select"
+          value={typeof draft['model.id'] === 'string' ? draft['model.id'] : ''}
+          onChange={(event) => onChange('model.id', event.target.value)}
+          disabled={!provider?.connected}
+        >
+          {(provider?.models ?? []).map((model) => (
+            <option key={model.id} value={model.id}>
+              {model.name}
+              {model.acceptsImages ? ' · images' : ''}
+            </option>
+          ))}
+        </select>
+      </SettingRow>
+      <SettingRow
+        label="Reasoning"
+        description="Choose how deeply Pi reasons before responding."
+        scope="Project"
+        origin={product.settings.find((setting) => setting.key === 'reasoning.level')?.origin}
+      >
+        <select
+          className="select"
+          value={
+            typeof draft['reasoning.level'] === 'string' ? draft['reasoning.level'] : 'medium'
+          }
+          onChange={(event) => onChange('reasoning.level', event.target.value)}
+        >
+          <option value="low">Quick</option>
+          <option value="medium">Balanced</option>
+          <option value="high">Deep</option>
+          <option value="xhigh">Extended</option>
+        </select>
+      </SettingRow>
+    </SectionGroup>
   );
 }
 
@@ -1233,8 +1242,8 @@ function LogsSection() {
         </select>
       </label>
       <div className="log-list" role="log" aria-label="Local redacted log entries">
-        {visible.map((line) => (
-          <div key={line} className="ui-mono">
+        {visible.map((line, index) => (
+          <div key={`${index}-${line.slice(0, 40)}`} className="ui-mono">
             {redactForDisplay(line)}
           </div>
         ))}

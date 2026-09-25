@@ -1,6 +1,7 @@
 import { Icon } from '../components/icons/Icon';
 import { StatusPill } from '../components/primitives/StatusPill';
 import { LoadingLabel } from '../components/primitives/LoadingLabel';
+import { isTurnActive } from '../domain/machines';
 import { useProduct } from './ProductContext';
 
 export function MainToolbar({
@@ -17,13 +18,7 @@ export function MainToolbar({
   onOpenApprovals: () => void;
 }>) {
   const { snapshot, route, mode, activeOperation } = useProduct();
-  const running = [
-    'sending',
-    'streaming',
-    'tool-running',
-    'stop-requested',
-    'cancel-too-late',
-  ].includes(snapshot.turnStatus);
+  const running = isTurnActive(snapshot.turnStatus);
   const pending = snapshot.approvals.filter(
     (approval) => approval.state === 'awaiting' || approval.state === 'unacknowledged',
   ).length;

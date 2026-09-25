@@ -3,6 +3,7 @@ import type { RouteId } from '../domain/types';
 import { Icon, type IconName } from '../components/icons/Icon';
 import { LoadingLabel } from '../components/primitives/LoadingLabel';
 import { StatusPill } from '../components/primitives/StatusPill';
+import { isTurnActive } from '../domain/machines';
 import { useProduct } from './ProductContext';
 
 const routes: readonly Readonly<{ id: RouteId; label: string; icon: IconName }>[] = [
@@ -23,9 +24,7 @@ export function NavigationPlane({
     useProduct();
   const [creating, setCreating] = useState(false);
   const [openingSessionId, setOpeningSessionId] = useState<string | null>(null);
-  const turnRunning = ['sending', 'streaming', 'tool-running', 'stop-requested', 'cancel-too-late'].includes(
-    snapshot.turnStatus,
-  );
+  const turnRunning = isTurnActive(snapshot.turnStatus);
   const canCreate =
     snapshot.workspace?.trust === 'trusted' &&
     snapshot.providers.some((provider) => provider.connected && provider.models.length > 0) &&

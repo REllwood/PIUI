@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { BottomActionPlane } from '../../app/BottomActionPlane';
 import { useProduct } from '../../app/ProductContext';
+import { isTurnActive } from '../../domain/machines';
 import { Icon } from '../../components/icons/Icon';
 import { LoadingLabel } from '../../components/primitives/LoadingLabel';
 import { WorkTrace } from '../../components/work-trace/WorkTrace';
@@ -138,16 +139,7 @@ export function ConversationRoute({ approvalRequest = 0 }: Readonly<{ approvalRe
                     ? 'export'
                     : null
               }
-              unavailable={
-                !session ||
-                [
-                  'sending',
-                  'streaming',
-                  'tool-running',
-                  'stop-requested',
-                  'cancel-too-late',
-                ].includes(snapshot.turnStatus)
-              }
+              unavailable={!session || isTurnActive(snapshot.turnStatus)}
               onBranch={() => (session ? product.branchSession(session.id) : Promise.resolve())}
               onExport={async () => {
                 if (session) await product.exportSession(session.id);

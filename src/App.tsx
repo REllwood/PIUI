@@ -135,7 +135,7 @@ function ArchitectureGate() {
       })
       .catch(() => {
         if (active) {
-          setError('PIUI’s local helper is incompatible. Reinstall PIUI or open Diagnostics.');
+          setError("PIUI's local helper is incompatible. Reinstall PIUI or open Diagnostics.");
         }
       });
     return () => {

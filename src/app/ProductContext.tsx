@@ -10,7 +10,7 @@ import {
 } from 'react';
 import { productionBridgeStore } from '../bridge/store';
 import { useBridgeSelector } from '../bridge/useBridgeSelector';
-import { createQueueItem, failQueueItem, submitApproval } from '../domain/machines';
+import { createQueueItem, failQueueItem, isTurnActive, submitApproval } from '../domain/machines';
 import {
   canReconcileTranscript,
   preferredSessionModel,
@@ -231,19 +231,24 @@ function sessionSummary(session: NativeProductSession, project: string) {
   });
 }
 
+const relativeFormatter = new Intl.RelativeTimeFormat('en-AU', { numeric: 'auto' });
+const absoluteDateFormatter = new Intl.DateTimeFormat('en-AU', { day: 'numeric', month: 'short' });
+
 function relativeTime(timestamp: number): string {
-  const elapsed = Math.max(0, Date.now() - timestamp);
+  const elapsed = Date.now() - timestamp;
+  if (elapsed < 0) return 'Just now';
   if (elapsed < 60_000) return 'Just now';
-  if (elapsed < 3_600_000) return `${Math.floor(elapsed / 60_000)} min ago`;
-  if (elapsed < 86_400_000) return `${Math.floor(elapsed / 3_600_000)} hr ago`;
-  return new Date(timestamp).toLocaleDateString('en-AU', { day: 'numeric', month: 'short' });
+  if (elapsed < 3_600_000) {
+    const minutes = Math.floor(elapsed / 60_000);
+    return relativeFormatter.format(-minutes, 'minute');
+  }
+  if (elapsed < 86_400_000) {
+    const hours = Math.floor(elapsed / 3_600_000);
+    return relativeFormatter.format(-hours, 'hour');
+  }
+  return absoluteDateFormatter.format(new Date(timestamp));
 }
 
-function isTurnActive(status: ProductSnapshot['turnStatus']): boolean {
-  return ['sending', 'streaming', 'tool-running', 'stop-requested', 'cancel-too-late'].includes(
-    status,
-  );
-}
 
 function messageView(message: import('../platform/native').NativeProductMessage) {
   return Object.freeze({

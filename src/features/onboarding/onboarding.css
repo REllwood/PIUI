@@ -476,10 +476,10 @@
   margin-top: 12px;
 }
 .trust-disclaimer {
-  margin-top: 16px !important;
+  margin-top: 16px;
   padding-left: 12px;
   border-left: 2px solid var(--warning);
-  color: var(--warning) !important;
+  color: var(--warning);
 }
 .ready-preview {
   text-align: center;

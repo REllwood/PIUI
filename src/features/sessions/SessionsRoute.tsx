@@ -3,6 +3,7 @@ import { useProduct } from '../../app/ProductContext';
 import { Icon } from '../../components/icons/Icon';
 import { LoadingLabel } from '../../components/primitives/LoadingLabel';
 import { StatusPill } from '../../components/primitives/StatusPill';
+import { isTurnActive } from '../../domain/machines';
 import type { SessionSummary } from '../../domain/types';
 import './supporting-routes.css';
 
@@ -17,9 +18,7 @@ export function SessionsRoute() {
   >(null);
   const [titleDraft, setTitleDraft] = useState('');
   const [actionError, setActionError] = useState<string | null>(null);
-  const turnBusy = ['sending', 'streaming', 'tool-running', 'stop-requested', 'cancel-too-late'].includes(
-    snapshot.turnStatus,
-  );
+  const turnBusy = isTurnActive(snapshot.turnStatus);
   const canCreate =
     snapshot.workspace?.trust === 'trusted' &&
     snapshot.providers.some((provider) => provider.connected);

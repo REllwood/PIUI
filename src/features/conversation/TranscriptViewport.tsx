@@ -21,7 +21,9 @@ export function TranscriptViewport({ messages }: Readonly<{ messages: readonly M
   useEffect(() => {
     const element = viewport.current;
     if (!element || awayFromLatest) return;
-    element.scrollTop = element.scrollHeight;
+    requestAnimationFrame(() => {
+      element.scrollTop = element.scrollHeight;
+    });
   }, [messages, awayFromLatest]);
 
   return (

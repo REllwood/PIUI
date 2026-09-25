@@ -4,6 +4,7 @@ import { type AppCommandId } from './commands';
 import { CommandMenu } from './CommandMenu';
 import { ComposerDraftProvider } from '../features/composer/ComposerDrafts';
 import { CommandRouter } from './CommandRouter';
+import { isTurnActive } from '../domain/machines';
 import { MainToolbar } from './MainToolbar';
 import { NavigationPlane } from './NavigationPlane';
 import { useProduct } from './ProductContext';
@@ -16,6 +17,17 @@ import {
 } from '../platform/native';
 import { LoadingLabel } from '../components/primitives/LoadingLabel';
 
+const OPERATION_LABELS: Readonly<Record<string, string>> = {
+  project: 'Updating project access…',
+  provider: 'Updating provider connection…',
+  session: 'Updating session…',
+  resource: 'Updating Pi resource…',
+};
+
+function operationLabel(operation: string): string {
+  return OPERATION_LABELS[operation] ?? 'Working…';
+}
+
 export function AppShell() {
   const product = useProduct();
   const [navigationOpen, setNavigationOpen] = useState(false);
@@ -27,9 +39,7 @@ export function AppShell() {
   const pendingApproval = product.snapshot.approvals.find(
     (approval) => approval.state === 'awaiting' || approval.state === 'unacknowledged',
   );
-  const turnRunning = ['sending', 'streaming', 'tool-running', 'stop-requested', 'cancel-too-late'].includes(
-    product.snapshot.turnStatus,
-  );
+  const turnRunning = isTurnActive(product.snapshot.turnStatus);
   const canCreate =
     product.snapshot.workspace?.trust === 'trusted' &&
     product.snapshot.providers.some((provider) => provider.connected && provider.models.length > 0) &&
@@ -193,17 +203,7 @@ export function AppShell() {
       ) : null}
       {product.activeOperation ? (
         <div className="global-operation-status" role="status">
-          <LoadingLabel>
-            {product.activeOperation === 'project'
-              ? 'Updating project access…'
-              : product.activeOperation === 'provider'
-                ? 'Updating provider connection…'
-                : product.activeOperation === 'session'
-                  ? 'Updating session…'
-                  : product.activeOperation === 'resource'
-                    ? 'Updating Pi resource…'
-                    : 'Working…'}
-          </LoadingLabel>
+          <LoadingLabel>{operationLabel(product.activeOperation)}</LoadingLabel>
         </div>
       ) : null}
       <CommandMenu

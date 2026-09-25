@@ -1,8 +1,8 @@
 export function LoadingLabel({ children }: Readonly<{ children: string }>) {
   return (
     <>
-      <span className="loading-spinner" aria-hidden="true" />
-      <span>{children}</span>
+      <span className="loading-spinner" role="presentation" aria-hidden="true" />
+      <span role="status" aria-live="polite">{children}</span>
     </>
   );
 }
