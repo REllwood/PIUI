@@ -25,6 +25,9 @@ vi.mock('../platform/native', async (importOriginal) => ({
   queueProductFollowUp: vi.fn(),
   createProductSession: vi.fn(),
   saveProductSetting: vi.fn(),
+  renameProductSession: vi.fn(),
+  authoriseWorkspace: vi.fn(),
+  loadTrustedWorkspace: vi.fn(),
 }));
 
 const session: native.NativeProductSession = {
@@ -365,6 +368,52 @@ describe('production conversation continuity', () => {
     });
     expect(currentProduct().snapshot.activity).toContainEqual(
       expect.objectContaining({ id: 'activity-tool-1', state: 'complete' }),
+    );
+  });
+
+  it('asks for the project to be trusted again and re-lists sessions once it is', async () => {
+    await boot();
+    vi.mocked(native.renameProductSession).mockRejectedValue('session-workspace-untrusted');
+    await act(async () => {
+      await expect(currentProduct().renameSession('session-a', 'Renamed')).rejects.toBe(
+        'session-workspace-untrusted',
+      );
+    });
+    expect(currentProduct().snapshot.workspace?.trust).toBe('untrusted');
+
+    const trustedSummary: native.NativeWorkspaceSummary = {
+      workspaceId: 'workspace-a',
+      displayLabel: 'Project',
+      revision: 2,
+      trustState: 'trusted',
+      resourceState: 'loaded',
+    };
+    vi.mocked(native.authoriseWorkspace).mockResolvedValue(trustedSummary);
+    vi.mocked(native.loadTrustedWorkspace).mockResolvedValue(trustedSummary);
+    vi.mocked(native.listProductSessions).mockClear();
+    vi.mocked(native.listProductSessions).mockResolvedValue([{ ...session, generation: 5 }]);
+    await act(async () => {
+      await currentProduct().trustProject();
+    });
+    expect(native.authoriseWorkspace).toHaveBeenCalledWith('workspace-a', 1);
+    expect(native.listProductSessions).toHaveBeenCalledWith('workspace-a', 2);
+    expect(currentProduct().snapshot.workspace?.trust).toBe('trusted');
+    expect(currentProduct().snapshot.sessions).toContainEqual(
+      expect.objectContaining({ id: 'session-a', generation: 5, status: 'active' }),
+    );
+  });
+
+  it('offers Reconnect with plain-English copy when the host stream is interrupted', async () => {
+    await boot();
+    await act(async () => {
+      await currentProduct().send('Keep going');
+    });
+    act(() => {
+      currentTurn().onFailed('host-stream-interrupted');
+    });
+    expect(currentProduct().snapshot.connection).toBe('restart-offered');
+    expect(currentProduct().snapshot.messages.at(-1)?.markdown).toBe(
+      'The connection to Pi was interrupted before the reply finished. Reconnect to Pi, then try again. Your message remains in the conversation.',
     );
   });
 

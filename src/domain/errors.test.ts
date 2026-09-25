@@ -40,6 +40,30 @@ describe('product error codes', () => {
     }
   });
 
+  it.each([
+    [
+      'session-workspace-untrusted',
+      'This conversation’s project is no longer trusted the way it was when it started. Trust the project again in Settings, under Projects & trust. PIUI then reloads your sessions.',
+    ],
+    [
+      'host-stream-deadline-exceeded',
+      'Pi’s reply took longer than PIUI can wait for. Try again.',
+    ],
+    [
+      'host-stream-limit-exceeded',
+      'Pi’s reply was longer than PIUI can show. Ask for a shorter answer, or split the task into smaller steps.',
+    ],
+    [
+      'host-stream-interrupted',
+      'The connection to Pi was interrupted before the reply finished. Reconnect to Pi, then try again.',
+    ],
+  ])('explains %s with its next step', (code, expected) => {
+    expect(productErrorCopy(code).code).toBe(code);
+    expect(productErrorMessage(code, 'Fallback that must not be used.')).toBe(expected);
+    // Stream terminals arrive as bare codes, like any other product rejection.
+    expect(productErrorMessage(new Error(code))).toBe(expected);
+  });
+
   it('reads codes from Tauri string rejections, errors and coded objects', () => {
     expect(productErrorCode('session-busy')).toBe('session-busy');
     expect(productErrorCode(new Error('workspace-not-trusted'))).toBe('workspace-not-trusted');

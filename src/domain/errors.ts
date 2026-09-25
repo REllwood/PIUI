@@ -191,6 +191,28 @@ const productErrors: Readonly<Record<string, ProductErrorCopy>> = Object.freeze(
     message: 'This change can no longer be undone safely because the file has changed since.',
     recovery: 'Review the file and correct it by hand, or ask Pi to help.',
   },
+  'session-workspace-untrusted': {
+    title: 'Project trust has changed',
+    message: 'This conversation’s project is no longer trusted the way it was when it started.',
+    recovery:
+      'Trust the project again in Settings, under Projects & trust. PIUI then reloads your sessions.',
+  },
+  // Host stream terminals, delivered as `stream.failed` codes on the turn stream.
+  'host-stream-deadline-exceeded': {
+    title: 'Reply took too long',
+    message: 'Pi’s reply took longer than PIUI can wait for.',
+    recovery: 'Try again.',
+  },
+  'host-stream-limit-exceeded': {
+    title: 'Reply too long to show',
+    message: 'Pi’s reply was longer than PIUI can show.',
+    recovery: 'Ask for a shorter answer, or split the task into smaller steps.',
+  },
+  'host-stream-interrupted': {
+    title: 'Connection interrupted',
+    message: 'The connection to Pi was interrupted before the reply finished.',
+    recovery: 'Reconnect to Pi, then try again.',
+  },
   [GENERIC_PRODUCT_ERROR]: genericProductError,
 });
 

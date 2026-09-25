@@ -12,7 +12,12 @@ import { productionBridgeStore } from '../bridge/store';
 import { useBridgeSelector } from '../bridge/useBridgeSelector';
 import { createDeltaBatcher } from './deltaBatcher';
 import { reconcileApprovals } from '../domain/approvals';
-import { GENERIC_PRODUCT_ERROR, productErrorCopy, productErrorMessage } from '../domain/errors';
+import {
+  GENERIC_PRODUCT_ERROR,
+  productErrorCode,
+  productErrorCopy,
+  productErrorMessage,
+} from '../domain/errors';
 import { createQueueItem, failQueueItem, isTurnActive, submitApproval } from '../domain/machines';
 import {
   canReconcileTranscript,
@@ -605,6 +610,22 @@ export function ProductProvider({
     [onPersist],
   );
 
+  // The host rejects session commands once the project is no longer trusted at the
+  // revision a session was bound to. Showing the project as untrusted offers Trust
+  // project again; re-trusting then re-lists sessions, which the host requires before
+  // any session command works.
+  const noteSessionFailure = useCallback((error: unknown) => {
+    if (productErrorCode(error) !== 'session-workspace-untrusted') return;
+    const workspace = activeWorkspace.current;
+    if (workspace) activeWorkspace.current = Object.freeze({ ...workspace, trust: 'untrusted' });
+    const live = productionBridgeStore.getSnapshot().product;
+    if (live.workspace && live.workspace.trust !== 'untrusted') {
+      productionBridgeStore.updateLocalFixture({
+        workspace: { ...live.workspace, trust: 'untrusted' },
+      });
+    }
+  }, []);
+
   const refreshChanges = useCallback(async () => {
     const live = productionBridgeStore.getSnapshot().product;
     const session = live.sessions.find((candidate) => candidate.id === live.activeSessionId);
@@ -790,7 +811,10 @@ export function ProductProvider({
         trust: loaded.trustState,
       });
       activeWorkspace.current = trusted;
+      // Sessions bound to the old trust must be re-listed before the host accepts any
+      // session command, so this always runs after a successful (re-)trust.
       const listed = await listProductSessions(trusted.id, trusted.revision);
+      const current = productionBridgeStore.getSnapshot().product;
       productionBridgeStore.updateLocalFixture({
         workspace: {
           capabilityId: trusted.id,
@@ -799,7 +823,12 @@ export function ProductProvider({
           trust: trusted.trust,
           lastOpenedAt: 'Just now',
         },
-        sessions: listed.map((session) => sessionSummary(session, trusted.name)),
+        sessions: listed.map((session) => {
+          const summary = sessionSummary(session, trusted.name);
+          return summary.id === current.activeSessionId
+            ? { ...summary, status: 'active' as const }
+            : summary;
+        }),
         connection: 'ready',
       });
       await persistWorkspace(trusted);
@@ -1000,6 +1029,7 @@ export function ProductProvider({
           onFailed: (code) => {
             if (!ownsTurn()) return;
             deltas.flush();
+            noteSessionFailure(code);
             failed = true;
             turnContinuity.current = null;
             activeTurnRequest.current = null;
@@ -1023,7 +1053,10 @@ export function ProductProvider({
               queue: [],
               ...(code === 'session-external-change'
                 ? { connection: 'external-change' as const }
-                : {}),
+                : code === 'host-stream-interrupted'
+                  ? // Offers Reconnect: the copy's next step for an interrupted stream.
+                    { connection: 'restart-offered' as const }
+                  : {}),
             });
             void refreshChanges();
           },
@@ -1059,6 +1092,7 @@ export function ProductProvider({
         return true;
       } catch (error) {
         deltas.cancel();
+        noteSessionFailure(error);
         if (!ownsTurn()) return false;
         failed = true;
         turnContinuity.current = null;
@@ -1090,7 +1124,7 @@ export function ProductProvider({
         endOperation('send');
       }
     },
-    [beginOperation, endOperation, refreshApprovals, refreshChanges],
+    [beginOperation, endOperation, refreshApprovals, refreshChanges, noteSessionFailure],
   );
 
   const stop = useCallback(async () => {
@@ -1133,7 +1167,8 @@ export function ProductProvider({
           ),
         });
         return true;
-      } catch {
+      } catch (error) {
+        noteSessionFailure(error);
         const current = productionBridgeStore.getSnapshot().product;
         productionBridgeStore.updateLocalFixture({
           queue: failQueueItem(current.queue, item.localId),
@@ -1143,7 +1178,7 @@ export function ProductProvider({
         endOperation('queue');
       }
     },
-    [beginOperation, endOperation],
+    [beginOperation, endOperation, noteSessionFailure],
   );
 
   const retryQueueItem = useCallback(
@@ -1189,11 +1224,14 @@ export function ProductProvider({
         productionBridgeStore.updateLocalFixture({
           queue: remaining.map((item, index) => ({ ...item, number: index + 1 })),
         });
+      } catch (error) {
+        noteSessionFailure(error);
+        throw error;
       } finally {
         endOperation('queue');
       }
     },
-    [beginOperation, endOperation],
+    [beginOperation, endOperation, noteSessionFailure],
   );
 
   const decideApproval = useCallback(
@@ -1425,10 +1463,13 @@ export function ProductProvider({
       setSettings(activeSettings);
       setRoute('conversation');
       return true;
+    } catch (error) {
+      noteSessionFailure(error);
+      throw error;
     } finally {
       endOperation('session');
     }
-  }, [beginOperation, endOperation, settings]);
+  }, [beginOperation, endOperation, settings, noteSessionFailure]);
 
   const resumeSession = useCallback(
     async (sessionId: string) => {
@@ -1466,6 +1507,7 @@ export function ProductProvider({
         setSettings(activeSettings);
         setRoute('conversation');
       } catch (error) {
+        noteSessionFailure(error);
         if (error instanceof Error && error.message.includes('external-change')) {
           productionBridgeStore.updateLocalFixture({ connection: 'external-change' });
         }
@@ -1474,7 +1516,7 @@ export function ProductProvider({
         endOperation('session');
       }
     },
-    [beginOperation, endOperation],
+    [beginOperation, endOperation, noteSessionFailure],
   );
 
   const branchSession = useCallback(
@@ -1510,11 +1552,14 @@ export function ProductProvider({
         });
         setSettings(activeSettings);
         setRoute('conversation');
+      } catch (error) {
+        noteSessionFailure(error);
+        throw error;
       } finally {
         endOperation('session');
       }
     },
-    [beginOperation, endOperation],
+    [beginOperation, endOperation, noteSessionFailure],
   );
 
   const renameSession = useCallback(
@@ -1532,11 +1577,14 @@ export function ProductProvider({
             candidate.id === renamed.id ? sessionSummary(renamed, candidate.project) : candidate,
           ),
         });
+      } catch (error) {
+        noteSessionFailure(error);
+        throw error;
       } finally {
         endOperation('settings');
       }
     },
-    [beginOperation, endOperation],
+    [beginOperation, endOperation, noteSessionFailure],
   );
 
   const compactSession = useCallback(
@@ -1550,11 +1598,14 @@ export function ProductProvider({
         await compactProductSession(session.id, session.generation);
         const messages = await inspectProductSession(session.id, session.generation);
         productionBridgeStore.updateLocalFixture({ messages: messages.map(messageView) });
+      } catch (error) {
+        noteSessionFailure(error);
+        throw error;
       } finally {
         endOperation('session');
       }
     },
-    [beginOperation, endOperation],
+    [beginOperation, endOperation, noteSessionFailure],
   );
 
   const trashSession = useCallback(
@@ -1572,11 +1623,14 @@ export function ProductProvider({
         productionBridgeStore.updateLocalFixture({
           sessions: current.sessions.filter((candidate) => candidate.id !== session.id),
         });
+      } catch (error) {
+        noteSessionFailure(error);
+        throw error;
       } finally {
         endOperation('session');
       }
     },
-    [beginOperation, endOperation],
+    [beginOperation, endOperation, noteSessionFailure],
   );
 
   const rebuildSessions = useCallback(async () => {
@@ -1595,10 +1649,13 @@ export function ProductProvider({
             : summary;
         }),
       });
+    } catch (error) {
+      noteSessionFailure(error);
+      throw error;
     } finally {
       endOperation('session');
     }
-  }, [beginOperation, endOperation]);
+  }, [beginOperation, endOperation, noteSessionFailure]);
 
   const retryLastTurn = useCallback(async () => {
     const live = productionBridgeStore.getSnapshot().product;
@@ -1619,11 +1676,14 @@ export function ProductProvider({
       if (!beginOperation('export')) return false;
       try {
         return await exportProductSession(session.id, session.generation);
+      } catch (error) {
+        noteSessionFailure(error);
+        throw error;
       } finally {
         endOperation('export');
       }
     },
-    [beginOperation, endOperation],
+    [beginOperation, endOperation, noteSessionFailure],
   );
 
   const undoChange = useCallback(
@@ -1646,7 +1706,8 @@ export function ProductProvider({
             candidate.id === changeId ? updated : candidate,
           ),
         });
-      } catch {
+      } catch (error) {
+        noteSessionFailure(error);
         const current = productionBridgeStore.getSnapshot().product;
         productionBridgeStore.updateLocalFixture({
           changes: current.changes.map((candidate) =>
@@ -1657,7 +1718,7 @@ export function ProductProvider({
         endOperation('change');
       }
     },
-    [beginOperation, endOperation],
+    [beginOperation, endOperation, noteSessionFailure],
   );
 
   const revealChange = useCallback(
@@ -1668,11 +1729,14 @@ export function ProductProvider({
       if (!beginOperation('change')) throw new Error('operation-busy');
       try {
         await revealProductChange(session.id, session.generation, changeId);
+      } catch (error) {
+        noteSessionFailure(error);
+        throw error;
       } finally {
         endOperation('change');
       }
     },
-    [beginOperation, endOperation],
+    [beginOperation, endOperation, noteSessionFailure],
   );
 
   const saveSettings = useCallback(
@@ -1700,13 +1764,14 @@ export function ProductProvider({
         }
         setSettings(await listProductSettings(session.id, session.generation));
       } catch (error) {
+        noteSessionFailure(error);
         setSettings(await listProductSettings(session.id, session.generation));
         throw error;
       } finally {
         endOperation('settings');
       }
     },
-    [beginOperation, endOperation],
+    [beginOperation, endOperation, noteSessionFailure],
   );
 
   const setResourceEnabled = useCallback(
@@ -1727,11 +1792,14 @@ export function ProductProvider({
         productionBridgeStore.updateLocalFixture({
           resources: await listProductResources(session.id, session.generation),
         });
+      } catch (error) {
+        noteSessionFailure(error);
+        throw error;
       } finally {
         endOperation('resource');
       }
     },
-    [beginOperation, endOperation],
+    [beginOperation, endOperation, noteSessionFailure],
   );
 
   const installPackage = useCallback(
@@ -1752,11 +1820,14 @@ export function ProductProvider({
         productionBridgeStore.updateLocalFixture({
           resources: await listProductResources(session.id, session.generation),
         });
+      } catch (error) {
+        noteSessionFailure(error);
+        throw error;
       } finally {
         endOperation('resource');
       }
     },
-    [beginOperation, endOperation],
+    [beginOperation, endOperation, noteSessionFailure],
   );
 
   const mutatePackage = useCallback(
@@ -1777,11 +1848,14 @@ export function ProductProvider({
         productionBridgeStore.updateLocalFixture({
           resources: await listProductResources(session.id, session.generation),
         });
+      } catch (error) {
+        noteSessionFailure(error);
+        throw error;
       } finally {
         endOperation('resource');
       }
     },
-    [beginOperation, endOperation],
+    [beginOperation, endOperation, noteSessionFailure],
   );
 
   const value = useMemo<ProductContextValue>(
