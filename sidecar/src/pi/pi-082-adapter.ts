@@ -33,6 +33,7 @@ import {
   type PublicModelRuntimeInstance,
   type PublicSessionManagerInstance,
 } from './public-sdk.js';
+import { resolveEnabledPackagePaths } from './package-sources.js';
 import { describeProviders } from './providers.js';
 import { SessionOwnership } from './sessions.js';
 import {
@@ -818,9 +819,10 @@ export class Pi082Adapter implements PiAdapter {
       packageManager,
     );
     await resources.discoverExecutableMetadata();
-    const packagePaths = resources.enabledPackageSources.length
-      ? await packageManager.resolveExtensionSources([...resources.enabledPackageSources])
-      : { extensions: [], skills: [], prompts: [], themes: [] };
+    const packagePaths = await resolveEnabledPackagePaths(
+      packageManager,
+      resources.enabledPackageSources,
+    );
     const services = await publicCreateAgentSessionServices({
       cwd: request.workspacePath,
       agentDir: request.agentDir,
