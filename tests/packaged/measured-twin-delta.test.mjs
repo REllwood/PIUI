@@ -8,9 +8,14 @@ import {
 } from '../../scripts/measured-twin-delta.mjs';
 import { sha256Bytes } from '../../scripts/architecture-gate-schema.mjs';
 import {
-  automationHostSigningPolicy,
   inspectAppleDevelopmentSignatureBytes,
 } from '../../scripts/automation-host-signing.mjs';
+import {
+  FIXTURE_AUTOMATION_SIGNING_POLICY as signingPolicy,
+  useFixtureAutomationSigningPolicy,
+} from './helpers/automation-signing-policy.mjs';
+
+useFixtureAutomationSigningPolicy();
 
 const sha = (character) => character.repeat(64);
 
@@ -78,7 +83,7 @@ function signedMachO(unsignedBytes, {
       if (cmsPayload) wrapper[8] = typeof cmsPayload === 'number' ? cmsPayload : 1;
       return wrapper;
     }
-    const blob = Buffer.alloc(automationHostSigningPolicy.requirementsBytes);
+    const blob = Buffer.alloc(signingPolicy.requirementsBytes);
     blob.writeUInt32BE(0xfade0c01, 0);
     blob.writeUInt32BE(blob.length, 4);
     return blob;
@@ -203,15 +208,15 @@ function snapshot({
 function automationSigningEvidence(bytes) {
   const signature = inspectAppleDevelopmentSignatureBytes(bytes);
   return {
-    bundleIdentifier: automationHostSigningPolicy.bundleIdentifier,
+    bundleIdentifier: signingPolicy.bundleIdentifier,
     cdHash: signature.cdHash,
-    certificateSha1: automationHostSigningPolicy.certificateSha1,
-    certificateSha256: automationHostSigningPolicy.certificateSha256,
+    certificateSha1: signingPolicy.certificateSha1,
+    certificateSha256: signingPolicy.certificateSha256,
     cmsBytes: signature.cmsBytes,
     cmsSha256: signature.cmsSha256,
     codeDirectoryFlags: signature.codeDirectoryFlags,
     codeDirectorySha256: signature.codeDirectorySha256,
-    designatedRequirement: automationHostSigningPolicy.designatedRequirement,
+    designatedRequirement: signingPolicy.designatedRequirement,
     entitlements: 'none',
     executableBytes: bytes.length,
     executableSha256: signature.executableSha256,
@@ -221,7 +226,7 @@ function automationSigningEvidence(bytes) {
     signature: 'apple-development',
     signatureContainerBytes: signature.signatureContainerBytes,
     signatureSlots: signature.signatureSlots,
-    teamIdentifier: automationHostSigningPolicy.teamIdentifier,
+    teamIdentifier: signingPolicy.teamIdentifier,
   };
 }
 
@@ -355,11 +360,11 @@ test('binds an automation delta to an exact verified Apple Development signature
   const host = measured.record.changes[1];
   assert.equal(host.baseSignature, 'adhoc');
   assert.equal(host.twinSignature, 'cms');
-  assert.equal(host.postSignCertificateSha1, automationHostSigningPolicy.certificateSha1);
-  assert.equal(host.postSignCertificateSha256, automationHostSigningPolicy.certificateSha256);
+  assert.equal(host.postSignCertificateSha1, signingPolicy.certificateSha1);
+  assert.equal(host.postSignCertificateSha256, signingPolicy.certificateSha256);
   assert.equal(host.postSignCodeDirectoryFlags, 0);
-  assert.equal(host.postSignDesignatedRequirement, automationHostSigningPolicy.designatedRequirement);
-  assert.equal(host.postSignTeamIdentifier, automationHostSigningPolicy.teamIdentifier);
+  assert.equal(host.postSignDesignatedRequirement, signingPolicy.designatedRequirement);
+  assert.equal(host.postSignTeamIdentifier, signingPolicy.teamIdentifier);
   assert.match(host.postSignCodeDirectorySha256, /^[0-9a-f]{64}$/u);
   assert.deepEqual(host.postSignSlots.map(({ slot }) => slot), [0, 2, 0x10000]);
   assert.equal(host.postSignCodeDirectorySha256, host.repeatPostSignCodeDirectorySha256);

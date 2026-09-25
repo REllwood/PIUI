@@ -14,6 +14,9 @@ import {
   architectureProofBatch,
   architectureSha,
 } from './architecture-proof-fixtures.mjs';
+import { useFixtureAutomationSigningPolicy } from './helpers/automation-signing-policy.mjs';
+
+useFixtureAutomationSigningPolicy();
 
 const sha = architectureSha;
 

@@ -886,6 +886,7 @@ export function createAuthenticatedNodeAutomationSigningBrokerSandboxProfile(con
     'hostPath',
     'keychainPath',
     'nonce',
+    'signingPolicyPath',
     'verificationRoot',
   ];
   if (!configuration
@@ -902,6 +903,7 @@ export function createAuthenticatedNodeAutomationSigningBrokerSandboxProfile(con
     configuration.controlRoot,
     configuration.hostPath,
     configuration.keychainPath,
+    configuration.signingPolicyPath,
     configuration.verificationRoot,
   ]) assertAbsoluteSandboxPath(path);
   if (configuration.brokerScript !== resolve(dirname(configuration.brokerScript), 'automation-signing-broker.mjs')
@@ -940,6 +942,7 @@ export function createAuthenticatedNodeAutomationSigningBrokerSandboxProfile(con
   };
   brokerModules.forEach((path) => assertSafeFile(path));
   assertSafeFile(configuration.keychainPath);
+  assertSafeFile(configuration.signingPolicyPath);
   const hostState = lstatSync(configuration.hostPath, { bigint: true });
   if (!hostState.isFile()
     || hostState.isSymbolicLink()
@@ -986,6 +989,7 @@ export function createAuthenticatedNodeAutomationSigningBrokerSandboxProfile(con
     configuration.controlRoot,
     configuration.hostPath,
     configuration.keychainPath,
+    configuration.signingPolicyPath,
     configuration.verificationRoot,
     requestPath,
     consumedPath,
