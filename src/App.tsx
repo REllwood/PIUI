@@ -12,24 +12,55 @@ import {
 } from './architecture-gate/a26MarkdownPrelude';
 import { LoadingLabel } from './components/primitives/LoadingLabel';
 
-const CredentialProbe = lazy(() =>
-  import('./architecture-gate/CredentialProbe').then((module) => ({ default: module.CredentialProbe })),
-);
-const LifecycleProbe = lazy(() =>
-  import('./architecture-gate/LifecycleProbe').then((module) => ({ default: module.LifecycleProbe })),
-);
-const MarkdownProbe = lazy(() =>
-  import('./architecture-gate/MarkdownProbe').then((module) => ({ default: module.MarkdownProbe })),
-);
-const StreamProbeRoute = lazy(() =>
-  import('./architecture-gate/StreamProbe').then((module) => ({ default: module.StreamProbeRoute })),
-);
-const AccessibilityProbe = lazy(() =>
-  import('./architecture-gate/AccessibilityProbe').then((module) => ({ default: module.AccessibilityProbe })),
-);
-const SafeMarkdownSpikeRoute = lazy(() =>
-  import('./security/SafeMarkdownSpike').then((module) => ({ default: module.SafeMarkdownSpikeRoute })),
-);
+// Probe routes exist only in development or in the architecture-test build that sets
+// their flag. Each lazy import sits behind that compile-time gate, so a production build
+// drops the probe chunks (and the hostile Markdown fixture) entirely.
+const CredentialProbe =
+  import.meta.env.DEV || import.meta.env.VITE_PIUI_A23_CREDENTIAL_TEST === '1'
+    ? lazy(() =>
+        import('./architecture-gate/CredentialProbe').then((module) => ({
+          default: module.CredentialProbe,
+        })),
+      )
+    : null;
+const LifecycleProbe =
+  import.meta.env.VITE_PIUI_A27_LIFECYCLE_TEST === '1'
+    ? lazy(() =>
+        import('./architecture-gate/LifecycleProbe').then((module) => ({
+          default: module.LifecycleProbe,
+        })),
+      )
+    : null;
+const MarkdownProbe =
+  import.meta.env.VITE_PIUI_A26_MARKDOWN_TEST === '1'
+    ? lazy(() =>
+        import('./architecture-gate/MarkdownProbe').then((module) => ({
+          default: module.MarkdownProbe,
+        })),
+      )
+    : null;
+const StreamProbeRoute = import.meta.env.DEV
+  ? lazy(() =>
+      import('./architecture-gate/StreamProbe').then((module) => ({
+        default: module.StreamProbeRoute,
+      })),
+    )
+  : null;
+const AccessibilityProbe =
+  import.meta.env.VITE_PIUI_A28_ACCESSIBILITY_TEST === '1'
+    ? lazy(() =>
+        import('./architecture-gate/AccessibilityProbe').then((module) => ({
+          default: module.AccessibilityProbe,
+        })),
+      )
+    : null;
+const SafeMarkdownSpikeRoute = import.meta.env.DEV
+  ? lazy(() =>
+      import('./security/SafeMarkdownSpikeRoute').then((module) => ({
+        default: module.SafeMarkdownSpikeRoute,
+      })),
+    )
+  : null;
 const ProductionApp = lazy(() =>
   import('./app/ProductionApp').then((module) => ({ default: module.ProductionApp })),
 );
@@ -84,15 +115,25 @@ export function App() {
     );
   }
   const spike = new URLSearchParams(window.location.search).get('spike');
-  if (spike === 'credential') return <DeferredRoute><CredentialProbe /></DeferredRoute>;
-  if (spike === 'stream') return <DeferredRoute><StreamProbeRoute /></DeferredRoute>;
-  if (spike === 'markdown') return <DeferredRoute><SafeMarkdownSpikeRoute /></DeferredRoute>;
-  if (A26_MARKDOWN_TEST_ACTIVE && spike === A26_MARKDOWN_ROUTE) return <DeferredRoute><MarkdownProbe /></DeferredRoute>;
-  if (A27_LIFECYCLE_TEST_ACTIVE && spike === A27_LIFECYCLE_ROUTE) return <DeferredRoute><LifecycleProbe /></DeferredRoute>;
-  if (A28_ACCESSIBILITY_TEST_ACTIVE && spike === A28_ACCESSIBILITY_ROUTE) {
+  if (CredentialProbe && spike === 'credential') {
+    return <DeferredRoute><CredentialProbe /></DeferredRoute>;
+  }
+  if (StreamProbeRoute && spike === 'stream') {
+    return <DeferredRoute><StreamProbeRoute /></DeferredRoute>;
+  }
+  if (SafeMarkdownSpikeRoute && spike === 'markdown') {
+    return <DeferredRoute><SafeMarkdownSpikeRoute /></DeferredRoute>;
+  }
+  if (A26_MARKDOWN_TEST_ACTIVE && MarkdownProbe && spike === A26_MARKDOWN_ROUTE) {
+    return <DeferredRoute><MarkdownProbe /></DeferredRoute>;
+  }
+  if (A27_LIFECYCLE_TEST_ACTIVE && LifecycleProbe && spike === A27_LIFECYCLE_ROUTE) {
+    return <DeferredRoute><LifecycleProbe /></DeferredRoute>;
+  }
+  if (A28_ACCESSIBILITY_TEST_ACTIVE && AccessibilityProbe && spike === A28_ACCESSIBILITY_ROUTE) {
     return <DeferredRoute><AccessibilityProbe /></DeferredRoute>;
   }
-  if (spike === 'architecture-gate') return <ArchitectureGate />;
+  if (import.meta.env.DEV && spike === 'architecture-gate') return <ArchitectureGate />;
   return (
     <Suspense
       fallback={

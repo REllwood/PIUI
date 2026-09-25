@@ -13,7 +13,6 @@ import {
 } from 'react';
 import ReactMarkdown, { type AllowElement, type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import hostileFixture from '../../tests/fixtures/markdown/hostile.md?raw';
 import {
   MAX_CODE_BLOCKS,
   MAX_CODE_BLOCK_UTF16,
@@ -27,7 +26,6 @@ import {
   boundedAltText,
   highlightLineCount,
   isOpaqueAssetCapability,
-  isRasterMime,
   isWithinHighlightBounds,
   prepareMarkdown,
   safeMarkdownUrlTransform,
@@ -60,27 +58,6 @@ type MarkdownAuthority = Readonly<{
   applicationOrigin: string;
   highlightJobs: HighlightJobRegistry;
 }>;
-
-type MarkdownHarnessAsset = Readonly<{
-  capability: string;
-  url: string;
-  mime: unknown;
-  byteLength: number;
-  expiresAt: number;
-}>;
-
-type MarkdownHarness = Readonly<{
-  markdown?: string;
-  assets?: readonly MarkdownHarnessAsset[];
-  complete?: boolean;
-  openExternal?: (canonicalUrl: string) => void;
-}>;
-
-declare global {
-  interface Window {
-    __PIUI_MARKDOWN_HARNESS__?: MarkdownHarness;
-  }
-}
 
 const AuthorityContext = createContext<MarkdownAuthority | null>(null);
 const remarkPlugins = [remarkGfm];
@@ -307,7 +284,7 @@ function CodeBlock({ children }: { children?: ReactNode }) {
         <button type="button" disabled={copyState === 'copying'} onClick={() => void copy()}>
           {copyState === 'copying' ? (
             <>
-              <span className="markdown-probe__spinner" aria-hidden="true" />
+              <span className="markdown__spinner" aria-hidden="true" />
               Copying…
             </>
           ) : copyState === 'copied' ? (
@@ -411,7 +388,7 @@ function SafeCode({ children, className }: { children?: ReactNode; className?: s
     >
       {highlighting ? (
         <span className="markdown__code-loading" role="status">
-          <span className="markdown-probe__spinner" aria-hidden="true" />
+          <span className="markdown__spinner" aria-hidden="true" />
           Preparing syntax highlighting…
         </span>
       ) : null}
@@ -681,35 +658,5 @@ export function SafeMarkdownSpike({
         Browser containment evidence only · packaged WKWebView proof remains A.26
       </footer>
     </main>
-  );
-}
-
-export function SafeMarkdownSpikeRoute() {
-  const harness = window.__PIUI_MARKDOWN_HARNESS__;
-  const assets = new Map<string, OpaqueAssetDescriptor>();
-  for (const candidate of harness?.assets ?? []) {
-    if (!isOpaqueAssetCapability(candidate.capability) || !isRasterMime(candidate.mime)) continue;
-    assets.set(
-      candidate.capability,
-      Object.freeze({
-        url: candidate.url,
-        mime: candidate.mime,
-        byteLength: candidate.byteLength,
-        expiresAt: candidate.expiresAt,
-      }),
-    );
-  }
-
-  const openExternal = (target: ValidatedExternalTarget) => {
-    harness?.openExternal?.(target.canonicalUrl);
-  };
-
-  return (
-    <SafeMarkdownSpike
-      markdown={harness?.markdown ?? hostileFixture}
-      assetRegistry={assets}
-      openExternal={openExternal}
-      complete={harness?.complete ?? true}
-    />
   );
 }

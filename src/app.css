@@ -541,6 +541,7 @@ dd {
   margin: 12px auto;
   color: var(--markdown-muted);
 }
+.markdown__spinner,
 .markdown-probe__spinner {
   width: 16px;
   height: 16px;
@@ -1038,6 +1039,7 @@ dd {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .markdown__spinner,
   .markdown-probe__spinner {
     animation-duration: 1.4s;
   }

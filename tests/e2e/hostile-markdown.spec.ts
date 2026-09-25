@@ -75,6 +75,7 @@ const AUDITED_SOURCE_MODULE_PATHS = new Set([
   '/src/bridge/client.ts',
   '/src/components/primitives/LoadingLabel.tsx',
   '/src/security/SafeMarkdownSpike.tsx',
+  '/src/security/SafeMarkdownSpikeRoute.tsx',
   '/src/security/markdownPolicy.ts',
   '/src/security/shikiHighlighter.ts',
 ]);
