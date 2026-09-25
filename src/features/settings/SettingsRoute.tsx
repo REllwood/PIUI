@@ -5,6 +5,7 @@ import { LoadingLabel } from '../../components/primitives/LoadingLabel';
 import { StatusPill } from '../../components/primitives/StatusPill';
 import { redactForDisplay } from '../../domain/errors';
 import { isTurnActive } from '../../domain/machines';
+import { DEFAULT_THINKING_LEVEL, isThinkingLevel, thinkingChoices } from '../../domain/thinking';
 import { AppearanceControls, Toggle } from '../appearance/AppearanceControls';
 import { DiagnosticsRoute } from '../diagnostics/DiagnosticsRoute';
 import { UpdateStatus } from '../updates/UpdateStatus';
@@ -778,6 +779,12 @@ function ModelsSection({
   const { snapshot } = product;
   const providerId = typeof draft['model.provider'] === 'string' ? draft['model.provider'] : '';
   const provider = snapshot.providers.find((candidate) => candidate.id === providerId);
+  const savedReasoning = product.settings.find(
+    (setting) => setting.key === 'reasoning.level',
+  )?.value;
+  const reasoning = isThinkingLevel(draft['reasoning.level'])
+    ? draft['reasoning.level']
+    : DEFAULT_THINKING_LEVEL;
   return (
     <SectionGroup
       title="Model configuration"
@@ -836,15 +843,14 @@ function ModelsSection({
       >
         <select
           className="select"
-          value={
-            typeof draft['reasoning.level'] === 'string' ? draft['reasoning.level'] : 'medium'
-          }
+          value={reasoning}
           onChange={(event) => onChange('reasoning.level', event.target.value)}
         >
-          <option value="low">Quick</option>
-          <option value="medium">Balanced</option>
-          <option value="high">Deep</option>
-          <option value="xhigh">Extended</option>
+          {thinkingChoices(savedReasoning).map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
         </select>
       </SettingRow>
     </SectionGroup>

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { BottomActionPlane } from '../../app/BottomActionPlane';
 import { useProduct } from '../../app/ProductContext';
 import { isTurnActive } from '../../domain/machines';
+import { thinkingLabel } from '../../domain/thinking';
 import { workSummaryLabel } from '../../domain/workSummary';
 import { Icon } from '../../components/icons/Icon';
 import { LoadingLabel } from '../../components/primitives/LoadingLabel';
@@ -54,10 +55,9 @@ export function ConversationRoute({ approvalRequest = 0 }: Readonly<{ approvalRe
   const reasoning = product.settings.find((setting) => setting.key === 'reasoning.level')?.value;
   const provider = snapshot.providers.find((candidate) => candidate.id === providerId);
   const model = provider?.models.find((candidate) => candidate.id === modelId);
+  const reasoningLabel = thinkingLabel(reasoning);
   const modelLabel = `${model?.name ?? 'Model unavailable'} · ${
-    typeof reasoning === 'string'
-      ? reasoning.charAt(0).toUpperCase() + reasoning.slice(1)
-      : 'Default reasoning'
+    reasoningLabel ? `${reasoningLabel} thinking` : 'Default reasoning'
   }`;
   const runComposerCommand = async (command: string): Promise<boolean> => {
     if (command === '/compact' && session) {

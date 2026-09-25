@@ -167,6 +167,25 @@ describe('composer model picker', () => {
     );
   });
 
+  it.each([
+    ['minimal', 'Minimal'],
+    ['max', 'Maximum'],
+  ])('shows a saved %s thinking level as itself', (value, label) => {
+    product = {
+      ...product,
+      settings: product.settings.map((setting) =>
+        setting.key === 'reasoning.level' ? { ...setting, value } : setting,
+      ),
+    };
+    render(<ModelPicker />);
+    fireEvent.click(
+      screen.getByRole('button', { name: `Choose model: Thorough, ${label} thinking` }),
+    );
+    const select = screen.getByRole('combobox', { name: 'Thinking' }) as HTMLSelectElement;
+    expect(select.value).toBe(value);
+    expect(Array.from(select.options).map((option) => option.textContent)).toContain(label);
+  });
+
   it('restores trigger focus when dismissed without saving', () => {
     const trigger = openPicker();
     fireEvent(screen.getByRole('dialog'), new Event('cancel', { cancelable: true }));
