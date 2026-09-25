@@ -47,6 +47,7 @@ import {
 } from './session-watch.js';
 import { TypedSettingsAdapter, type SettingScope } from './settings.js';
 import { ResourceRegistry } from './resources.js';
+import { TextDeltaCoalescer } from './text-coalescer.js';
 import { TurnRegistry } from './turns.js';
 
 export class Pi082Adapter implements PiAdapter {
@@ -611,6 +612,7 @@ export class Pi082Adapter implements PiAdapter {
     let unsubscribe: (() => void) | undefined;
     let ownTurn: OwnTurn | undefined;
     let promptStarted = false;
+    let text: TextDeltaCoalescer | undefined;
     // Everything after begin() sits inside this try so that every exit,
     // including a stale retry, retires the turn registry entry.
     try {
@@ -640,10 +642,13 @@ export class Pi082Adapter implements PiAdapter {
         wake = undefined;
         release?.();
       };
+      const coalescer = new TextDeltaCoalescer((value) => push({ type: 'text', text: value }));
+      text = coalescer;
       unsubscribe = runtime.session.subscribe((event) => {
         if (event.type === 'message_update' && event.assistantMessageEvent.type === 'text_delta') {
-          push({ type: 'text', text: event.assistantMessageEvent.delta });
+          coalescer.push(event.assistantMessageEvent.delta);
         } else if (event.type === 'tool_execution_start') {
+          coalescer.flush();
           push({
             type: 'tool',
             text: event.toolName,
@@ -651,6 +656,7 @@ export class Pi082Adapter implements PiAdapter {
             toolCallId: event.toolCallId,
           });
         } else if (event.type === 'tool_execution_end') {
+          coalescer.flush();
           push({
             type: 'tool',
             text: event.toolName,
@@ -669,12 +675,14 @@ export class Pi082Adapter implements PiAdapter {
         .then(
           async () => {
             await this.#finishOwnTurn(runtime, turn);
+            coalescer.flush();
             terminal = true;
             push({ type: active.controller.signal.aborted ? 'stopped' : 'complete' });
           },
           async (error: unknown) => {
             runtime.session.clearQueue();
             await this.#finishOwnTurn(runtime, turn);
+            coalescer.flush();
             terminal = true;
             const code =
               error instanceof Error && error.message === 'This action was not approved.'
@@ -685,6 +693,7 @@ export class Pi082Adapter implements PiAdapter {
         )
         .catch(() => {
           runtime.session.clearQueue();
+          coalescer.flush();
           terminal = true;
           push({ type: 'failed', code: 'session-external-change' });
         });
@@ -710,6 +719,7 @@ export class Pi082Adapter implements PiAdapter {
       this.#queueNumbers.delete(request.sessionId);
       active.controller.signal.removeEventListener('abort', abort);
       unsubscribe?.();
+      text?.dispose();
       this.#turns.finish(
         request.requestId,
         active.controller.signal.aborted ? 'stopped' : 'complete',

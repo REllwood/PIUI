@@ -435,6 +435,35 @@ describe('product runtime end to end with real Pi turns', () => {
     expect(await product.stop(retry.id)).toBe('too-late');
   });
 
+  it('coalesces a long streamed reply into a few well-formed delta events', async () => {
+    const { workspacePath, agentDir } = await workspace(root);
+    const { faux, product } = fauxProduct();
+    runtime = product;
+    const session = await createSession(product, workspacePath, agentDir);
+    // The faux provider streams 12 UTF-16 units per token, so many tokens end
+    // halfway through an emoji's surrogate pair.
+    const reply = `a${'😀'.repeat(3_000)} done`;
+    faux.setResponses([publicFauxAssistantMessage(reply)]);
+    const events = await collect(
+      product.stream(turnRequest(session.id, 1, 'Long reply'), new AbortController().signal),
+    );
+    const deltas = events.filter((event) => event.type === 'text');
+    expect(streamedText(events)).toBe(reply);
+    // Over 500 provider tokens; size flushes alone need only four events, and a
+    // slow machine may add a few 32 ms flushes.
+    expect(Math.ceil(reply.length / 12)).toBeGreaterThan(500);
+    expect(deltas.length).toBeLessThanOrEqual(16);
+    expect(
+      deltas.every(
+        (event) =>
+          !/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?:^|[^\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(
+            event.text ?? '',
+          ),
+      ),
+    ).toBe(true);
+    expect(events.at(-1)?.type).toBe('complete');
+  });
+
   it("runs approved bash commands with the user's HOME and PATH from the host", async () => {
     const { workspacePath, agentDir } = await workspace(root);
     const userHome = join(root, 'user-home');
