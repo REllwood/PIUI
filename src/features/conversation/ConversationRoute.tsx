@@ -3,7 +3,7 @@ import { BottomActionPlane } from '../../app/BottomActionPlane';
 import { useProduct } from '../../app/ProductContext';
 import { isTurnActive } from '../../domain/machines';
 import { thinkingLabel } from '../../domain/thinking';
-import { workSummaryLabel } from '../../domain/workSummary';
+import { focalActivityId, workSummaryLabel } from '../../domain/workSummary';
 import { Icon } from '../../components/icons/Icon';
 import { LoadingLabel } from '../../components/primitives/LoadingLabel';
 import { WorkTrace } from '../../components/work-trace/WorkTrace';
@@ -50,6 +50,7 @@ export function ConversationRoute({ approvalRequest = 0 }: Readonly<{ approvalRe
   }, [adoptDraft, sessionId]);
   const empty = snapshot.messages.length === 0;
   const hasWork = snapshot.activity.length > 0;
+  const recentWork = snapshot.activity.slice(-3);
   const providerId = product.settings.find((setting) => setting.key === 'model.provider')?.value;
   const modelId = product.settings.find((setting) => setting.key === 'model.id')?.value;
   const reasoning = product.settings.find((setting) => setting.key === 'reasoning.level')?.value;
@@ -169,7 +170,8 @@ export function ConversationRoute({ approvalRequest = 0 }: Readonly<{ approvalRe
                 </span>
               </summary>
               <WorkTrace
-                events={snapshot.activity.slice(-3)}
+                events={recentWork}
+                focusId={focalActivityId(recentWork)}
                 onSelect={(event) => {
                   product.setSelectedActivity(event);
                   setContextKind('activity');

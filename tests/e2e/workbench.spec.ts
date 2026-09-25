@@ -116,6 +116,31 @@ test('approval and change reviews can be reopened on a wide window', async ({ pa
   await expect(page.getByRole('complementary', { name: 'Context review' })).toContainText('Undo');
 });
 
+test('the work trace keeps the event waiting on the person in view', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/?fixture=product');
+  const panel = page.getByRole('group', { name: 'Current work summary' });
+  const summary = panel.locator('summary');
+  const waiting = panel.locator('.work-trace__item[data-state="waiting"]');
+  await expect(waiting).toHaveAttribute('aria-current', 'step');
+  // Three events overflow the short panel; the trace follows the one that needs a decision,
+  // and the sticky summary never covers it.
+  await expect
+    .poll(async () => {
+      const [box, item, heading] = await Promise.all([
+        panel.boundingBox(),
+        waiting.boundingBox(),
+        summary.boundingBox(),
+      ]);
+      if (!box || !item || !heading) return false;
+      return (
+        item.y >= heading.y + heading.height - 1 && item.y + item.height <= box.y + box.height + 1
+      );
+    })
+    .toBe(true);
+  await expect(summary).toContainText('Waiting for your approval');
+});
+
 test('compact navigation hides its controls and keeps keyboard focus in the drawer', async ({
   page,
 }) => {

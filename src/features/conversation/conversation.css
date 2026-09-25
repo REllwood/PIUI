@@ -342,10 +342,16 @@
   overflow: auto;
   border-top: 1px solid var(--divider);
   background: var(--surface-highlight);
+  /* Keeps the focal event clear of the sticky summary when the trace scrolls to it. */
+  scroll-padding-block: 44px 8px;
 }
 .conversation-work > summary {
+  position: sticky;
+  z-index: 2;
+  top: 0;
   display: flex;
   min-height: 44px;
+  background: var(--surface-highlight);
   align-items: center;
   justify-content: space-between;
   gap: 12px;

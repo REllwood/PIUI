@@ -36,4 +36,26 @@ describe('WorkTrace', () => {
       expect(document.querySelector(`[data-state="${state}"]`)).toBeTruthy();
     }
   });
+
+  it('marks the focal event, and names it the current step only while it is in progress', () => {
+    const event = (id: string, state: ActivityEvent['state']): ActivityEvent => ({
+      id,
+      category: 'command',
+      verb: 'Running',
+      target: id,
+      state,
+      elapsed: '1s',
+      summary: `Summary for ${id}`,
+    });
+    const { rerender } = render(
+      <WorkTrace events={[event('a', 'complete'), event('b', 'waiting')]} focusId="b" />,
+    );
+    const items = () => screen.getAllByRole('listitem');
+    expect(items()[1]?.getAttribute('data-focus')).toBe('true');
+    expect(items()[1]?.getAttribute('aria-current')).toBe('step');
+    expect(items()[0]?.hasAttribute('data-focus')).toBe(false);
+    rerender(<WorkTrace events={[event('a', 'complete'), event('b', 'complete')]} focusId="b" />);
+    expect(items()[1]?.getAttribute('data-focus')).toBe('true');
+    expect(items()[1]?.hasAttribute('aria-current')).toBe(false);
+  });
 });
