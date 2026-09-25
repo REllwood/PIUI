@@ -12,7 +12,12 @@ import {
 } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
-import { canonicalArchitectureJson } from './architecture-gate-schema.mjs';
+import {
+  automationSigningPolicy,
+  canonicalArchitectureJson,
+} from './architecture-gate-schema.mjs';
+
+export { automationSigningPolicy } from './architecture-gate-schema.mjs';
 
 const MACHO_64_LE_BYTES = 0xcffaedfe;
 const CPU_TYPE_ARM64 = 0x0100000c;
@@ -34,17 +39,6 @@ const MAX_VERIFICATION_BYTES = 512 * 1_048_576;
 export const CODE_SIGNATURE_VERIFICATION_TEST_HOOK = Symbol(
   'PIUI code-signature verification test hook',
 );
-
-export const automationHostSigningPolicy = Object.freeze({
-  bundleIdentifier: 'au.com.piui.desktop.architecture-test',
-  certificateCommonName: 'Apple Development: automation-signer@example.invalid (ZZZZ000001)',
-  certificateSha1: '0000000000000000000000000000000000000001',
-  certificateSha256: '0000000000000000000000000000000000000000000000000000000000000001',
-  designatedRequirement: 'anchor apple generic and identifier "au.com.piui.desktop.architecture-test" and certificate leaf[subject.OU] = "ZZZZ000002"',
-  requirementsBytes: 136,
-  schemaVersion: 1,
-  teamIdentifier: 'ZZZZ000002',
-});
 
 const signingEvidenceKeys = Object.freeze([
   'bundleIdentifier',
@@ -208,6 +202,7 @@ async function authenticateAutomationSigningAuthorityWith(runSecurity, requirePr
   if (typeof requirePrivateIdentity !== 'boolean') {
     throw new Error('Automation signing authentication mode is invalid');
   }
+  const policy = automationSigningPolicy();
   const keychainPath = automationSigningKeychainPath();
   let handle;
   try {
@@ -235,7 +230,7 @@ async function authenticateAutomationSigningAuthorityWith(runSecurity, requirePr
         keychainPath,
       ], keychainPath);
       const identityPattern = new RegExp(
-        `^\\s*1\\) ${automationHostSigningPolicy.certificateSha1} "${automationHostSigningPolicy.certificateCommonName.replaceAll(/[.*+?^${}()|[\]\\]/gu, '\\$&')}"\\n\\s*1 valid identities found\\n$`,
+        `^\\s*1\\) ${policy.certificateSha1} "${policy.certificateCommonName.replaceAll(/[.*+?^${}()|[\]\\]/gu, '\\$&')}"\\n\\s*1 valid identities found\\n$`,
         'u',
       );
       if (result.status !== 0
@@ -250,7 +245,7 @@ async function authenticateAutomationSigningAuthorityWith(runSecurity, requirePr
       'find-certificate',
       '-a',
       '-c',
-      automationHostSigningPolicy.certificateCommonName,
+      policy.certificateCommonName,
       '-p',
       keychainPath,
     ], keychainPath);
@@ -261,7 +256,7 @@ async function authenticateAutomationSigningAuthorityWith(runSecurity, requirePr
       matchingCertificates = pemBlocks
         .map((pem) => new X509Certificate(pem))
         .filter((certificate) => certificate.fingerprint.replaceAll(':', '').toUpperCase()
-          === automationHostSigningPolicy.certificateSha1);
+          === policy.certificateSha1);
     } catch {
       throw new Error('Pinned Apple Development leaf certificate is malformed');
     }
@@ -273,7 +268,7 @@ async function authenticateAutomationSigningAuthorityWith(runSecurity, requirePr
       || certificates.stdout.replace(pemPattern, '').trim() !== ''
       || matchingCertificates.length !== 1
       || matchingCertificates[0].fingerprint256.replaceAll(':', '').toLowerCase()
-        !== automationHostSigningPolicy.certificateSha256) {
+        !== policy.certificateSha256) {
       throw new Error('Pinned Apple Development leaf certificate is unavailable');
     }
     const after = await handle.stat({ bigint: true });
@@ -287,7 +282,7 @@ async function authenticateAutomationSigningAuthorityWith(runSecurity, requirePr
     return Object.freeze({
       keychainIdentity: keychainIdentity(after),
       keychainPath,
-      policy: automationHostSigningPolicy,
+      policy,
     });
   } finally {
     await handle?.close();
@@ -317,7 +312,7 @@ export async function authenticateAutomationSigningAuthorityInBroker() {
 export async function assertAutomationSigningAuthorityUnchanged(expected) {
   if (!expected
     || expected.keychainPath !== automationSigningKeychainPath()
-    || expected.policy !== automationHostSigningPolicy) {
+    || expected.policy !== automationSigningPolicy()) {
     throw new Error('Automation signing authority witness is invalid');
   }
   const current = await authenticateAutomationSigningAuthority();
@@ -331,7 +326,7 @@ export async function assertAutomationSigningAuthorityUnchanged(expected) {
 export async function assertAutomationSigningAuthorityUnchangedInBroker(expected) {
   if (!expected
     || expected.keychainPath !== automationSigningKeychainPath()
-    || expected.policy !== automationHostSigningPolicy) {
+    || expected.policy !== automationSigningPolicy()) {
     throw new Error('Automation signing authority witness is invalid');
   }
   const current = await authenticateAutomationSigningAuthorityInBroker();
@@ -349,17 +344,18 @@ export function automationSigningArguments(hostPath, keychainPath) {
     || keychainPath !== automationSigningKeychainPath()) {
     throw new Error('Automation signing arguments are invalid');
   }
+  const policy = automationSigningPolicy();
   return Object.freeze([
     '--force',
     '--timestamp=none',
     '--identifier',
-    automationHostSigningPolicy.bundleIdentifier,
+    policy.bundleIdentifier,
     '--requirements',
-    `=designated => ${automationHostSigningPolicy.designatedRequirement}`,
+    `=designated => ${policy.designatedRequirement}`,
     '--keychain',
     keychainPath,
     '--sign',
-    automationHostSigningPolicy.certificateSha1,
+    policy.certificateSha1,
     hostPath,
   ]);
 }
@@ -418,7 +414,7 @@ ${metadata}
 async function applyAutomationHostSignatureWith(hostPath, authority, broker) {
   if (!authority
     || authority.keychainPath !== automationSigningKeychainPath()
-    || authority.policy !== automationHostSigningPolicy
+    || authority.policy !== automationSigningPolicy()
     || typeof broker !== 'boolean') {
     throw new Error('Automation signing authority witness is invalid');
   }
@@ -613,13 +609,14 @@ function lineValue(lines, prefix) {
 }
 
 export function assertAutomationHostSigningEvidence(value) {
+  const policy = automationSigningPolicy();
   if (!exactKeys(value, signingEvidenceKeys)
     || value.schemaVersion !== 1
-    || value.bundleIdentifier !== automationHostSigningPolicy.bundleIdentifier
-    || value.certificateSha1 !== automationHostSigningPolicy.certificateSha1
-    || value.certificateSha256 !== automationHostSigningPolicy.certificateSha256
-    || value.designatedRequirement !== automationHostSigningPolicy.designatedRequirement
-    || value.teamIdentifier !== automationHostSigningPolicy.teamIdentifier
+    || value.bundleIdentifier !== policy.bundleIdentifier
+    || value.certificateSha1 !== policy.certificateSha1
+    || value.certificateSha256 !== policy.certificateSha256
+    || value.designatedRequirement !== policy.designatedRequirement
+    || value.teamIdentifier !== policy.teamIdentifier
     || value.signature !== 'apple-development'
     || value.entitlements !== 'none'
     || value.codeDirectoryFlags !== 0
@@ -651,7 +648,7 @@ export function assertAutomationHostSigningEvidence(value) {
     })
     || value.signatureSlots[0].sha256 !== value.codeDirectorySha256
     || value.signatureSlots[1].sha256 !== value.requirementsSha256
-    || value.signatureSlots[1].size !== automationHostSigningPolicy.requirementsBytes
+    || value.signatureSlots[1].size !== policy.requirementsBytes
     || value.signatureSlots[2].sha256 !== value.cmsSha256
     || value.signatureSlots[2].size !== value.cmsBytes
     || value.signatureContainerBytes
@@ -1187,6 +1184,7 @@ export async function inspectAppleDevelopmentHost(path, options) {
   if (typeof path !== 'string' || resolve(path) !== path || /[\0\r\n]/u.test(path)) {
     throw new Error('Apple Development host path is invalid');
   }
+  const policy = automationSigningPolicy();
   let handle;
   try {
     handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -1201,7 +1199,7 @@ export async function inspectAppleDevelopmentHost(path, options) {
     }
     const bytes = await handle.readFile();
     const signature = inspectAppleDevelopmentSignatureBytes(bytes);
-    const requirement = `=anchor apple generic and identifier "${automationHostSigningPolicy.bundleIdentifier}" and certificate leaf[subject.OU] = "${automationHostSigningPolicy.teamIdentifier}"`;
+    const requirement = `=anchor apple generic and identifier "${policy.bundleIdentifier}" and certificate leaf[subject.OU] = "${policy.teamIdentifier}"`;
     const leased = await runCodesignCloneLease({
       bytes,
       describe: true,
@@ -1235,10 +1233,10 @@ export async function inspectAppleDevelopmentHost(path, options) {
     if (described.status !== 0
       || described.signal !== null
       || described.error
-      || described.stdout !== `designated => ${automationHostSigningPolicy.designatedRequirement}\n`
+      || described.stdout !== `designated => ${policy.designatedRequirement}\n`
       || lineValue(lines, 'Executable=') !== leased.clonePath
-      || lineValue(lines, 'Identifier=') !== automationHostSigningPolicy.bundleIdentifier
-      || lineValue(lines, 'TeamIdentifier=') !== automationHostSigningPolicy.teamIdentifier
+      || lineValue(lines, 'Identifier=') !== policy.bundleIdentifier
+      || lineValue(lines, 'TeamIdentifier=') !== policy.teamIdentifier
       || lineValue(lines, 'CDHash=') !== signature.cdHash
       || lineValue(lines, 'CandidateCDHash sha256=') !== signature.cdHash
       || lineValue(lines, 'CandidateCDHashFull sha256=') !== signature.codeDirectorySha256
@@ -1247,7 +1245,7 @@ export async function inspectAppleDevelopmentHost(path, options) {
       || lineValue(lines, 'Info.plist=') !== 'not bound'
       || lineValue(lines, 'Sealed Resources=') !== 'none'
       || canonicalArchitectureJson(authorities) !== canonicalArchitectureJson([
-        automationHostSigningPolicy.certificateCommonName,
+        policy.certificateCommonName,
         'Apple Worldwide Developer Relations Certification Authority',
         'Apple Root CA',
       ])
@@ -1265,15 +1263,15 @@ export async function inspectAppleDevelopmentHost(path, options) {
       throw new Error('Apple Development host changed during signing inspection');
     }
     return assertAutomationHostSigningEvidence({
-      bundleIdentifier: automationHostSigningPolicy.bundleIdentifier,
+      bundleIdentifier: policy.bundleIdentifier,
       cdHash: signature.cdHash,
-      certificateSha1: automationHostSigningPolicy.certificateSha1,
-      certificateSha256: automationHostSigningPolicy.certificateSha256,
+      certificateSha1: policy.certificateSha1,
+      certificateSha256: policy.certificateSha256,
       cmsBytes: signature.cmsBytes,
       cmsSha256: signature.cmsSha256,
       codeDirectoryFlags: signature.codeDirectoryFlags,
       codeDirectorySha256: signature.codeDirectorySha256,
-      designatedRequirement: automationHostSigningPolicy.designatedRequirement,
+      designatedRequirement: policy.designatedRequirement,
       entitlements: 'none',
       executableBytes: signature.executableBytes,
       executableSha256: signature.executableSha256,
@@ -1283,7 +1281,7 @@ export async function inspectAppleDevelopmentHost(path, options) {
       signature: 'apple-development',
       signatureContainerBytes: signature.signatureContainerBytes,
       signatureSlots: signature.signatureSlots,
-      teamIdentifier: automationHostSigningPolicy.teamIdentifier,
+      teamIdentifier: policy.teamIdentifier,
     });
   } finally {
     await handle?.close();

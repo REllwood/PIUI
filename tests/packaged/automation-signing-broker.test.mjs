@@ -29,11 +29,15 @@ import {
   runOwnedCommand,
 } from '../../scripts/a21-gate-support.mjs';
 import {
-  automationHostSigningPolicy,
   automationSigningKeychainPath,
+  automationSigningPolicy,
 } from '../../scripts/automation-host-signing.mjs';
 import { createAuthenticatedNodeSpawnConfiguration } from '../../scripts/authenticated-node-spawn.mjs';
-import { canonicalArchitectureJson, sha256Bytes } from '../../scripts/architecture-gate-schema.mjs';
+import {
+  automationSigningPolicyPath,
+  canonicalArchitectureJson,
+  sha256Bytes,
+} from '../../scripts/architecture-gate-schema.mjs';
 import { snapshotArchitectureSource } from '../../scripts/architecture-source-snapshot.mjs';
 import {
   APPLE_TOOLCHAIN_PATHS,
@@ -42,30 +46,43 @@ import {
   releaseAppleToolchainAuthority,
   revalidateAppleToolchainAuthority,
 } from '../../scripts/apple-toolchain-trust.mjs';
+import {
+  realAutomationSigningSkipReason,
+  useFixtureAutomationSigningPolicy,
+} from './helpers/automation-signing-policy.mjs';
 
 const repositoryRoot = resolve(import.meta.dirname, '../..');
 const brokerScript = resolve(repositoryRoot, 'scripts/automation-signing-broker.mjs');
 const suppliedNode = process.env.PIUI_AUTHENTICATED_NODE_TEST_PATH;
+// The live witness signs with the owner's local pin; every other case runs
+// the same broker transaction against the committed placeholder identity.
+const liveBrokerSkip = process.platform !== 'darwin'
+  || !suppliedNode
+  || process.env.PIUI_RUN_LIVE_AUTOMATION_SIGNING_BROKER !== '1'
+  ? 'Explicit authenticated macOS broker witness was not requested'
+  : realAutomationSigningSkipReason();
+if (liveBrokerSkip) useFixtureAutomationSigningPolicy();
 
 function digest(label) {
   return createHash('sha256').update(label).digest('hex');
 }
 
 function evidenceFor(bytes) {
+  const policy = automationSigningPolicy();
   const executableSha256 = sha256Bytes(bytes);
   const codeDirectorySha256 = digest('code-directory');
   const requirementsSha256 = digest('requirements');
   const cmsSha256 = digest('cms');
   return Object.freeze({
-    bundleIdentifier: automationHostSigningPolicy.bundleIdentifier,
+    bundleIdentifier: policy.bundleIdentifier,
     cdHash: codeDirectorySha256.slice(0, 40),
-    certificateSha1: automationHostSigningPolicy.certificateSha1,
-    certificateSha256: automationHostSigningPolicy.certificateSha256,
+    certificateSha1: policy.certificateSha1,
+    certificateSha256: policy.certificateSha256,
     cmsBytes: 64,
     cmsSha256,
     codeDirectoryFlags: 0,
     codeDirectorySha256,
-    designatedRequirement: automationHostSigningPolicy.designatedRequirement,
+    designatedRequirement: policy.designatedRequirement,
     entitlements: 'none',
     executableBytes: bytes.length,
     executableSha256,
@@ -76,10 +93,10 @@ function evidenceFor(bytes) {
     signatureContainerBytes: 300,
     signatureSlots: Object.freeze([
       Object.freeze({ sha256: codeDirectorySha256, size: 32, slot: 0 }),
-      Object.freeze({ sha256: requirementsSha256, size: 136, slot: 2 }),
+      Object.freeze({ sha256: requirementsSha256, size: policy.requirementsBytes, slot: 2 }),
       Object.freeze({ sha256: cmsSha256, size: 64, slot: 0x10000 }),
     ]),
-    teamIdentifier: automationHostSigningPolicy.teamIdentifier,
+    teamIdentifier: policy.teamIdentifier,
   });
 }
 
@@ -299,6 +316,7 @@ test('broker sandbox is instance-bound and rejects unauthorised profile mutation
       hostPath: item.hostPath,
       keychainPath: automationSigningKeychainPath(),
       nonce: item.nonce,
+      signingPolicyPath: automationSigningPolicyPath(),
       verificationRoot: item.verificationRoot,
     });
     for (const expected of [
@@ -306,6 +324,7 @@ test('broker sandbox is instance-bound and rejects unauthorised profile mutation
       item.contract.responsePath,
       resolve(item.controlRoot, `consumed-${item.nonce}.json`),
       automationSigningKeychainPath(),
+      automationSigningPolicyPath(),
       '/usr/bin/codesign',
       '/usr/bin/security',
     ]) assert.ok(profile.includes(expected));
@@ -395,11 +414,7 @@ test('broker sandbox is instance-bound and rejects unauthorised profile mutation
 });
 
 test('authenticated sibling broker signs and independently inspects one real host', {
-  skip: process.platform !== 'darwin'
-    || !suppliedNode
-    || process.env.PIUI_RUN_LIVE_AUTOMATION_SIGNING_BROKER !== '1'
-    ? 'Explicit authenticated macOS broker witness was not requested'
-    : false,
+  skip: liveBrokerSkip,
   timeout: 120_000,
 }, async () => {
   const item = await fixture('broker-live');
@@ -445,7 +460,7 @@ test('authenticated sibling broker signs and independently inspects one real hos
     const response = await requestAutomationHostSigning(session);
     assert.equal(response.state, 'signed');
     assert.equal(response.signingEvidence.certificateSha1,
-      automationHostSigningPolicy.certificateSha1);
+      automationSigningPolicy().certificateSha1);
     assert.equal(response.signingEvidence.executableSha256, response.signedHost.sha256);
     await assert.rejects(
       requestAutomationHostSigning(session),

@@ -13,6 +13,9 @@ import {
   canonicalArchitectureJson,
   sha256Bytes,
 } from '../../scripts/architecture-gate-schema.mjs';
+import { useFixtureAutomationSigningPolicy } from './helpers/automation-signing-policy.mjs';
+
+useFixtureAutomationSigningPolicy();
 
 const sha = (character) => character.repeat(64);
 
