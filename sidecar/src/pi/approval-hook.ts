@@ -29,8 +29,11 @@ const MAX_COHORT_MEMBERS = 32;
 const MAX_ACTIVE_COHORTS = 64;
 const MAX_ACTIVE_MEMBERS = 128;
 const MAX_FAILED_COHORTS = 128;
+const MAX_COMPLETED_COHORTS = 128;
 const DEFAULT_COHORT_TIMEOUT_MS = 125_000;
-const MAX_BRANCH_ENTRIES = 2_048;
+// Entries walked back from the leaf to find the latest message. Branch length
+// itself is unbounded: long sessions keep their tools.
+const MAX_LEAF_SCAN = 2_048;
 const MAX_MESSAGE_CONTENT = 256;
 const WIRE_COORDINATE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 
@@ -85,6 +88,10 @@ type CohortState = {
   releaseAllReady(value: boolean): void;
   readonly groupRelease: Promise<boolean>;
   releaseGroup(value: boolean): void;
+  /** Members Pi finalised as errors without ever offering them to the gate. */
+  readonly prefailed: Set<string>;
+  /** Every member that ever registered, so a late event cannot re-classify it. */
+  readonly registeredIds: Set<string>;
   timer: ReturnType<typeof setTimeout>;
   failed: boolean;
   abandonSent: boolean;
@@ -136,25 +143,34 @@ function ownValue(value: unknown, key: string): unknown {
   return descriptor.value;
 }
 
+/**
+ * Walks parent links back from the leaf to the latest message entry. Only the
+ * newest assistant entry matters, so the cost is bounded by MAX_LEAF_SCAN
+ * rather than by the length of the session.
+ */
+function latestMessageEntry(ctx: PublicExtensionContext): unknown {
+  const manager = ctx.sessionManager;
+  let entry: unknown = manager.getLeafEntry();
+  for (let steps = 0; entry !== undefined && steps < MAX_LEAF_SCAN; steps += 1) {
+    if (ownValue(entry, 'type') === 'message') return entry;
+    const parentId = ownValue(entry, 'parentId');
+    if (parentId === null) return undefined;
+    if (typeof parentId !== 'string') throw new Error('approval-cohort-rejected');
+    const parent: unknown = manager.getEntry(parentId);
+    if (parent === undefined || ownValue(parent, 'id') !== parentId) {
+      throw new Error('approval-cohort-rejected');
+    }
+    entry = parent;
+  }
+  return undefined;
+}
+
 function deriveCohort(
   ctx: PublicExtensionContext,
   toolCallId: string,
   toolName: string,
 ): ApprovalCohortDescriptor {
-  const leaf = ctx.sessionManager.getLeafEntry();
-  const branch = ctx.sessionManager.getBranch();
-  if (!Array.isArray(branch) || branch.length < 1 || branch.length > MAX_BRANCH_ENTRIES) {
-    throw new Error('approval-cohort-rejected');
-  }
-  if (leaf && branch[branch.length - 1] !== leaf) throw new Error('approval-cohort-rejected');
-
-  let latestMessage: unknown;
-  for (let index = branch.length - 1; index >= 0; index -= 1) {
-    if (ownValue(branch[index], 'type') === 'message') {
-      latestMessage = branch[index];
-      break;
-    }
-  }
+  const latestMessage = latestMessageEntry(ctx);
   if (!latestMessage) throw new Error('approval-cohort-rejected');
   const assistantEntryId = ownValue(latestMessage, 'id');
   const message = ownValue(latestMessage, 'message');
@@ -277,12 +293,21 @@ function createCohort(
     releaseAllReady,
     groupRelease,
     releaseGroup,
+    prefailed: new Set(),
+    registeredIds: new Set(),
     timer,
     failed: false,
     abandonSent: false,
     hostRegistered: false,
     completed: 0,
   };
+}
+
+/** Members the gate still expects to register: Pi-failed ones never will. */
+function expectedMembers(cohort: CohortState): ApprovalCohortDescriptor['orderedMembers'] {
+  return cohort.descriptor.orderedMembers.filter(
+    (member) => !cohort.prefailed.has(member.toolCallId),
+  );
 }
 
 /**
@@ -306,12 +331,16 @@ export function createApprovalGate(
   const pendingByToolCall = new Map<string, PendingInvocation>();
   const cohorts = new Map<string, CohortState>();
   const failedCohorts = new Map<string, true>();
+  const completedCohorts = new Map<string, true>();
   const decoratedByName = new Map<string, PublicToolDefinition>();
   let lookup: DefinitionLookup | undefined;
-  let sessionInvalidated = false;
+  // Permanent: shutdown, tombstone saturation or an unverifiable reload.
+  let sessionClosed = false;
+  // Transient: the gate admits nothing while Pi rebuilds its runtime.
+  let reloadsInFlight = 0;
 
   function isActiveDefinition(name: string, definition: PublicToolDefinition): boolean {
-    if (!lookup || sessionInvalidated) return false;
+    if (!lookup || sessionClosed || reloadsInFlight > 0) return false;
     try {
       return lookup(name) === definition;
     } catch {
@@ -324,10 +353,20 @@ export function createApprovalGate(
     if (failedCohorts.size >= MAX_FAILED_COHORTS) {
       // Never evict a tombstone and permit an old late sibling to revive it.
       // Saturation closes this session gate fail-safe until a fresh gate exists.
-      sessionInvalidated = true;
+      sessionClosed = true;
       return;
     }
     failedCohorts.set(key, true);
+  }
+
+  function rememberCompleted(key: string): void {
+    // Eviction is safe: a completed key is only consulted so that a late Pi
+    // error event cannot conjure an empty cohort; it never grants anything.
+    completedCohorts.delete(key);
+    completedCohorts.set(key, true);
+    if (completedCohorts.size > MAX_COMPLETED_COHORTS) {
+      completedCohorts.delete(completedCohorts.keys().next().value!);
+    }
   }
 
   function erasePending(pending: PendingInvocation): void {
@@ -386,12 +425,21 @@ export function createApprovalGate(
     cohort.members.delete(pending.toolCallId);
     cohort.groupGrants.delete(pending.toolCallId);
     cohort.completed += 1;
-    if (cohort.completed >= cohort.descriptor.orderedMembers.length) {
-      clearTimeout(cohort.timer);
-      cohorts.delete(cohort.key);
-      cohort.members.clear();
-      cohort.groupGrants.clear();
+    maybeComplete(cohort);
+  }
+
+  function maybeComplete(cohort: CohortState): void {
+    if (
+      cohort.failed ||
+      cohort.completed + cohort.prefailed.size < cohort.descriptor.orderedMembers.length
+    ) {
+      return;
     }
+    clearTimeout(cohort.timer);
+    cohorts.delete(cohort.key);
+    rememberCompleted(cohort.key);
+    cohort.members.clear();
+    cohort.groupGrants.clear();
   }
 
   function verifyCurrent(pending: PendingInvocation): boolean {
@@ -416,8 +464,9 @@ export function createApprovalGate(
   }
 
   function maybeReleaseRegistered(cohort: CohortState): void {
-    if (cohort.failed || cohort.members.size !== cohort.descriptor.orderedMembers.length) return;
-    const complete = cohort.descriptor.orderedMembers.every((member) => {
+    const expected = expectedMembers(cohort);
+    if (cohort.failed || expected.length === 0 || cohort.members.size !== expected.length) return;
+    const complete = expected.every((member) => {
       const pending = cohort.members.get(member.toolCallId);
       return pending?.toolName === member.toolName;
     });
@@ -426,8 +475,9 @@ export function createApprovalGate(
   }
 
   function maybeReleaseAllReady(cohort: CohortState): void {
-    if (cohort.failed || cohort.members.size !== cohort.descriptor.orderedMembers.length) return;
-    const ready = cohort.descriptor.orderedMembers.every((member) => {
+    const expected = expectedMembers(cohort);
+    if (cohort.failed || expected.length === 0 || cohort.members.size !== expected.length) return;
+    const ready = expected.every((member) => {
       const pending = cohort.members.get(member.toolCallId);
       return Boolean(
         pending &&
@@ -445,6 +495,8 @@ export function createApprovalGate(
     const commit = grant.groupCommit;
     if (
       !commit ||
+      // A group decision must cover the complete cohort; a shrunk one has none.
+      cohort.prefailed.size > 0 ||
       commit.cohortDigest !== cohort.descriptor.cohortDigest ||
       commit.memberCount !== cohort.descriptor.orderedMembers.length ||
       grant.transactionId !== commit.transactionId ||
@@ -479,6 +531,54 @@ export function createApprovalGate(
     return cohort.groupRelease;
   }
 
+  function openCohort(descriptor: ApprovalCohortDescriptor): CohortState {
+    const key = privateCohortKey(context, descriptor);
+    if (failedCohorts.has(key)) throw new Error('approval-cohort-rejected');
+    const existing = cohorts.get(key);
+    if (existing) {
+      if (sameDescriptor(existing.descriptor, descriptor)) return existing;
+      abandon(existing, 'extension-error');
+      throw new Error('approval-cohort-rejected');
+    }
+    if (cohorts.size >= MAX_ACTIVE_COHORTS) throw new Error('approval-cohort-capacity');
+    let created!: CohortState;
+    created = createCohort(key, descriptor, cohortTimeoutMs, () => {
+      abandon(created, 'extension-error');
+    });
+    cohorts.set(key, created);
+    return created;
+  }
+
+  /**
+   * Pi finalises an unknown tool or invalid arguments as an error before any
+   * `tool_call` handler runs. Such a member can never register, and so can
+   * never pass its wrapper; its siblings stop waiting for it instead of timing
+   * out. Every other member still needs its own exact host approval, and a
+   * shrunk cohort can never receive a group decision.
+   */
+  function recordPiFailedMember(
+    ctx: PublicExtensionContext,
+    toolCallId: string,
+    toolName: string,
+  ): void {
+    let cohort: CohortState;
+    try {
+      const descriptor = deriveCohort(ctx, toolCallId, toolName);
+      const key = privateCohortKey(context, descriptor);
+      if (completedCohorts.has(key)) return;
+      cohort = openCohort(descriptor);
+    } catch {
+      // Not a member of the current assistant cohort, or already closed.
+      return;
+    }
+    if (cohort.failed || cohort.registeredIds.has(toolCallId) || cohort.prefailed.has(toolCallId)) {
+      return;
+    }
+    cohort.prefailed.add(toolCallId);
+    maybeReleaseRegistered(cohort);
+    maybeComplete(cohort);
+  }
+
   const extension: PublicInlineExtension = Object.freeze({
     name: 'piui-approval-gate',
     hidden: true,
@@ -490,22 +590,7 @@ export function createApprovalGate(
         let inputTooLarge = false;
         try {
           const descriptor = deriveCohort(ctx, event.toolCallId, event.toolName);
-          const key = privateCohortKey(context, descriptor);
-          if (failedCohorts.has(key)) throw new Error('approval-cohort-rejected');
-          cohort = cohorts.get(key);
-          if (cohort && !sameDescriptor(cohort.descriptor, descriptor)) {
-            abandon(cohort, 'extension-error');
-            throw new Error('approval-cohort-rejected');
-          }
-          if (!cohort) {
-            if (cohorts.size >= MAX_ACTIVE_COHORTS) throw new Error('approval-cohort-capacity');
-            let created!: CohortState;
-            created = createCohort(key, descriptor, cohortTimeoutMs, () => {
-              abandon(created, 'extension-error');
-            });
-            cohort = created;
-            cohorts.set(key, cohort);
-          }
+          cohort = openCohort(descriptor);
 
           const definition = decoratedByName.get(event.toolName);
           if (
@@ -516,6 +601,9 @@ export function createApprovalGate(
             pendingByInput.has(originalInput) ||
             cohort.failed ||
             cohort.members.has(event.toolCallId) ||
+            cohort.registeredIds.has(event.toolCallId) ||
+            // Pi already finalised this member as an error; it may never run.
+            cohort.prefailed.has(event.toolCallId) ||
             pendingByToolCall.size >= MAX_ACTIVE_MEMBERS
           ) {
             abandon(cohort, 'extension-error');
@@ -549,6 +637,7 @@ export function createApprovalGate(
               () => Object.freeze({ failed: true }),
             );
           cohort.hostRegistered = true;
+          cohort.registeredIds.add(event.toolCallId);
           const pending: PendingInvocation = {
             invocationId,
             toolCallId: event.toolCallId,
@@ -576,16 +665,25 @@ export function createApprovalGate(
         }
       });
 
-      pi.on('tool_execution_end', (event) => {
+      pi.on('tool_execution_end', (event, ctx) => {
+        if (!event.isError) return;
         const pending = pendingByToolCall.get(event.toolCallId);
-        if (pending && event.isError && !pending.wrapperStarted) {
-          abandon(pending.cohort, 'extension-error');
-          finish(pending);
+        if (pending) {
+          // A registered member failed before its wrapper ran, so a later
+          // handler blocked or threw: the complete cohort is abandoned.
+          if (!pending.wrapperStarted) {
+            abandon(pending.cohort, 'extension-error');
+            finish(pending);
+          }
+          return;
         }
+        recordPiFailedMember(ctx, event.toolCallId, event.toolName);
       });
 
-      pi.on('session_shutdown', () => {
-        sessionInvalidated = true;
+      pi.on('session_shutdown', (event) => {
+        // Pi emits a reload shutdown from inside the gate's own reload wrapper,
+        // which abandons every cohort and re-verifies the rebuilt tools.
+        if (!(reloadsInFlight > 0 && event?.reason === 'reload')) sessionClosed = true;
         for (const cohort of [...cohorts.values()]) abandon(cohort, 'session-shutdown');
       });
     },
@@ -749,15 +847,40 @@ export function createApprovalGate(
     }
     const reload = session.reload;
     if (typeof reload !== 'function') throw new Error('approval-session-rejected');
+    const decoratedStillBound = (): boolean => {
+      try {
+        for (const [name, definition] of decoratedByName) {
+          if (bound(name) !== definition) return false;
+        }
+        return true;
+      } catch {
+        return false;
+      }
+    };
     try {
       Object.defineProperty(session, 'reload', {
         configurable: false,
         enumerable: false,
         writable: false,
         value: async (...args: Parameters<PublicAgentSession['reload']>) => {
-          sessionInvalidated = true;
+          // Nothing registered before a reload may run after it: every cohort
+          // in flight is abandoned and the gate admits nothing until Pi has
+          // rebuilt its runtime.
+          reloadsInFlight += 1;
           for (const cohort of [...cohorts.values()]) abandon(cohort, 'session-shutdown');
-          return Reflect.apply(reload, session, args);
+          let reloaded = false;
+          try {
+            const result = await Reflect.apply(reload, session, args);
+            reloaded = true;
+            return result;
+          } finally {
+            reloadsInFlight -= 1;
+            // Re-bind to the rebuilt runtime only if it still resolves every
+            // name to the exact decorated definition; otherwise stay closed.
+            if (!reloaded || (reloadsInFlight === 0 && !decoratedStillBound())) {
+              sessionClosed = true;
+            }
+          }
         },
       });
     } catch {

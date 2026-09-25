@@ -16,6 +16,7 @@ import {
   assertApprovalResponsePayload,
   HostRequestClient,
   isApprovalToolName,
+  type ApprovalAbandonPayload,
   type ApprovalGrant,
   type ApprovalRequestPayload,
 } from '../../sidecar/src/bridge/host-requests.js';
@@ -306,6 +307,83 @@ describe('A.17 authoritative approval proof', () => {
     }
   });
 
+  it('abandons in-flight cohorts at reload, then gates new calls through the host as normal', async () => {
+    const deferred = deferredHost();
+    const abandoned: ApprovalAbandonPayload[] = [];
+    const gate = createApprovalGate({
+      ...deferred.host,
+      abandonApproval: async (payload: ApprovalAbandonPayload) => { abandoned.push(payload); },
+    }, context);
+    const executed: string[] = [];
+    const base = createReadToolDefinition('/workspace', {
+      operations: { access: async () => undefined, readFile: async () => Buffer.from('reload-result') },
+    });
+    const baseExecute = base.execute;
+    const decorated = gate.decorateToolDefinition({
+      ...base,
+      async execute(...args: Parameters<typeof baseExecute>) { executed.push(args[0]); return baseExecute(...args); },
+    });
+    const { session, root } = await authenticSession(gate, decorated);
+    try {
+      gate.bindSession(session);
+      const agent = (session as unknown as { agent: { beforeToolCall(input: unknown): Promise<unknown> } }).agent;
+      const beforeParams = { path: 'private/before-reload' };
+      appendAssistant(session, [{ id: 'before-reload', name: 'read', arguments: beforeParams }]);
+      expect(await agent.beforeToolCall({ toolCall: { id: 'before-reload', name: 'read' }, args: beforeParams })).toBeUndefined();
+      const inFlight = session.state.tools.find((tool) => tool.name === 'read')!
+        .execute('before-reload', beforeParams, undefined, undefined);
+      await settleTurn();
+
+      await session.reload();
+      await expect(inFlight).rejects.toThrow('not approved');
+      expect(abandoned.map((entry) => entry.reason)).toEqual(['session-shutdown']);
+      // A late grant for the abandoned registration revives nothing.
+      deferred.settle('approved', 0);
+      await settleTurn();
+      expect(executed).toEqual([]);
+
+      const afterParams = { path: 'private/after-reload' };
+      appendAssistant(session, [{ id: 'after-reload', name: 'read', arguments: afterParams }]);
+      expect(await agent.beforeToolCall({ toolCall: { id: 'after-reload', name: 'read' }, args: afterParams })).toBeUndefined();
+      expect(deferred.requests).toHaveLength(2);
+      const afterReload = session.state.tools.find((tool) => tool.name === 'read')!
+        .execute('after-reload', afterParams, undefined, undefined);
+      await settleTurn();
+      expect(executed).toEqual([]);
+      deferred.settle('approved', 1);
+      await expect(afterReload).resolves.toMatchObject({ content: [{ type: 'text', text: 'reload-result' }] });
+      expect(executed).toEqual(['after-reload']);
+      expect(abandoned).toHaveLength(1);
+    } finally {
+      session.dispose();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('derives the cohort from the leaf of a branch longer than 2,048 entries', async () => {
+    const deferred = deferredHost();
+    const gate = createApprovalGate(deferred.host, context);
+    const decorated = gate.decorateToolDefinition(createReadToolDefinition('/workspace'));
+    const { session, root } = await authenticSession(gate, decorated);
+    try {
+      gate.bindSession(session);
+      for (let index = 0; index < 2_100; index += 1) {
+        session.sessionManager.appendMessage({ role: 'user', content: `turn ${index}`, timestamp: Date.now() } as never);
+      }
+      const params = { path: 'private/long-session' };
+      appendAssistant(session, [{ id: 'long-session', name: 'read', arguments: params }]);
+      expect(session.sessionManager.getBranch().length).toBeGreaterThan(2_048);
+      const agent = (session as unknown as { agent: { beforeToolCall(input: unknown): Promise<unknown> } }).agent;
+      expect(await agent.beforeToolCall({ toolCall: { id: 'long-session', name: 'read' }, args: params })).toBeUndefined();
+      expect(deferred.requests).toHaveLength(1);
+      const request = deferred.requests[0];
+      expect(request.schemaVersion === 2 && request.cohort.assistantEntryId).toBe(session.sessionManager.getLeafId());
+    } finally {
+      session.dispose();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('blocks same-name replacement, registry replacement, mutation, denial and unwrapped definitions', async () => {
     const deferred = deferredHost();
     const gate = createApprovalGate(deferred.host, context);
@@ -339,8 +417,12 @@ describe('A.17 authoritative approval proof', () => {
       expect(await agent.beforeToolCall({ toolCall: { id: 'replacement', name: 'read' }, args: { path: 'x' } })).toEqual({ block: true, reason: 'This action was not approved.' });
       await session.reload();
       expect(session.getToolDefinition('read')).toBe(decorated);
+      // The reload rebuilt the registry from the exact decorated definition,
+      // so the re-bound gate asks the host about the next call as normal.
+      const requestsBeforeReloadCall = deferred.requests.length;
       appendAssistant(session, [{ id: 'reload', name: 'read', arguments: { path: 'x' } }]);
-      expect(await agent.beforeToolCall({ toolCall: { id: 'reload', name: 'read' }, args: { path: 'x' } })).toEqual({ block: true, reason: 'This action was not approved.' });
+      expect(await agent.beforeToolCall({ toolCall: { id: 'reload', name: 'read' }, args: { path: 'x' } })).toBeUndefined();
+      expect(deferred.requests).toHaveLength(requestsBeforeReloadCall + 1);
     } finally {
       session.dispose();
       await rm(root, { recursive: true, force: true });
