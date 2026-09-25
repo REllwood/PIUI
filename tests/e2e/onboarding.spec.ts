@@ -1,5 +1,5 @@
 import AxeBuilder from '@axe-core/playwright';
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
 
 async function openOnboarding(page: Page, width = 1100, height = 720) {
   await page.setViewportSize({ width, height });
@@ -124,3 +124,66 @@ test('onboarding has no serious accessibility violation or undersized visible ac
   expect(undersized).toEqual([]);
   await expectNoOverflow(page);
 });
+
+// Walks the deterministic fixture to the Project step with the folder chosen but untrusted.
+async function openProjectStep(page: Page, width: number, height: number) {
+  await openOnboarding(page, width, height);
+  const continueButton = page.getByRole('button', { name: 'Continue', exact: true });
+  await continueButton.click();
+  await page.getByRole('button', { name: 'Run checks' }).click();
+  await expect(continueButton).toBeEnabled();
+  await continueButton.click();
+  await continueButton.click();
+  await page.getByRole('button', { name: /Continue with ChatGPT \/ Codex/ }).click();
+  await expect(page.getByText('ChatGPT / Codex connected and validated.')).toBeVisible();
+  await continueButton.click();
+  await page.getByRole('button', { name: 'Choose project folder' }).click();
+  await expect(page.getByRole('button', { name: 'Trust and open' })).toBeVisible();
+}
+
+// How many lines of text an element's content occupies, measured from its line boxes.
+async function lineCount(locator: Locator) {
+  return locator.evaluate((element) => {
+    const style = getComputedStyle(element);
+    const lineHeight = Number.parseFloat(style.lineHeight) || Number.parseFloat(style.fontSize) * 1.4;
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    const rects = Array.from(range.getClientRects()).filter((rect) => rect.width > 0);
+    const top = Math.min(...rects.map((rect) => rect.top));
+    const bottom = Math.max(...rects.map((rect) => rect.bottom));
+    return Math.round((bottom - top) / lineHeight);
+  });
+}
+
+for (const viewport of [
+  { width: 680, height: 720 },
+  { width: 1100, height: 720 },
+  { width: 1577, height: 877 },
+]) {
+  test(`project trust choices and tour points read cleanly at ${viewport.width}px`, async ({ page }) => {
+    await openProjectStep(page, viewport.width, viewport.height);
+    await expect(page.locator('.trust-choices article')).toHaveCount(2);
+    for (const name of ['Open untrusted', 'Trust and open']) {
+      expect(await lineCount(page.getByRole('heading', { name, level: 3 }))).toBe(1);
+    }
+    const trust = page.getByRole('button', { name: 'Trust and open' });
+    expect(await lineCount(trust)).toBe(1);
+    await trust.click();
+    const trusted = page.getByRole('button', { name: 'Trusted and ready' });
+    await expect(trusted).toBeVisible();
+    expect(await lineCount(trusted)).toBe(1);
+    // The card names the folder, never its internal capability.
+    await expect(page.locator('.project-preview')).not.toContainText('capability');
+    await expectNoOverflow(page);
+
+    await page.getByRole('button', { name: 'Continue', exact: true }).click();
+    await expect(page.getByRole('heading', { name: 'Your local workspace is ready.' })).toBeVisible();
+    const points = page.locator('.tour-points span');
+    await expect(points).toHaveCount(3);
+    // Each tour point label stays on one or two lines rather than a narrow stacked column.
+    for (const point of await points.all()) {
+      expect(await lineCount(point)).toBeLessThanOrEqual(2);
+    }
+    await expectNoOverflow(page);
+  });
+}
