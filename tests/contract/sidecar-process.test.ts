@@ -3,6 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
+import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { ProtocolEnvelope } from '@piui/protocol';
 
@@ -121,6 +122,39 @@ describe('sidecar process protocol', () => {
           frame.correlationId === 'fixture-stream-2' && frame.payload.eventType === 'stream.delta',
       ),
     ).toBe(true);
+  });
+
+  it('keeps stdout for protocol frames while other writers are sent to stderr', async () => {
+    const guard = pathToFileURL(join(sidecar, 'dist/bridge/stdout-guard.js')).href;
+    const writer = pathToFileURL(join(sidecar, 'dist/bridge/protocol-writer.js')).href;
+    const script = `
+      const { claimProtocolStdout } = await import(${JSON.stringify(guard)});
+      const { createZeroingProtocolWriter } = await import(${JSON.stringify(writer)});
+      const write = createZeroingProtocolWriter(claimProtocolStdout());
+      console.log('extension log token=abc123');
+      console.info('library info');
+      console.debug('library debug');
+      process.stdout.write('raw stdout chunk\\n');
+      process.stdout.write(Buffer.from('raw stdout buffer\\n'));
+      write({ version: 1, kind: 'event', id: 'sidecar-1', sequence: 1, payload: { eventType: 'probe' } });
+    `;
+    const child = spawn(process.execPath, ['--input-type=module', '-e', script], {
+      env: {},
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8').on('data', (chunk: string) => (stdout += chunk));
+    child.stderr.setEncoding('utf8').on('data', (chunk: string) => (stderr += chunk));
+    const code = await new Promise<number | null>((settle) => child.once('exit', settle));
+    expect(code).toBe(0);
+    expect(stdout).toBe(
+      `${JSON.stringify({ version: 1, kind: 'event', id: 'sidecar-1', sequence: 1, payload: { eventType: 'probe' } })}\n`,
+    );
+    for (const text of ['extension log', 'library info', 'library debug', 'raw stdout chunk', 'raw stdout buffer']) {
+      expect(stderr).toContain(text);
+    }
+    expect(stderr).not.toContain('abc123');
   });
 
   it('reports a rejected product request by its code', async () => {
