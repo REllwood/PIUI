@@ -1,31 +1,67 @@
 use crate::commands::bridge::{
     AcknowledgementAbandonment, BridgeState, DeliveryAcceptance, bridge_start_transport,
 };
-use crate::commands::projector::{PROJECTION_REJECTED, PublicOperationClass};
+use crate::commands::event_output::EVENT_OUTPUT_BUSY;
+use crate::commands::projector::{
+    PROJECTION_BUSY, PROJECTION_REJECTED, PublicOperationClass, STREAM_ORIGIN_TTL,
+};
 use crate::protocol::{Envelope, ErrorCategory, ProtocolKind, validate_envelope};
-use crate::supervisor::TEST_METHODS_ENABLED;
+use crate::supervisor::{PublicRoute, RECEIVE_TIMED_OUT, TEST_METHODS_ENABLED};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, State};
 const STREAM_DEADLINE: Duration = Duration::from_secs(5);
 const PRODUCT_STREAM_DEADLINE: Duration = Duration::from_secs(900);
+// Fixture and probe streams keep the original tight budgets. A real agent
+// turn (long answers, many tool calls) needs far more before it is treated
+// as runaway output.
 const MAX_STREAM_EVENTS: u64 = 4_096;
 const MAX_STREAM_DELTA_UTF16: u64 = 262_144;
+const MAX_PRODUCT_STREAM_EVENTS: u64 = 65_536;
+const MAX_PRODUCT_STREAM_DELTA_UTF16: u64 = 8_388_608;
 const STREAM_DEADLINE_EXCEEDED: &str = "sidecar stream deadline exceeded";
 const STREAM_LIMIT_EXCEEDED: &str = "sidecar stream limit exceeded";
 const SYNTHESISED_STREAM_TERMINAL_ID: &str = "host-synthesised-stream-terminal";
+// A busy projector or a momentarily full WebView queue is back-pressure,
+// not a fault; delivery waits this long for it to clear.
+const BUSY_DELIVERY_WINDOW: Duration = Duration::from_secs(5);
+const BUSY_DELIVERY_MAX_BACKOFF: Duration = Duration::from_millis(10);
+const FAILURE_NOTICE_RECEIPT_TIMEOUT: Duration = Duration::from_secs(1);
 
-#[derive(Default)]
+// A stream's projection origin must outlive its longest deadline, or a
+// quiet turn (a long tool run) would have its later events dropped.
+const _: () = assert!(PRODUCT_STREAM_DEADLINE.as_secs() < STREAM_ORIGIN_TTL.as_secs());
+
 struct StreamBudget {
     events: u64,
     delta_utf16: u64,
+    max_events: u64,
+    max_delta_utf16: u64,
 }
 
 impl StreamBudget {
+    fn fixture() -> Self {
+        Self::with_limits(MAX_STREAM_EVENTS, MAX_STREAM_DELTA_UTF16)
+    }
+
+    fn product() -> Self {
+        Self::with_limits(MAX_PRODUCT_STREAM_EVENTS, MAX_PRODUCT_STREAM_DELTA_UTF16)
+    }
+
+    fn with_limits(max_events: u64, max_delta_utf16: u64) -> Self {
+        Self {
+            events: 0,
+            delta_utf16: 0,
+            max_events,
+            max_delta_utf16,
+        }
+    }
+
     fn observe(&mut self, envelope: &Envelope) -> Result<(), String> {
+        let max_events = self.max_events;
         self.events = self
             .events
             .checked_add(1)
-            .filter(|value| *value <= MAX_STREAM_EVENTS)
+            .filter(|value| *value <= max_events)
             .ok_or_else(|| STREAM_LIMIT_EXCEEDED.to_string())?;
         let mut units = 0_u64;
         if envelope
@@ -62,13 +98,22 @@ impl StreamBudget {
                     .ok_or_else(|| STREAM_LIMIT_EXCEEDED.to_string())?;
             }
         }
+        let max_delta_utf16 = self.max_delta_utf16;
         self.delta_utf16 = self
             .delta_utf16
             .checked_add(units)
-            .filter(|value| *value <= MAX_STREAM_DELTA_UTF16)
+            .filter(|value| *value <= max_delta_utf16)
             .ok_or_else(|| STREAM_LIMIT_EXCEEDED.to_string())?;
         Ok(())
     }
+}
+
+fn is_product_stream(request: &Envelope) -> bool {
+    request
+        .payload
+        .get("method")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|method| matches!(method, "product.turn.start" | "product.auth.start"))
 }
 
 #[tauri::command]
@@ -96,9 +141,17 @@ pub async fn stream_probe(
     .map_err(|_| "stream worker failed".to_string())?
 }
 
+/// Waits up to a second for the sidecar's acknowledgement, so it runs off
+/// the main thread.
 #[tauri::command]
-pub fn cancel_stream(state: State<'_, BridgeState>, cancellation: Envelope) -> Result<(), String> {
-    cancel_stream_transport(state.inner(), cancellation)
+pub async fn cancel_stream(
+    state: State<'_, BridgeState>,
+    cancellation: Envelope,
+) -> Result<(), String> {
+    let transport = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || cancel_stream_transport(&transport, cancellation))
+        .await
+        .map_err(|_| "cancellation worker failed".to_string())?
 }
 
 pub fn cancel_stream_transport(state: &BridgeState, cancellation: Envelope) -> Result<(), String> {
@@ -124,7 +177,14 @@ pub fn cancel_stream_transport(state: &BridgeState, cancellation: Envelope) -> R
         .supervisor()
         .lock()
         .map_err(|_| "sidecar state unavailable".to_string())
-        .and_then(|mut supervisor| supervisor.send_for_generation(generation, &cancellation));
+        .and_then(|mut supervisor| {
+            // The acknowledgement belongs to the stream being cancelled; if
+            // that stream has already finished, any listener may project it.
+            if let Some(stream_id) = cancellation.correlation_id.as_deref() {
+                supervisor.route_acknowledgement(generation, &cancellation_id, stream_id);
+            }
+            supervisor.send_for_generation(generation, &cancellation)
+        });
     if let Err(error) = send_result {
         state.abandon_acknowledgement(&cancellation_id, generation);
         let _ = state.cutoff_generation(generation);
@@ -176,28 +236,83 @@ where
 pub(crate) fn run_stream_transport_receipted<F>(
     state: &BridgeState,
     request: Envelope,
-    mut deliver: F,
+    deliver: F,
 ) -> Result<(), String>
 where
     F: FnMut(u64, &Envelope) -> Result<DeliveryAcceptance, String>,
 {
     bridge_start_transport(state)?;
-    run_stream(state, request, |generation, envelope, remaining| {
-        project_stream_delivery(state, generation, envelope, remaining, |safe| {
+    let opened = open_stream(state, request)?;
+    drive_stream_transport_receipted(opened, FailureNotice::None, deliver)
+}
+
+/// How a stream that fails after it started tells the interface.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FailureNotice {
+    /// The caller learns of the failure from the returned error.
+    None,
+    /// Nothing awaits the stream, so a `stream.failed` terminal is projected
+    /// to the WebView before the generation is cut off.
+    Project,
+}
+
+pub(crate) fn drive_stream_transport_receipted<F>(
+    opened: OpenedStream,
+    notice: FailureNotice,
+    mut deliver: F,
+) -> Result<(), String>
+where
+    F: FnMut(u64, &Envelope) -> Result<DeliveryAcceptance, String>,
+{
+    let state = opened.state.clone();
+    drive_stream(opened, notice, |generation, envelope, remaining| {
+        project_stream_delivery(&state, generation, envelope, remaining, |safe| {
             deliver(generation, safe)
         })
     })
 }
 
+fn is_busy(error: &str) -> bool {
+    error == PROJECTION_BUSY || error == EVENT_OUTPUT_BUSY
+}
+
+/// Projects one envelope, waiting out transient back-pressure. A busy
+/// projector or a full WebView queue leaves nothing reserved or committed,
+/// so a retry is exact; only lasting congestion becomes a failure.
 fn project_stream_delivery<F>(
     state: &BridgeState,
     generation: u64,
     envelope: &Envelope,
     remaining: Duration,
-    deliver: F,
+    mut deliver: F,
 ) -> Result<(), String>
 where
-    F: FnOnce(&Envelope) -> Result<DeliveryAcceptance, String>,
+    F: FnMut(&Envelope) -> Result<DeliveryAcceptance, String>,
+{
+    let started = Instant::now();
+    let give_up = started + remaining.min(BUSY_DELIVERY_WINDOW);
+    let mut backoff = Duration::from_millis(1);
+    loop {
+        let remaining = remaining.saturating_sub(started.elapsed());
+        match project_stream_delivery_once(state, generation, envelope, remaining, &mut deliver) {
+            Err(error) if is_busy(&error) && Instant::now() < give_up => {
+                std::thread::sleep(backoff);
+                backoff = (backoff * 2).min(BUSY_DELIVERY_MAX_BACKOFF);
+            }
+            outcome => return outcome,
+        }
+    }
+}
+
+fn project_stream_delivery_once<F>(
+    state: &BridgeState,
+    generation: u64,
+    envelope: &Envelope,
+    remaining: Duration,
+    deliver: &mut F,
+) -> Result<(), String>
+where
+    F: FnMut(&Envelope) -> Result<DeliveryAcceptance, String>,
 {
     if envelope.kind == ProtocolKind::Ack {
         match state.authenticate_ack(generation, envelope) {
@@ -205,7 +320,7 @@ where
             Err(error) if error == PROJECTION_REJECTED => return Ok(()),
             Err(error) => return Err(error),
         }
-        let delivery = match state.project_ack_and_deliver(generation, envelope, deliver) {
+        let delivery = match state.project_ack_and_deliver(generation, envelope, &mut *deliver) {
             Ok(delivery) => delivery,
             Err(error) if error == PROJECTION_REJECTED => return Ok(()),
             Err(error) => return Err(error),
@@ -220,7 +335,7 @@ where
             DeliveryAcceptance::Immediate => Ok(()),
         };
     }
-    match state.project_and_deliver(generation, envelope, deliver) {
+    match state.project_and_deliver(generation, envelope, &mut *deliver) {
         Err(error) if error == PROJECTION_REJECTED => {
             let terminal = envelope.kind == ProtocolKind::Event
                 && envelope
@@ -239,24 +354,29 @@ where
     }
 }
 
-struct StreamOriginGuard<'a> {
-    state: &'a BridgeState,
-    id: &'a str,
+/// A stream whose request has been written and whose events are routed to
+/// its own mailbox. Dropping it without completing retires its origin.
+pub(crate) struct OpenedStream {
+    state: BridgeState,
+    request_id: String,
     generation: u64,
-    armed: bool,
+    route: PublicRoute,
+    deadline: Instant,
+    budget: StreamBudget,
+    completed: bool,
 }
 
-impl StreamOriginGuard<'_> {
+impl OpenedStream {
     fn complete(mut self) {
-        self.armed = false;
+        self.completed = true;
     }
 }
 
-impl Drop for StreamOriginGuard<'_> {
+impl Drop for OpenedStream {
     fn drop(&mut self) {
-        if self.armed {
+        if !self.completed {
             self.state.abandon_public_origin(
-                self.id,
+                &self.request_id,
                 self.generation,
                 PublicOperationClass::Stream,
             );
@@ -264,10 +384,9 @@ impl Drop for StreamOriginGuard<'_> {
     }
 }
 
-fn run_stream<F>(state: &BridgeState, request: Envelope, mut deliver: F) -> Result<(), String>
-where
-    F: FnMut(u64, &Envelope, Duration) -> Result<(), String>,
-{
+/// Registers the stream's origin and mailbox, then writes its request. The
+/// mailbox exists before the write, so no event can arrive unrouted.
+pub(crate) fn open_stream(state: &BridgeState, request: Envelope) -> Result<OpenedStream, String> {
     validate_stream_request(&request)?;
     let supervisor = state.supervisor();
     let (previous_generation, status) = {
@@ -288,11 +407,35 @@ where
         .ok_or_else(|| "sidecar generation unavailable".to_string())?;
     state.activate_generation(generation)?;
     state.register_public_origin(&request.id, generation, PublicOperationClass::Stream)?;
-    let guard = StreamOriginGuard {
-        state,
-        id: &request.id,
+    let route = match supervisor
+        .lock()
+        .map_err(|_| "sidecar state unavailable".to_string())
+        .and_then(|supervisor| supervisor.open_public_route(generation, &request.id))
+    {
+        Ok(route) => route,
+        Err(error) => {
+            state.abandon_public_origin(&request.id, generation, PublicOperationClass::Stream);
+            return Err(error);
+        }
+    };
+    let product = is_product_stream(&request);
+    let opened = OpenedStream {
+        state: state.clone(),
+        request_id: request.id.clone(),
         generation,
-        armed: true,
+        route,
+        deadline: Instant::now()
+            + if product {
+                PRODUCT_STREAM_DEADLINE
+            } else {
+                STREAM_DEADLINE
+            },
+        budget: if product {
+            StreamBudget::product()
+        } else {
+            StreamBudget::fixture()
+        },
+        completed: false,
     };
     let send_result = supervisor
         .lock()
@@ -302,41 +445,78 @@ where
         let _ = state.cutoff_generation(generation);
         return Err(error);
     }
+    Ok(opened)
+}
 
-    let deadline = if request
-        .payload
-        .get("method")
-        .and_then(serde_json::Value::as_str)
-        .is_some_and(|method| matches!(method, "product.turn.start" | "product.auth.start"))
-    {
-        PRODUCT_STREAM_DEADLINE
-    } else {
-        STREAM_DEADLINE
-    };
+/// Reads the stream's own mailbox until its terminal. It never holds the
+/// supervisor lock while waiting, so other commands and streams proceed.
+fn drive_stream<F>(
+    opened: OpenedStream,
+    notice: FailureNotice,
+    mut deliver: F,
+) -> Result<(), String>
+where
+    F: FnMut(u64, &Envelope, Duration) -> Result<(), String>,
+{
+    let generation = opened.generation;
+    let budget = StreamBudget::with_limits(opened.budget.max_events, opened.budget.max_delta_utf16);
     let result = run_stream_loop(
         generation,
-        &request.id,
-        Instant::now() + deadline,
-        |timeout| {
-            supervisor
-                .lock()
-                .map_err(|_| "sidecar state unavailable".to_string())?
-                .receive_for_generation(generation, timeout)
-        },
+        &opened.request_id,
+        opened.deadline,
+        budget,
+        |timeout| opened.route.receive(timeout),
         &mut deliver,
     );
     if result.is_ok() {
-        guard.complete();
+        opened.complete();
     } else {
-        let _ = state.cutoff_generation(generation);
+        if notice == FailureNotice::Project
+            && let Err(error) = &result
+        {
+            project_failure_notice(&opened, error);
+        }
+        let _ = opened.state.cutoff_generation(generation);
     }
     result
+}
+
+/// Best effort: tells the interface that a turn nobody is awaiting ended,
+/// and waits for that event to be emitted before the generation is cut off.
+fn project_failure_notice(opened: &OpenedStream, error: &str) {
+    let code = match error {
+        STREAM_DEADLINE_EXCEEDED => "host-stream-deadline-exceeded",
+        STREAM_LIMIT_EXCEEDED => "host-stream-limit-exceeded",
+        _ => "host-stream-interrupted",
+    };
+    let terminal = Envelope {
+        version: 1,
+        kind: ProtocolKind::Event,
+        id: SYNTHESISED_STREAM_TERMINAL_ID.to_owned(),
+        correlation_id: Some(opened.request_id.clone()),
+        decision_id: None,
+        sequence: 0,
+        payload: serde_json::Map::from_iter([
+            ("eventType".into(), serde_json::Value::from("stream.failed")),
+            ("terminal".into(), serde_json::Value::from("failed")),
+            ("code".into(), serde_json::Value::from(code)),
+        ]),
+        error: None,
+    };
+    let state = &opened.state;
+    let receipt = state.project_and_deliver(opened.generation, &terminal, |safe| {
+        state.enqueue_event_with_receipt(opened.generation, safe)
+    });
+    if let Ok(receipt) = receipt {
+        let _ = receipt.recv_timeout(FAILURE_NOTICE_RECEIPT_TIMEOUT);
+    }
 }
 
 fn run_stream_loop<R, D>(
     generation: u64,
     request_id: &str,
     deadline: Instant,
+    mut budget: StreamBudget,
     mut receive: R,
     mut deliver: D,
 ) -> Result<(), String>
@@ -344,7 +524,6 @@ where
     R: FnMut(Duration) -> Result<Envelope, String>,
     D: FnMut(u64, &Envelope, Duration) -> Result<(), String>,
 {
-    let mut budget = StreamBudget::default();
     loop {
         let now = Instant::now();
         if now >= deadline {
@@ -360,11 +539,10 @@ where
                 }
                 envelope
             }
-            Err(error) if error == "sidecar receive timed out" => {
+            Err(error) if error == RECEIVE_TIMED_OUT => {
                 if Instant::now() >= deadline {
                     return Err(STREAM_DEADLINE_EXCEEDED.into());
                 }
-                std::thread::sleep(Duration::from_millis(1));
                 continue;
             }
             Err(error) => return Err(error),
@@ -417,7 +595,6 @@ where
         {
             return Ok(());
         }
-        std::thread::yield_now();
     }
 }
 
@@ -506,10 +683,12 @@ fn valid_id(request_id: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        AcknowledgementAbandonment, DeliveryAcceptance, MAX_STREAM_DELTA_UTF16, MAX_STREAM_EVENTS,
-        PublicOperationClass, STREAM_DEADLINE_EXCEEDED, STREAM_LIMIT_EXCEEDED, StreamBudget,
-        finish_timed_out_acknowledgement, project_stream_delivery, run_stream_loop,
-        synthesise_stream_failure, validate_cancellation, validate_stream_request,
+        AcknowledgementAbandonment, DeliveryAcceptance, EVENT_OUTPUT_BUSY,
+        MAX_PRODUCT_STREAM_DELTA_UTF16, MAX_PRODUCT_STREAM_EVENTS, MAX_STREAM_DELTA_UTF16,
+        MAX_STREAM_EVENTS, PROJECTION_BUSY, PublicOperationClass, STREAM_DEADLINE_EXCEEDED,
+        STREAM_LIMIT_EXCEEDED, StreamBudget, finish_timed_out_acknowledgement, is_product_stream,
+        project_stream_delivery, run_stream_loop, synthesise_stream_failure, validate_cancellation,
+        validate_stream_request,
     };
     use crate::commands::bridge::BridgeState;
     use crate::protocol::Envelope;
@@ -564,7 +743,7 @@ mod tests {
             "version":1,"kind":"event","id":"sidecar-delta","correlationId":"stream-probe-1",
             "sequence":1,"payload":{"eventType":"stream.delta","text":"x".repeat(8_192)}
         }));
-        let mut text_budget = StreamBudget::default();
+        let mut text_budget = StreamBudget::fixture();
         for _ in 0..(MAX_STREAM_DELTA_UTF16 / 8_192) {
             assert!(text_budget.observe(&maximum_delta).is_ok());
         }
@@ -577,7 +756,7 @@ mod tests {
             "version":1,"kind":"event","id":"sidecar-empty","correlationId":"stream-probe-1",
             "sequence":1,"payload":{"eventType":"stream.delta","text":""}
         }));
-        let mut event_budget = StreamBudget::default();
+        let mut event_budget = StreamBudget::fixture();
         for _ in 0..MAX_STREAM_EVENTS {
             assert!(event_budget.observe(&empty_delta).is_ok());
         }
@@ -586,14 +765,136 @@ mod tests {
             Err(STREAM_LIMIT_EXCEEDED.into())
         );
 
-        let mut overflow_budget = StreamBudget {
-            events: 0,
-            delta_utf16: u64::MAX,
-        };
+        let mut overflow_budget = StreamBudget::product();
+        overflow_budget.delta_utf16 = u64::MAX;
         assert_eq!(
             overflow_budget.observe(&maximum_delta),
             Err(STREAM_LIMIT_EXCEEDED.into())
         );
+    }
+
+    #[test]
+    fn product_turns_get_long_turn_budgets_while_fixtures_stay_tight() {
+        let turn = envelope(serde_json::json!({
+            "version":1,"kind":"request","id":"web-turn-1","sequence":1,
+            "payload":{"method":"product.turn.start"}
+        }));
+        let fixture = envelope(serde_json::json!({
+            "version":1,"kind":"request","id":"web-stream-1","sequence":1,
+            "payload":{"method":"stream.fixture"}
+        }));
+        assert!(is_product_stream(&turn));
+        assert!(!is_product_stream(&fixture));
+
+        // A long answer runs far past the fixture ceiling of 262,144 units
+        // before a product turn's own budget ends it.
+        let large_delta = envelope(serde_json::json!({
+            "version":1,"kind":"event","id":"sidecar-delta","correlationId":"web-turn-1",
+            "sequence":1,"payload":{"eventType":"stream.delta","text":"x".repeat(8_192)}
+        }));
+        let mut product = StreamBudget::product();
+        for _ in 0..(MAX_PRODUCT_STREAM_DELTA_UTF16 / 8_192) {
+            product.observe(&large_delta).unwrap();
+        }
+        assert_eq!(
+            product.observe(&large_delta),
+            Err(STREAM_LIMIT_EXCEEDED.into())
+        );
+        let mut fixture_budget = StreamBudget::fixture();
+        for _ in 0..(MAX_STREAM_DELTA_UTF16 / 8_192) {
+            fixture_budget.observe(&large_delta).unwrap();
+        }
+        assert!(fixture_budget.observe(&large_delta).is_err());
+
+        let empty_delta = envelope(serde_json::json!({
+            "version":1,"kind":"event","id":"sidecar-empty","correlationId":"web-turn-1",
+            "sequence":1,"payload":{"eventType":"stream.delta","text":""}
+        }));
+        let mut events = StreamBudget::product();
+        for _ in 0..MAX_PRODUCT_STREAM_EVENTS {
+            events.observe(&empty_delta).unwrap();
+        }
+        assert_eq!(
+            events.observe(&empty_delta),
+            Err(STREAM_LIMIT_EXCEEDED.into())
+        );
+        assert_eq!(MAX_PRODUCT_STREAM_EVENTS, 65_536);
+        assert_eq!(MAX_PRODUCT_STREAM_DELTA_UTF16, 8_388_608);
+    }
+
+    fn busy_rig() -> (BridgeState, Envelope) {
+        let state = BridgeState::new(inert_paths());
+        state.activate_generation(1).unwrap();
+        state
+            .register_public_origin("web-stream-busy", 1, PublicOperationClass::Stream)
+            .unwrap();
+        let delta = envelope(serde_json::json!({
+            "version":1,"kind":"event","id":"sidecar-busy-1","correlationId":"web-stream-busy",
+            "sequence":1,"payload":{"eventType":"stream.delta","text":"hello"}
+        }));
+        (state, delta)
+    }
+
+    #[test]
+    fn a_momentarily_full_webview_queue_is_retried_not_fatal() {
+        let (state, delta) = busy_rig();
+        let mut attempts = 0;
+        project_stream_delivery(&state, 1, &delta, Duration::from_secs(5), |_| {
+            attempts += 1;
+            if attempts < 4 {
+                Err(EVENT_OUTPUT_BUSY.into())
+            } else {
+                Ok(DeliveryAcceptance::Immediate)
+            }
+        })
+        .expect("back-pressure clears and the event is delivered");
+        assert_eq!(attempts, 4);
+
+        // Congestion that outlasts the stream's remaining time still fails.
+        let started = Instant::now();
+        assert_eq!(
+            project_stream_delivery(&state, 1, &delta, Duration::from_millis(50), |_| Err(
+                EVENT_OUTPUT_BUSY.into()
+            )),
+            Err(EVENT_OUTPUT_BUSY.into())
+        );
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn a_busy_projector_makes_a_second_stream_wait_instead_of_failing() {
+        let (state, delta) = busy_rig();
+        state
+            .register_public_origin("web-stream-other", 1, PublicOperationClass::Stream)
+            .unwrap();
+        let other = envelope(serde_json::json!({
+            "version":1,"kind":"event","id":"sidecar-other-1","correlationId":"web-stream-other",
+            "sequence":2,"payload":{"eventType":"stream.delta","text":"concurrent"}
+        }));
+        let entered = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let holder_state = state.clone();
+        let holder_entered = std::sync::Arc::clone(&entered);
+        let holder = std::thread::spawn(move || {
+            holder_state.project_and_deliver(1, &other, |_| {
+                holder_entered.wait();
+                std::thread::sleep(Duration::from_millis(50));
+                Ok(())
+            })
+        });
+        entered.wait();
+        // The gate is held right now; the old code returned this as fatal.
+        assert_eq!(
+            state.project_and_deliver(1, &delta, |_| Ok(())),
+            Err(PROJECTION_BUSY.into())
+        );
+        let mut delivered = false;
+        project_stream_delivery(&state, 1, &delta, Duration::from_secs(5), |_| {
+            delivered = true;
+            Ok(DeliveryAcceptance::Immediate)
+        })
+        .expect("the second stream waits for the projector");
+        assert!(delivered);
+        holder.join().unwrap().unwrap();
     }
 
     #[test]
@@ -604,6 +905,7 @@ mod tests {
             1,
             "web-stream-probe-1",
             Instant::now() + Duration::from_secs(2),
+            StreamBudget::fixture(),
             |_| {
                 ack_index += 1;
                 Ok(envelope(serde_json::json!({
@@ -637,6 +939,7 @@ mod tests {
             1,
             "web-stream-probe-1",
             Instant::now() + Duration::from_secs(2),
+            StreamBudget::fixture(),
             |_| Ok(snapshot.clone()),
             |_, _, _| {
                 delivered_snapshots += 1;
@@ -719,6 +1022,7 @@ mod tests {
             1,
             "web-auth-driver-0001",
             started + Duration::from_secs(60),
+            StreamBudget::product(),
             |_| Ok(error_response.clone()),
             |_, envelope, _| {
                 delivered.push(envelope.clone());
@@ -747,6 +1051,7 @@ mod tests {
                 1,
                 "web-auth-driver-0001",
                 Instant::now() + Duration::from_millis(250),
+                StreamBudget::product(),
                 |_| Ok(unrelated.clone()),
                 |_, _, _| {
                     unrelated_deliveries += 1;

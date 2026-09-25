@@ -2,6 +2,7 @@ use super::process::{
     APPROVAL_WRITE_MAX_DURATION, GenerationWriter, ProductDelivery, ProductWaiters,
     WorkspaceWaiters,
 };
+use super::public_router::PublicRouter;
 use super::router::{SequenceOutcome, SequenceRouter};
 use super::stdio::{GenerationControl, RawFrame, fail_generation};
 use crate::credentials::CredentialProxy;
@@ -27,8 +28,6 @@ use std::time::{Duration, Instant};
 pub(super) const RAW_QUEUE_CAPACITY: usize = 32;
 pub(super) const PUBLIC_QUEUE_CAPACITY: usize = 256;
 const PRIVATE_QUEUE_CAPACITY: usize = 128;
-
-type PublicMessage = Result<Envelope, String>;
 
 struct WorkPermit(Arc<AtomicUsize>);
 
@@ -92,7 +91,7 @@ pub(super) fn start_dispatcher(
     generation: u64,
     decoder: ProtocolDecoder,
     raw_receiver: Receiver<RawFrame>,
-    public_sender: SyncSender<PublicMessage>,
+    public: Arc<PublicRouter>,
     workspace_waiters: Arc<WorkspaceWaiters>,
     product_waiters: Arc<ProductWaiters>,
     proxy: CredentialProxy,
@@ -138,7 +137,7 @@ pub(super) fn start_dispatcher(
             generation,
             decoder,
             raw_receiver,
-            public_sender,
+            public,
             workspace_waiters,
             product_waiters,
             approval_registry,
@@ -164,7 +163,7 @@ fn dispatch_loop(
     generation: u64,
     mut decoder: ProtocolDecoder,
     raw_receiver: Receiver<RawFrame>,
-    public_sender: SyncSender<PublicMessage>,
+    public: Arc<PublicRouter>,
     workspace_waiters: Arc<WorkspaceWaiters>,
     product_waiters: Arc<ProductWaiters>,
     approval_registry: Arc<ApprovalRegistry>,
@@ -185,18 +184,14 @@ fn dispatch_loop(
             Ok(frame) => frame,
             Err(_) if !control.is_active() => return,
             Err(_) => {
-                fatal(
-                    "sidecar raw response channel closed",
-                    &control,
-                    &public_sender,
-                );
+                fatal("sidecar raw response channel closed", &control, &public);
                 return;
             }
         };
         let line = match frame {
             RawFrame::Line(line) => line,
             RawFrame::Failure(message) => {
-                let _ = public_sender.try_send(Err(message));
+                public.fail(&message);
                 return;
             }
         };
@@ -207,17 +202,13 @@ fn dispatch_loop(
             .and_then(|writer| writer.capture_a23_inbound_frame(&line))
             .is_err()
         {
-            fatal("A.23 raw capture unavailable", &control, &public_sender);
+            fatal("A.23 raw capture unavailable", &control, &public);
             return;
         }
         let envelope = match decoder.decode(&line) {
             Ok(envelope) => envelope,
             Err(_) => {
-                fatal(
-                    "sidecar stdout protocol violation",
-                    &control,
-                    &public_sender,
-                );
+                fatal("sidecar stdout protocol violation", &control, &public);
                 return;
             }
         };
@@ -234,11 +225,7 @@ fn dispatch_loop(
             ) {
                 discard_private_envelope(envelope);
             }
-            fatal(
-                "sidecar identifier namespace invalid",
-                &control,
-                &public_sender,
-            );
+            fatal("sidecar identifier namespace invalid", &control, &public);
             return;
         }
 
@@ -247,7 +234,7 @@ fn dispatch_loop(
             fatal(
                 "sidecar private response direction invalid",
                 &control,
-                &public_sender,
+                &public,
             );
             return;
         }
@@ -261,18 +248,14 @@ fn dispatch_loop(
                 if envelope.kind == ProtocolKind::HostRequest {
                     discard_private_envelope(envelope);
                 }
-                fatal("sidecar snapshot invalid", &control, &public_sender);
+                fatal("sidecar snapshot invalid", &control, &public);
                 return;
             }
             snapshot_request = None;
             let mut authenticated = envelope;
             authenticated.correlation_id = Some(AUTHENTICATED_INTERNAL_SNAPSHOT_CORRELATION.into());
-            if !send_public(authenticated, &public_sender) {
-                fatal(
-                    "sidecar public response queue overflow",
-                    &control,
-                    &public_sender,
-                );
+            if !send_public(authenticated, &public) {
+                fatal("sidecar public response queue overflow", &control, &public);
                 return;
             }
             continue;
@@ -291,7 +274,7 @@ fn dispatch_loop(
                             .ok()
                     });
                     let Some(request_id) = request_id else {
-                        fatal("sidecar snapshot request failed", &control, &public_sender);
+                        fatal("sidecar snapshot request failed", &control, &public);
                         return;
                     };
                     snapshot_request = Some(SnapshotRequest {
@@ -303,7 +286,7 @@ fn dispatch_loop(
             }
             _ => {
                 discard_private_envelope(envelope);
-                fatal("sidecar private sequence invalid", &control, &public_sender);
+                fatal("sidecar private sequence invalid", &control, &public);
                 return;
             }
         }
@@ -314,19 +297,11 @@ fn dispatch_loop(
             .is_some_and(|correlation| correlation.starts_with("rust-workspace-"))
         {
             if envelope.kind != ProtocolKind::Response {
-                fatal(
-                    "sidecar workspace response invalid",
-                    &control,
-                    &public_sender,
-                );
+                fatal("sidecar workspace response invalid", &control, &public);
                 return;
             }
             if workspace_waiters.deliver(generation, envelope).is_err() {
-                fatal(
-                    "sidecar workspace response unavailable",
-                    &control,
-                    &public_sender,
-                );
+                fatal("sidecar workspace response unavailable", &control, &public);
                 return;
             }
             continue;
@@ -338,7 +313,7 @@ fn dispatch_loop(
             .is_some_and(|correlation| correlation.starts_with("rust-product-"))
         {
             if envelope.kind != ProtocolKind::Response {
-                fatal("sidecar product response invalid", &control, &public_sender);
+                fatal("sidecar product response invalid", &control, &public);
                 return;
             }
             match product_waiters.deliver(generation, envelope) {
@@ -348,11 +323,7 @@ fn dispatch_loop(
                     "A product response arrived after its request timed out and was discarded.",
                 ),
                 Ok(ProductDelivery::NotProduct) | Err(_) => {
-                    fatal(
-                        "sidecar product response unavailable",
-                        &control,
-                        &public_sender,
-                    );
+                    fatal("sidecar product response unavailable", &control, &public);
                     return;
                 }
             }
@@ -376,7 +347,7 @@ fn dispatch_loop(
                     Ok(()) => discard_private_envelope(private_envelope),
                     Err(_) => {
                         discard_private_envelope(private_envelope);
-                        fatal("sidecar approval request invalid", &control, &public_sender);
+                        fatal("sidecar approval request invalid", &control, &public);
                         return;
                     }
                 }
@@ -393,7 +364,7 @@ fn dispatch_loop(
                     });
                 discard_private_envelope(envelope);
                 if result.is_err() {
-                    fatal("sidecar approval ready invalid", &control, &public_sender);
+                    fatal("sidecar approval ready invalid", &control, &public);
                     return;
                 }
                 continue;
@@ -411,23 +382,19 @@ fn dispatch_loop(
                     });
                 discard_private_envelope(envelope);
                 if result.is_err() {
-                    fatal("sidecar approval abandon invalid", &control, &public_sender);
+                    fatal("sidecar approval abandon invalid", &control, &public);
                     return;
                 }
                 continue;
             }
             if !method.is_some_and(|method| method.starts_with("credential.")) {
                 discard_private_envelope(envelope);
-                fatal("sidecar private method invalid", &control, &public_sender);
+                fatal("sidecar private method invalid", &control, &public);
                 return;
             }
             let Some(permit) = reserve_private_work(&outstanding) else {
                 discard_private_envelope(envelope);
-                fatal(
-                    "sidecar credential queue unavailable",
-                    &control,
-                    &public_sender,
-                );
+                fatal("sidecar credential queue unavailable", &control, &public);
                 return;
             };
             if !control.is_active() {
@@ -439,11 +406,7 @@ fn dispatch_loop(
                 Ok(()) => {}
                 Err(TrySendError::Full(work)) | Err(TrySendError::Disconnected(work)) => {
                     drop(work);
-                    fatal(
-                        "sidecar credential queue unavailable",
-                        &control,
-                        &public_sender,
-                    );
+                    fatal("sidecar credential queue unavailable", &control, &public);
                     return;
                 }
             }
@@ -460,12 +423,8 @@ fn dispatch_loop(
             continue;
         }
 
-        if !send_public(envelope, &public_sender) {
-            fatal(
-                "sidecar public response queue overflow",
-                &control,
-                &public_sender,
-            );
+        if !send_public(envelope, &public) {
+            fatal("sidecar public response queue overflow", &control, &public);
             return;
         }
     }
@@ -887,27 +846,17 @@ fn valid_snapshot(envelope: &Envelope, after_sequence: u64) -> bool {
         && snapshot.get("state").is_some_and(Value::is_object)
 }
 
-fn send_public(envelope: Envelope, sender: &SyncSender<PublicMessage>) -> bool {
+fn send_public(envelope: Envelope, public: &PublicRouter) -> bool {
     debug_assert!(!matches!(
         envelope.kind,
         ProtocolKind::HostRequest | ProtocolKind::HostResponse
     ));
-    match sender.try_send(Ok(envelope)) {
-        Ok(()) => true,
-        Err(TrySendError::Full(message)) | Err(TrySendError::Disconnected(message)) => {
-            drop(message);
-            false
-        }
-    }
+    public.route(envelope)
 }
 
-fn fatal(
-    message: &str,
-    control: &Arc<GenerationControl>,
-    public_sender: &SyncSender<PublicMessage>,
-) {
+fn fatal(message: &str, control: &Arc<GenerationControl>, public: &PublicRouter) {
     fail_generation(message, control, None);
-    let _ = public_sender.try_send(Err(message.to_string()));
+    public.fail(message);
 }
 
 #[cfg(test)]
@@ -915,6 +864,7 @@ mod tests {
     use super::*;
     use crate::protocol::validate_envelope;
     use crate::supervisor::process::NonblockingSink;
+    use crate::supervisor::public_router::PublicMessage;
     use std::io::Error;
     use std::sync::mpsc::SyncSender;
     use std::time::{Duration, Instant};
@@ -1046,7 +996,7 @@ mod tests {
 
     struct Rig {
         raw: SyncSender<RawFrame>,
-        public: Receiver<PublicMessage>,
+        public: Arc<PublicRouter>,
         workspace: Receiver<PublicMessage>,
         control: Arc<GenerationControl>,
         failure: crate::supervisor::stdio::FailureSignal,
@@ -1070,7 +1020,7 @@ mod tests {
                 Arc::clone(&control),
             )));
             let (raw, raw_receiver) = sync_channel(RAW_QUEUE_CAPACITY);
-            let (public_sender, public) = sync_channel(PUBLIC_QUEUE_CAPACITY);
+            let public = Arc::new(PublicRouter::new(PUBLIC_QUEUE_CAPACITY));
             let workspace_waiters = Arc::new(WorkspaceWaiters::new());
             let (workspace_sender, workspace) = sync_channel(1);
             workspace_waiters
@@ -1089,7 +1039,7 @@ mod tests {
                 1,
                 decoder,
                 raw_receiver,
-                public_sender,
+                Arc::clone(&public),
                 workspace_waiters,
                 Arc::clone(&product_waiters),
                 proxy,
@@ -1855,13 +1805,13 @@ mod tests {
             Arc::clone(&control),
         )));
         let (raw, raw_receiver) = sync_channel(RAW_QUEUE_CAPACITY);
-        let (public_sender, _public) = sync_channel(PUBLIC_QUEUE_CAPACITY);
+        let public = Arc::new(PublicRouter::new(PUBLIC_QUEUE_CAPACITY));
         let workspace_waiters = Arc::new(WorkspaceWaiters::new());
         let handles = start_dispatcher(
             1,
             ProtocolDecoder::default(),
             raw_receiver,
-            public_sender,
+            public,
             workspace_waiters,
             Arc::new(ProductWaiters::new()),
             CredentialProxy::in_memory_for_dispatcher_test(),

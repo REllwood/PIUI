@@ -2,6 +2,7 @@ use super::dispatcher::{
     DispatcherHandles, PUBLIC_QUEUE_CAPACITY, RAW_QUEUE_CAPACITY, start_dispatcher,
 };
 use super::handshake::{HandshakeExpectation, protocol_architecture, validate_handshake};
+use super::public_router::{PublicRoute, PublicRouter};
 use super::redact::StderrRedactor;
 use super::stdio::{
     AttemptAuthorisationError, FailureSignal, GenerationControl, RawFrame, stderr_reader,
@@ -1215,7 +1216,7 @@ struct RunningSidecar {
     generation: u64,
     child: Child,
     writer: Arc<Mutex<GenerationWriter>>,
-    messages: Receiver<Result<Envelope, String>>,
+    public: Arc<PublicRouter>,
     workspace_waiters: Arc<WorkspaceWaiters>,
     product_waiters: Arc<ProductWaiters>,
     stdout: Option<JoinHandle<()>>,
@@ -1396,7 +1397,7 @@ impl SidecarSupervisor {
                 return self.abort_start(child, process_group, control, error);
             }
         };
-        let (public_sender, public_receiver) = mpsc::sync_channel(PUBLIC_QUEUE_CAPACITY);
+        let public = Arc::new(PublicRouter::new(PUBLIC_QUEUE_CAPACITY));
         let workspace_waiters = Arc::new(WorkspaceWaiters::new());
         let product_waiters = Arc::new(ProductWaiters::new());
         let DispatcherHandles {
@@ -1407,7 +1408,7 @@ impl SidecarSupervisor {
             generation,
             decoder,
             raw_receiver,
-            public_sender,
+            Arc::clone(&public),
             Arc::clone(&workspace_waiters),
             Arc::clone(&product_waiters),
             self.credential_proxy.clone(),
@@ -1422,7 +1423,7 @@ impl SidecarSupervisor {
             generation,
             child,
             writer,
-            messages: public_receiver,
+            public,
             workspace_waiters,
             product_waiters,
             stdout: Some(stdout_handle),
@@ -1683,6 +1684,35 @@ impl SidecarSupervisor {
             .write_public(generation, envelope)
     }
 
+    /// Opens the mailbox a stream reads its own events from. It must exist
+    /// before the stream request is written so no event can precede it.
+    pub(crate) fn open_public_route(
+        &self,
+        generation: u64,
+        request_id: &str,
+    ) -> Result<PublicRoute, String> {
+        let running = self
+            .running
+            .as_ref()
+            .filter(|running| running.generation == generation)
+            .ok_or_else(|| "stale sidecar generation".to_string())?;
+        PublicRoute::open(&running.public, &running.control, request_id)
+    }
+
+    /// Delivers the acknowledgement of `cancellation_id` to the stream it
+    /// cancels, when that stream is still listening.
+    pub(crate) fn route_acknowledgement(
+        &self,
+        generation: u64,
+        cancellation_id: &str,
+        stream_id: &str,
+    ) -> bool {
+        self.running
+            .as_ref()
+            .filter(|running| running.generation == generation)
+            .is_some_and(|running| running.public.alias(cancellation_id, stream_id))
+    }
+
     pub fn receive_envelope(&mut self, timeout: Duration) -> Result<Envelope, String> {
         let status = self.status();
         if !status.running {
@@ -1691,7 +1721,7 @@ impl SidecarSupervisor {
                 .unwrap_or_else(|| "sidecar is not running".into()));
         }
         let running = self.running.as_ref().expect("running status has sidecar");
-        match running.messages.recv_timeout(timeout) {
+        match running.public.recv_timeout(timeout) {
             Ok(Ok(envelope)) => Ok(envelope),
             Ok(Err(error)) => Err(error),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {

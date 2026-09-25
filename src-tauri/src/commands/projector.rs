@@ -15,11 +15,13 @@ const MAX_PUBLIC_ORIGINS: usize = 512;
 const MAX_RETAINED_STREAM_ORIGINS: usize = 32;
 const RETIRED_FILTER_BITS: usize = 1 << 24;
 const RETIRED_FILTER_HASHES: u64 = 8;
-const STREAM_ORIGIN_TTL: Duration = Duration::from_secs(600);
+// Longer than the 900 s product-turn deadline, and refreshed by every
+// projected event, so a live stream's origin never expires under it.
+pub(crate) const STREAM_ORIGIN_TTL: Duration = Duration::from_secs(960);
 const CANCELLATION_ORIGIN_TTL: Duration = Duration::from_secs(2);
 const SNAPSHOT_ORIGIN_TTL: Duration = Duration::from_secs(10);
 pub(crate) const PROJECTION_REJECTED: &str = "WebView projection rejected";
-const PROJECTION_BUSY: &str = "WebView projection busy";
+pub(crate) const PROJECTION_BUSY: &str = "WebView projection busy";
 const PROJECTION_EXHAUSTED: &str = "WebView projection sequence exhausted";
 const PROJECTION_MAPPING_UNAVAILABLE: &str = "WebView sequence mapping unavailable";
 const PROJECTION_ORIGIN_UNAVAILABLE: &str = "WebView operation origin unavailable";
@@ -439,7 +441,18 @@ impl WebViewProjector {
             raw_sequence: reservation.raw_sequence,
         });
         match reservation.action {
-            CommitAction::None => {}
+            CommitAction::None => {
+                // Activity keeps an open stream's origin alive.
+                if let ReservationOrigin::Public {
+                    id,
+                    class: PublicOperationClass::Stream,
+                } = &reservation.origin
+                    && let Some(origin) = state.origins.get_mut(id)
+                    && !origin.completed
+                {
+                    origin.expires_at = Instant::now() + STREAM_ORIGIN_TTL;
+                }
+            }
             CommitAction::RetireOneShot(id) => retire_origin(&mut state, &id),
             CommitAction::CompleteStream(id) => {
                 if let Some(origin) = state.origins.get_mut(&id)
@@ -1540,6 +1553,36 @@ mod tests {
         release.wait();
         assert!(worker.join().unwrap().is_ok());
         assert_eq!(projector.raw_sequence_for(1, 2), Ok(2));
+    }
+
+    #[test]
+    fn stream_activity_refreshes_its_origin_so_long_turns_are_not_cut_off() {
+        let projector = WebViewProjector::default();
+        register_stream(&projector, 1);
+        let nearly_expired = Instant::now() + Duration::from_millis(40);
+        projector
+            .lock_state()
+            .origins
+            .get_mut("web-stream-1")
+            .unwrap()
+            .expires_at = nearly_expired;
+        projector
+            .project_and_deliver(1, &delta(1, "still working"), |_| Ok(()))
+            .unwrap();
+        let refreshed = projector.lock_state().origins["web-stream-1"].expires_at;
+        assert!(refreshed >= Instant::now() + STREAM_ORIGIN_TTL - Duration::from_secs(1));
+        std::thread::sleep(Duration::from_millis(60));
+        // Without the refresh the origin would have expired and this event
+        // would be silently dropped.
+        let mut delivered = false;
+        projector
+            .project_and_deliver(1, &delta(2, "later"), |_| {
+                delivered = true;
+                Ok(())
+            })
+            .unwrap();
+        assert!(delivered);
+        assert!(STREAM_ORIGIN_TTL > Duration::from_secs(900));
     }
 
     #[test]
