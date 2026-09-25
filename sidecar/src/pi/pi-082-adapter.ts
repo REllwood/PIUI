@@ -1,5 +1,4 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { stat } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
 import { createOAuthInteraction } from '../credentials/oauth.js';
 import type { ApprovalHost } from './approval-hook.js';
@@ -36,7 +35,7 @@ import {
 } from './public-sdk.js';
 import { describeProviders } from './providers.js';
 import { SessionOwnership } from './sessions.js';
-import { SessionWatch, type FileIdentity } from './session-watch.js';
+import { SessionWatch, observeSessionFile, type FileIdentity } from './session-watch.js';
 import { TypedSettingsAdapter, type SettingScope } from './settings.js';
 import { ResourceRegistry } from './resources.js';
 import { TurnRegistry } from './turns.js';
@@ -258,7 +257,10 @@ export class Pi082Adapter implements PiAdapter {
     const source = this.#runtimeSessions.get(sessionId);
     if (!source) throw new Error('session-runtime-unavailable');
     const sourceFile = source.session.sessionFile;
-    if (!sourceFile) throw new Error('session-fork-unavailable');
+    // Pi has nothing on disk to fork until the source's first assistant reply.
+    if (!sourceFile || (await observeSessionFile(sourceFile)) === null) {
+      throw new Error('session-fork-unavailable');
+    }
     const sessionManager = PublicSessionManager.forkFrom(
       sourceFile,
       source.workspacePath,
@@ -354,7 +356,8 @@ export class Pi082Adapter implements PiAdapter {
       runtime.session.dispose();
       this.#runtimeSessions.delete(sessionId);
     }
-    const identity = await fileIdentity(source.path);
+    const identity = await observeSessionFile(source.path);
+    if (!identity) throw new Error('session-trash-rejected');
     return Object.freeze({
       workspaceId: source.workspaceId,
       workspaceRevision: source.workspaceRevision,
@@ -877,7 +880,10 @@ export class Pi082Adapter implements PiAdapter {
   }): Promise<void> {
     const path = runtime.session.sessionFile;
     if (!path) throw new Error('session-file-unavailable');
-    const status = runtime.watch.verify(await fileIdentity(path), runtime.watchGeneration.value);
+    const status = runtime.watch.verify(
+      await observeSessionFile(path),
+      runtime.watchGeneration.value,
+    );
     if (status !== 'current') throw new Error('session-external-change');
   }
 
@@ -888,7 +894,7 @@ export class Pi082Adapter implements PiAdapter {
   }): Promise<void> {
     const path = runtime.session.sessionFile;
     if (!path) throw new Error('session-file-unavailable');
-    runtime.watchGeneration.value = runtime.watch.acknowledge(await fileIdentity(path));
+    runtime.watchGeneration.value = runtime.watch.acknowledge(await observeSessionFile(path));
   }
 
   async #selectModel(providerId?: string, modelId?: string) {
@@ -1001,17 +1007,6 @@ function messageText(value: unknown): string {
 
 function boundedMessage(value: string): string {
   return value.slice(0, 262_144);
-}
-
-async function fileIdentity(path: string): Promise<FileIdentity> {
-  const value = await stat(path, { bigint: true });
-  if (!value.isFile()) throw new Error('session-file-unavailable');
-  return Object.freeze({
-    device: value.dev,
-    inode: value.ino,
-    size: value.size,
-    modifiedNs: value.mtimeNs,
-  });
 }
 
 function seedSettings(settings: TypedSettingsAdapter, session: PublicAgentSession): void {
