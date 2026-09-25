@@ -77,7 +77,7 @@ import {
   type NativeApplicationDataUpdate,
 } from '../platform/native';
 
-type OperationId =
+export type OperationId =
   | 'send'
   | 'stop'
   | 'queue'
@@ -235,8 +235,8 @@ const relativeFormatter = new Intl.RelativeTimeFormat('en-AU', { numeric: 'auto'
 const absoluteDateFormatter = new Intl.DateTimeFormat('en-AU', { day: 'numeric', month: 'short' });
 
 function relativeTime(timestamp: number): string {
+  // A clock-skewed future timestamp is also shown as just now.
   const elapsed = Date.now() - timestamp;
-  if (elapsed < 0) return 'Just now';
   if (elapsed < 60_000) return 'Just now';
   if (elapsed < 3_600_000) {
     const minutes = Math.floor(elapsed / 60_000);
@@ -248,7 +248,6 @@ function relativeTime(timestamp: number): string {
   }
   return absoluteDateFormatter.format(new Date(timestamp));
 }
-
 
 function messageView(message: import('../platform/native').NativeProductMessage) {
   return Object.freeze({

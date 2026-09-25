@@ -7,7 +7,7 @@ import { CommandRouter } from './CommandRouter';
 import { isTurnActive } from '../domain/machines';
 import { MainToolbar } from './MainToolbar';
 import { NavigationPlane } from './NavigationPlane';
-import { useProduct } from './ProductContext';
+import { useProduct, type OperationId } from './ProductContext';
 import { RouteHost } from './RouteHost';
 import {
   closeNativeMainWindow,
@@ -17,16 +17,22 @@ import {
 } from '../platform/native';
 import { LoadingLabel } from '../components/primitives/LoadingLabel';
 
-const OPERATION_LABELS: Readonly<Record<string, string>> = {
-  project: 'Updating project access…',
+// Keyed on every operation so a new one cannot ship without its own status copy.
+const OPERATION_LABELS: Readonly<Record<OperationId, string>> = {
+  send: 'Sending to Pi…',
+  stop: 'Stopping Pi…',
+  queue: 'Queuing follow-up…',
+  approval: 'Recording your decision…',
+  settings: 'Saving changes…',
+  diagnostics: 'Checking PIUI…',
   provider: 'Updating provider connection…',
+  project: 'Updating project access…',
+  update: 'Checking for updates…',
   session: 'Updating session…',
+  export: 'Exporting a copy…',
+  change: 'Updating file changes…',
   resource: 'Updating Pi resource…',
 };
-
-function operationLabel(operation: string): string {
-  return OPERATION_LABELS[operation] ?? 'Working…';
-}
 
 export function AppShell() {
   const product = useProduct();
@@ -203,7 +209,7 @@ export function AppShell() {
       ) : null}
       {product.activeOperation ? (
         <div className="global-operation-status" role="status">
-          <LoadingLabel>{operationLabel(product.activeOperation)}</LoadingLabel>
+          <LoadingLabel>{OPERATION_LABELS[product.activeOperation]}</LoadingLabel>
         </div>
       ) : null}
       <CommandMenu

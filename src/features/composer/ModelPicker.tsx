@@ -2,6 +2,7 @@ import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useProduct } from '../../app/ProductContext';
 import { Icon } from '../../components/icons/Icon';
 import { LoadingLabel } from '../../components/primitives/LoadingLabel';
+import { isTurnActive } from '../../domain/machines';
 import './model-picker.css';
 
 const thinkingOptions = [
@@ -12,14 +13,6 @@ const thinkingOptions = [
   { value: 'high', label: 'Deep', detail: 'Spend more time on complex changes and decisions.' },
   { value: 'xhigh', label: 'Extended', detail: 'The most thinking time for demanding work.' },
 ] as const;
-
-const activeTurnStates = new Set([
-  'sending',
-  'streaming',
-  'tool-running',
-  'stop-requested',
-  'cancel-too-late',
-]);
 
 type ThinkingLevel = (typeof thinkingOptions)[number]['value'];
 
@@ -61,7 +54,7 @@ export function ModelPicker() {
     (provider) => provider.connected && provider.id === providerId,
   );
   const selectedModel = selectedProvider?.models.find((model) => model.id === modelId);
-  const turnActive = activeTurnStates.has(snapshot.turnStatus);
+  const turnActive = isTurnActive(snapshot.turnStatus);
   const busy = saving || product.activeOperation !== null || turnActive;
   const connectedProviders = snapshot.providers.filter(
     (provider) => provider.connected && provider.models.length > 0,
