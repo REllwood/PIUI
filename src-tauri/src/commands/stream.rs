@@ -3,6 +3,7 @@ use crate::commands::bridge::{
 };
 use crate::commands::projector::{PROJECTION_REJECTED, PublicOperationClass};
 use crate::protocol::{Envelope, ErrorCategory, ProtocolKind, validate_envelope};
+use crate::supervisor::TEST_METHODS_ENABLED;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, State};
 const STREAM_DEADLINE: Duration = Duration::from_secs(5);
@@ -458,7 +459,9 @@ fn validate_stream_request(request: &Envelope) -> Result<(), String> {
         .get("method")
         .and_then(serde_json::Value::as_str);
     let permitted_payload = match method {
-        Some("stream.fixture") => request.payload.len() == 1,
+        // Fixture streams exist only where the sidecar also enables its test
+        // methods, so a release build cannot drive them.
+        Some("stream.fixture") => TEST_METHODS_ENABLED && request.payload.len() == 1,
         Some("product.turn.start") => {
             crate::protocol::product::validate_product_turn_request(&request.payload).is_ok()
         }
@@ -536,7 +539,10 @@ mod tests {
             "version":1,"kind":"cancel","id":"web-cancel-1","correlationId":"web-stream-probe-1",
             "sequence":2,"payload":{}
         }));
-        assert!(validate_stream_request(&request).is_ok());
+        assert_eq!(
+            validate_stream_request(&request).is_ok(),
+            crate::supervisor::TEST_METHODS_ENABLED
+        );
         assert!(validate_cancellation(&cancellation).is_ok());
 
         let bad_request = envelope(serde_json::json!({

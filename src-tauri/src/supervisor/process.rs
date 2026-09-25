@@ -142,6 +142,27 @@ fn host_pi_agent_dir() -> Option<PathBuf> {
     pi_agent_dir_for_home(std::env::var_os("HOME"))
 }
 
+/// The host user's real, absolute home directory, if `HOME` names one.
+fn host_user_home() -> Option<PathBuf> {
+    user_home_for(std::env::var_os("HOME"))
+}
+
+fn user_home_for(home: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    home.map(PathBuf::from)
+        .filter(|path| path.is_absolute() && !path.as_os_str().is_empty())
+}
+
+/// Sidecar methods that exist only for fixtures and architecture probes
+/// (`stream.fixture` and friends) are reachable only in debug builds and the
+/// dedicated architecture/probe twins, never in a plain release build.
+pub(crate) const TEST_METHODS_ENABLED: bool = cfg!(any(
+    debug_assertions,
+    feature = "architecture-test",
+    feature = "a23-credential-test",
+    feature = "a25-approval-test",
+    feature = "a27-lifecycle-test"
+));
+
 #[derive(Debug, Clone)]
 pub struct SupervisorPaths {
     pub node: PathBuf,
@@ -1226,6 +1247,16 @@ impl SidecarSupervisor {
         // signed resources and ignore the user's real Pi configuration.
         if let Some(agent_dir) = host_pi_agent_dir() {
             command.env("PIUI_PI_AGENT_DIR", agent_dir);
+        }
+        // Tools the agent runs (bash, package managers) need the user's real
+        // home and login PATH; the sealed HOME above is only for dependency
+        // discovery inside the bundle.
+        if let Some(home) = host_user_home() {
+            command.env("PIUI_USER_HOME", home);
+        }
+        command.env("PIUI_USER_PATH", super::login_path::user_login_path());
+        if TEST_METHODS_ENABLED {
+            command.env("PIUI_ENABLE_TEST_METHODS", "1");
         }
         configure_architecture_test_sidecar(&mut command)?;
         let mut child = command
@@ -2484,6 +2515,76 @@ process.stdin.resume();
         assert!(!marker.exists());
         supervisor.stop().unwrap();
         assert!(!marker.exists());
+    }
+
+    #[test]
+    fn user_home_is_passed_only_when_absolute() {
+        assert_eq!(
+            user_home_for(Some("/Users/example".into())),
+            Some(PathBuf::from("/Users/example"))
+        );
+        assert_eq!(user_home_for(Some("relative/home".into())), None);
+        assert_eq!(user_home_for(Some("".into())), None);
+        assert_eq!(user_home_for(None), None);
+    }
+
+    #[test]
+    fn sidecar_environment_carries_user_home_login_path_and_test_method_gate() {
+        let root =
+            std::env::temp_dir().join(format!("piui-spawn-env-{}", uuid::Uuid::new_v4().simple()));
+        fs::create_dir_all(root.join("dist")).unwrap();
+        fs::write(root.join("manifest.json"), b"{}\n").unwrap();
+        fs::write(
+            root.join("dist/index.js"),
+            r#"
+const fs = require('node:fs');
+fs.writeFileSync('observed-env.json', JSON.stringify({
+  home: process.env.HOME ?? null,
+  userHome: process.env.PIUI_USER_HOME ?? null,
+  userPath: process.env.PIUI_USER_PATH ?? null,
+  testMethods: process.env.PIUI_ENABLE_TEST_METHODS ?? null,
+}));
+process.stdout.write(`${JSON.stringify({version:1,kind:'handshake',id:'sidecar-handshake',
+  sequence:0,payload:{nonce:process.env.PIUI_HANDSHAKE_NONCE,
+  desktopVersion:process.env.PIUI_DESKTOP_VERSION,protocolVersion:1,nodeVersion:'22.23.1',
+  piVersion:'0.82.0',architecture:'arm64',
+  capabilities:['cancel','status','stream','host-credentials','workspace-trust-v1']}})}\n`);
+process.stdin.resume();
+"#,
+        )
+        .unwrap();
+        let node =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("binaries/piui-node-aarch64-apple-darwin");
+        let paths = SupervisorPaths::validated(node, root.clone()).unwrap();
+        let mut supervisor = SidecarSupervisor::default();
+        supervisor.start(&paths).unwrap();
+        let observed: Value = serde_json::from_slice(
+            &fs::read(paths.resource_root.join("observed-env.json")).unwrap(),
+        )
+        .unwrap();
+        supervisor.stop().unwrap();
+        fs::remove_dir_all(&root).unwrap();
+
+        // The dependency HOME stays sealed inside the resources.
+        assert_eq!(
+            observed["home"].as_str().map(PathBuf::from),
+            Some(paths.resource_root.clone())
+        );
+        assert_eq!(
+            observed["userHome"].as_str().map(PathBuf::from),
+            host_user_home()
+        );
+        let user_path = observed["userPath"].as_str().unwrap();
+        assert_eq!(user_path, super::super::login_path::user_login_path());
+        assert!(
+            user_path
+                .split(':')
+                .all(|entry| entry.starts_with('/') && !entry.is_empty())
+        );
+        assert_eq!(
+            observed["testMethods"].as_str(),
+            TEST_METHODS_ENABLED.then_some("1")
+        );
     }
 
     #[test]
