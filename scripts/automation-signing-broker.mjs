@@ -11,6 +11,9 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
 import {
+  AUTOMATION_SIGNING_POLICY_ENVIRONMENT,
+  automationSigningPolicy,
+  automationSigningPolicyPath,
   canonicalArchitectureJson,
   sha256Bytes,
 } from './architecture-gate-schema.mjs';
@@ -589,6 +592,11 @@ export async function startAutomationSigningBroker({
     || !Number.isSafeInteger(timeoutMs)
     || timeoutMs <= requestTimeoutMs
     || timeoutMs > 6 * 60_000) reject();
+  // Resolve the local signing pin before any descriptor is held so an
+  // unconfigured machine fails closed with its own message, then hand the
+  // sandboxed child that exact file rather than its caller's environment.
+  const signingPolicyPath = automationSigningPolicyPath();
+  automationSigningPolicy();
   const paths = protocolPaths(controlRoot, nonce);
   let control;
   let verification;
@@ -618,6 +626,7 @@ export async function startAutomationSigningBroker({
       hostPath,
       keychainPath: automationSigningKeychainPath(),
       nonce,
+      signingPolicyPath,
       verificationRoot: paths.verificationRoot,
     });
     const childConfiguration = Object.freeze({
@@ -639,6 +648,7 @@ export async function startAutomationSigningBroker({
         LANG: 'en_AU.UTF-8',
         LC_ALL: 'en_AU.UTF-8',
         PATH: '/usr/bin:/bin',
+        [AUTOMATION_SIGNING_POLICY_ENVIRONMENT]: signingPolicyPath,
         TMPDIR: `${paths.verificationRoot}/`,
       },
       label: 'One-use automation-signing broker',

@@ -20,11 +20,20 @@ src-tauri/gen/schemas/
 # Cached downloads
 .cache/
 
+# Fixed, reused local build and evidence output (never per-run copies)
+.build/
+
+# graphify knowledge-graph output
+graphify-out/
+
 # Forge build planning
 .forge/
 
 # Pi subagent artefacts
 .pi-subagents/
+
+# Claude Code worktrees and agent state
+.claude/
 
 # OS files
 .DS_Store

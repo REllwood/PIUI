@@ -1,16 +1,14 @@
 import { defineConfig } from '@playwright/test';
 
-const runId = process.env.PIUI_WORKBENCH_RUN ?? String(Date.now());
-process.env.PIUI_WORKBENCH_RUN = runId;
-
 export default defineConfig({
   testDir: './tests/e2e',
   testMatch: ['workbench.spec.ts', 'product-golden.spec.ts', 'onboarding.spec.ts'],
   fullyParallel: false,
   workers: 1,
   timeout: 30_000,
-  // Each local run retains its evidence without clearing an earlier run.
-  outputDir: `./test-results/workbench-${runId}`,
+  // One fixed output directory, replaced by each run, so local evidence
+  // never accumulates per-run copies.
+  outputDir: './test-results/workbench',
   use: {
     baseURL: 'http://127.0.0.1:1420',
     browserName: 'chromium',
