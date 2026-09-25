@@ -808,20 +808,30 @@ export class ProductRuntime {
   }
 
   async close(): Promise<void> {
-    if (this.#adapter) await (await this.#adapter).close();
+    const adapter = await this.#adapter?.catch(() => undefined);
+    await adapter?.close();
   }
 
   #getAdapter(): Promise<PiAdapter> {
-    this.#adapter ??= this.#createAdapter({
-      credentials: new PiCredentialStore(this.#host),
-      allowModelNetwork: true,
-      generation: this.#generation,
-      approvalHost: Object.freeze({
-        requestApproval: (payload) => this.#host.requestApproval(payload),
-        notifyApprovalReady: (payload) => this.#host.notifyApprovalReady(payload),
-        abandonApproval: (payload) => this.#host.abandonApproval(payload),
-      }),
+    if (this.#adapter) return this.#adapter;
+    const created = (async () =>
+      this.#createAdapter({
+        credentials: new PiCredentialStore(this.#host),
+        allowModelNetwork: true,
+        generation: this.#generation,
+        approvalHost: Object.freeze({
+          requestApproval: (payload) => this.#host.requestApproval(payload),
+          notifyApprovalReady: (payload) => this.#host.notifyApprovalReady(payload),
+          abandonApproval: (payload) => this.#host.abandonApproval(payload),
+        }),
+      }))();
+    this.#adapter = created;
+    // A transient construction failure (for example an unanswered credential
+    // listing) must not disable the product until restart: forget the rejected
+    // attempt so the next request constructs the adapter again.
+    created.catch(() => {
+      if (this.#adapter === created) this.#adapter = undefined;
     });
-    return this.#adapter;
+    return created;
   }
 }
