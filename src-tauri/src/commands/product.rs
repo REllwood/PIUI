@@ -11,6 +11,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Manager, State, WebviewWindow};
 
 const PRODUCT_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+const PRODUCT_LONG_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -438,7 +439,7 @@ fn validated_session_path(value: &str, home: &Path) -> Result<PathBuf, String> {
     let canonical = path
         .canonicalize()
         .map_err(|_| "session-trash-target-invalid".to_string())?;
-    let session_root = home.join(".pi").join("agent").join("sessions");
+    let session_root = session_root_within(home);
     let canonical_root = session_root
         .canonicalize()
         .map_err(|_| "session-trash-target-invalid".to_string())?;
@@ -448,6 +449,10 @@ fn validated_session_path(value: &str, home: &Path) -> Result<PathBuf, String> {
         return Err("session-trash-target-invalid".into());
     }
     Ok(canonical)
+}
+
+fn session_root_within(home: &Path) -> PathBuf {
+    pi_agent_dir_within(home).join("sessions")
 }
 
 #[cfg(unix)]
@@ -1010,9 +1015,101 @@ fn request(
         .map_err(|_| "sidecar state unavailable".to_string())?
         .begin_product_request(generation, method, payload)?;
     debug_assert_eq!(waiter.generation(), generation);
-    let envelope = waiter.wait(PRODUCT_REQUEST_TIMEOUT)?;
-    if envelope.error.is_some() {
-        return Err("product operation failed".into());
+    let envelope = waiter.wait(product_request_timeout(method))?;
+    if let Some(error) = envelope.error.as_ref() {
+        return Err(product_error_code(&error.message));
     }
     Ok(Value::Object(envelope.payload))
+}
+
+/// Compaction is a model call and package operations may reach the network,
+/// so they get longer than the default budget. A waiter that still times out
+/// leaves the sidecar running; its late response is discarded.
+fn product_request_timeout(method: &str) -> Duration {
+    match method {
+        "product.session.compact" | "product.package.install" | "product.package.mutate" => {
+            PRODUCT_LONG_REQUEST_TIMEOUT
+        }
+        _ => PRODUCT_REQUEST_TIMEOUT,
+    }
+}
+
+/// The sidecar reports product failures as stable kebab-case codes the
+/// interface can explain. Anything else could carry paths or provider text,
+/// so it collapses to one generic code before reaching the WebView.
+fn product_error_code(message: &str) -> String {
+    let bytes = message.as_bytes();
+    let code_shaped = (3..=64).contains(&bytes.len())
+        && bytes[0].is_ascii_lowercase()
+        && bytes[1..]
+            .iter()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-');
+    if code_shaped {
+        message.to_owned()
+    } else {
+        "product-operation-failed".into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn product_error_codes_reach_the_interface_only_when_code_shaped() {
+        for code in [
+            "session-generation-stale",
+            "provider-auth-required",
+            "abc",
+            "model2-unavailable",
+            &format!("a{}", "b".repeat(63)),
+        ] {
+            assert_eq!(product_error_code(code), code);
+        }
+        for rejected in [
+            "",
+            "ab",
+            "Session-stale",
+            "1session",
+            "-session",
+            "session stale",
+            "session_stale",
+            "/Users/someone/.pi/agent/auth.json",
+            "failed: ENOENT",
+            "sessión-stale",
+            &format!("a{}", "b".repeat(64)),
+        ] {
+            assert_eq!(
+                product_error_code(rejected),
+                "product-operation-failed",
+                "{rejected:?} must not reach the interface"
+            );
+        }
+    }
+
+    #[test]
+    fn model_and_network_product_calls_outlive_the_default_budget() {
+        assert_eq!(
+            product_request_timeout("product.session.compact"),
+            PRODUCT_LONG_REQUEST_TIMEOUT
+        );
+        assert_eq!(
+            product_request_timeout("product.package.install"),
+            PRODUCT_LONG_REQUEST_TIMEOUT
+        );
+        assert_eq!(
+            product_request_timeout("product.sessions.list"),
+            PRODUCT_REQUEST_TIMEOUT
+        );
+        assert!(PRODUCT_LONG_REQUEST_TIMEOUT >= Duration::from_secs(300));
+    }
+
+    #[test]
+    fn session_trash_root_is_the_shared_pi_agent_directory() {
+        let home = Path::new("/Users/example");
+        assert_eq!(
+            session_root_within(home),
+            Path::new("/Users/example/.pi/agent/sessions")
+        );
+    }
 }
