@@ -35,7 +35,13 @@ import {
 } from './public-sdk.js';
 import { describeProviders } from './providers.js';
 import { SessionOwnership } from './sessions.js';
-import { SessionWatch, observeSessionFile, type FileIdentity } from './session-watch.js';
+import {
+  SessionWatch,
+  observeSessionFile,
+  verifyOwnAppends,
+  type FileIdentity,
+  type ObservedIdentity,
+} from './session-watch.js';
 import { TypedSettingsAdapter, type SettingScope } from './settings.js';
 import { ResourceRegistry } from './resources.js';
 import { TurnRegistry } from './turns.js';
@@ -314,7 +320,7 @@ export class Pi082Adapter implements PiAdapter {
     title: string,
   ): Promise<AdapterSession> {
     const runtime = await this.#ensureRuntime(sessionId, expectedGeneration);
-    if (!runtime.session.isIdle) throw new Error('session-busy');
+    if (busy(runtime)) throw new Error('session-busy');
     const nextTitle = boundedTitle(title);
     await this.#verifyRuntime(runtime);
     runtime.session.setSessionName(nextTitle);
@@ -337,7 +343,7 @@ export class Pi082Adapter implements PiAdapter {
 
   async compactSession(sessionId: string, expectedGeneration: number): Promise<void> {
     const runtime = await this.#ensureRuntime(sessionId, expectedGeneration);
-    if (!runtime.session.isIdle) throw new Error('session-busy');
+    if (busy(runtime)) throw new Error('session-busy');
     await this.#verifyRuntime(runtime);
     await runtime.session.compact();
     await this.#acknowledgeRuntime(runtime);
@@ -403,7 +409,7 @@ export class Pi082Adapter implements PiAdapter {
     expectedRevision: number,
   ) {
     const runtime = await this.#ensureRuntime(sessionId, expectedGeneration);
-    if (!runtime.session.isIdle) throw new Error('session-busy');
+    if (busy(runtime)) throw new Error('session-busy');
     runtime.settings.assertRevision(key, expectedRevision);
     const previous = runtime.settings.read(key);
     await applySetting(runtime.session, runtime.settings, key, value);
@@ -442,7 +448,7 @@ export class Pi082Adapter implements PiAdapter {
     acknowledgedExecutableRisk: boolean,
   ) {
     const runtime = await this.#ensureRuntime(sessionId, expectedGeneration);
-    if (!runtime.session.isIdle) throw new Error('session-busy');
+    if (busy(runtime)) throw new Error('session-busy');
     const change = runtime.resources.prepareEnabledChange(
       resourceId,
       enabled,
@@ -488,7 +494,7 @@ export class Pi082Adapter implements PiAdapter {
     acknowledgedExecutableRisk: boolean,
   ) {
     const runtime = await this.#ensureRuntime(sessionId, expectedGeneration);
-    if (!runtime.session.isIdle) throw new Error('session-busy');
+    if (busy(runtime)) throw new Error('session-busy');
     await this.#verifyRuntime(runtime);
     const resource = await runtime.resources.installPackage(
       source,
@@ -510,7 +516,7 @@ export class Pi082Adapter implements PiAdapter {
     acknowledgedExecutableRisk: boolean,
   ) {
     const runtime = await this.#ensureRuntime(sessionId, expectedGeneration);
-    if (!runtime.session.isIdle) throw new Error('session-busy');
+    if (busy(runtime)) throw new Error('session-busy');
     await this.#verifyRuntime(runtime);
     const resource = await runtime.resources.mutatePackage(
       resourceId,
@@ -592,6 +598,7 @@ export class Pi082Adapter implements PiAdapter {
       throw new Error('session-write-rejected');
     const runtime = this.#runtimeSessions.get(request.sessionId);
     if (!runtime) throw new Error('session-runtime-unavailable');
+    if (busy(runtime)) throw new Error('session-busy');
     await this.#verifyRuntime(runtime);
     const active = this.#turns.begin(request, signal);
     this.#queueNumbers.set(request.sessionId, 0);
@@ -599,6 +606,8 @@ export class Pi082Adapter implements PiAdapter {
       void runtime.session.abort();
     };
     let unsubscribe: (() => void) | undefined;
+    let ownTurn: OwnTurn | undefined;
+    let promptStarted = false;
     // Everything after begin() sits inside this try so that every exit,
     // including a stale retry, retires the turn registry entry.
     try {
@@ -607,6 +616,10 @@ export class Pi082Adapter implements PiAdapter {
         yield { requestId: request.requestId, sequence: active.nextSequence(), type: 'stopped' };
         return;
       }
+      // From here until the turn settles, Pi's appends to this session file
+      // are PIUI's own writes rather than an external change.
+      const turn = this.#beginOwnTurn(runtime);
+      ownTurn = turn;
       if (request.retryPrevious) {
         const previous = runtime.session.getUserMessagesForForking().at(-1);
         if (!previous || previous.text !== request.text) throw new Error('turn-retry-stale');
@@ -644,6 +657,7 @@ export class Pi082Adapter implements PiAdapter {
         }
       });
       active.controller.signal.addEventListener('abort', abort, { once: true });
+      promptStarted = true;
       void runtime.session
         .prompt(request.text, {
           source: 'interactive',
@@ -651,13 +665,13 @@ export class Pi082Adapter implements PiAdapter {
         })
         .then(
           async () => {
-            await this.#acknowledgeRuntime(runtime);
+            await this.#finishOwnTurn(runtime, turn);
             terminal = true;
             push({ type: active.controller.signal.aborted ? 'stopped' : 'complete' });
           },
           async (error: unknown) => {
             runtime.session.clearQueue();
-            await this.#acknowledgeRuntime(runtime);
+            await this.#finishOwnTurn(runtime, turn);
             terminal = true;
             const code =
               error instanceof Error && error.message === 'This action was not approved.'
@@ -682,6 +696,14 @@ export class Pi082Adapter implements PiAdapter {
         if (event) yield event;
       }
     } finally {
+      // Once Pi's prompt runs, its own settlement closes the window instead.
+      if (ownTurn && !promptStarted) {
+        try {
+          await this.#finishOwnTurn(runtime, ownTurn);
+        } catch {
+          // The watch stays unacknowledged, so the next write reports the change.
+        }
+      }
       this.#queueNumbers.delete(request.sessionId);
       active.controller.signal.removeEventListener('abort', abort);
       unsubscribe?.();
@@ -898,6 +920,49 @@ export class Pi082Adapter implements PiAdapter {
     runtime.watchGeneration.value = runtime.watch.acknowledge(await observeSessionFile(path));
   }
 
+  #beginOwnTurn(runtime: { session: PublicAgentSession; watch: SessionWatch }): OwnTurn {
+    const identity = runtime.watch.beginOwnWrite();
+    return Object.freeze({
+      identity,
+      entryCount: runtime.session.sessionManager.getEntries().length,
+    });
+  }
+
+  /**
+   * Closes PIUI's own-write window. Everything Pi appended since the turn began
+   * must be exactly the entries Pi now holds beyond the baseline (or, for Pi's
+   * first write of a new file, the header and every entry) before the new file
+   * identity is acknowledged; anything else leaves the watch reporting a change.
+   */
+  async #finishOwnTurn(
+    runtime: {
+      session: PublicAgentSession;
+      watch: SessionWatch;
+      watchGeneration: { value: number };
+    },
+    turn: OwnTurn,
+  ): Promise<void> {
+    try {
+      const path = runtime.session.sessionFile;
+      if (!path) throw new Error('session-file-unavailable');
+      const manager = runtime.session.sessionManager;
+      const entries = manager.getEntries();
+      const header = manager.getHeader();
+      const written =
+        turn.identity === null
+          ? [...(header ? [header] : []), ...entries]
+          : entries.slice(turn.entryCount);
+      const identity = await verifyOwnAppends(
+        path,
+        turn.identity,
+        written.map((entry) => ({ type: entry.type, id: entry.id })),
+      );
+      runtime.watchGeneration.value = runtime.watch.acknowledge(identity);
+    } finally {
+      runtime.watch.endOwnWrite();
+    }
+  }
+
   async #selectModel(providerId?: string, modelId?: string) {
     if (providerId && modelId) {
       const exact = this.#runtime.getModel(providerId, modelId);
@@ -912,7 +977,7 @@ export class Pi082Adapter implements PiAdapter {
   }
 
   #assertNoBusyRuntime(): void {
-    if ([...this.#runtimeSessions.values()].some((runtime) => !runtime.session.isIdle)) {
+    if ([...this.#runtimeSessions.values()].some(busy)) {
       throw new Error('session-turn-active');
     }
   }
@@ -925,6 +990,14 @@ export class Pi082Adapter implements PiAdapter {
       this.#retirementFailures += 1;
     }
   }
+}
+
+type OwnTurn = Readonly<{ identity: ObservedIdentity; entryCount: number }>;
+
+// A runtime stays busy until its turn's own-write window has been verified and
+// closed, which is slightly after Pi itself reports idle.
+function busy(runtime: { session: PublicAgentSession; watch: SessionWatch }): boolean {
+  return !runtime.session.isIdle || runtime.watch.ownWriteActive;
 }
 
 // The host clears the sidecar environment and seals HOME inside the signed
