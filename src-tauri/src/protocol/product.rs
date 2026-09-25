@@ -94,6 +94,65 @@ pub(crate) fn validate_product_request(
                     .and_then(Value::as_bool)
                     .is_some()
         }
+        // Mirrors `assertProductRequest` in sidecar/src/pi/product-router.ts:
+        // the source is at most 256 UTF-16 units without control characters.
+        "product.package.install" => {
+            exact_keys(
+                payload,
+                &[
+                    "schemaVersion",
+                    "sessionId",
+                    "expectedGeneration",
+                    "source",
+                    "scope",
+                    "online",
+                    "acknowledgedExecutableRisk",
+                ],
+            ) && payload.get("schemaVersion") == Some(&Value::from(1))
+                && valid_prefixed_hex(payload, "sessionId", "session-")
+                && integer(payload, "expectedGeneration").is_some_and(|value| value > 0)
+                && payload
+                    .get("source")
+                    .and_then(Value::as_str)
+                    .is_some_and(|source| {
+                        source.encode_utf16().count() <= 256 && !source.chars().any(char::is_control)
+                    })
+                && matches!(
+                    payload.get("scope").and_then(Value::as_str),
+                    Some("global" | "project")
+                )
+                && payload.get("online").and_then(Value::as_bool).is_some()
+                && payload
+                    .get("acknowledgedExecutableRisk")
+                    .and_then(Value::as_bool)
+                    .is_some()
+        }
+        "product.package.mutate" => {
+            exact_keys(
+                payload,
+                &[
+                    "schemaVersion",
+                    "sessionId",
+                    "expectedGeneration",
+                    "resourceId",
+                    "operation",
+                    "online",
+                    "acknowledgedExecutableRisk",
+                ],
+            ) && payload.get("schemaVersion") == Some(&Value::from(1))
+                && valid_prefixed_hex(payload, "sessionId", "session-")
+                && integer(payload, "expectedGeneration").is_some_and(|value| value > 0)
+                && valid_prefixed_hex(payload, "resourceId", "resource-")
+                && matches!(
+                    payload.get("operation").and_then(Value::as_str),
+                    Some("update" | "remove")
+                )
+                && payload.get("online").and_then(Value::as_bool).is_some()
+                && payload
+                    .get("acknowledgedExecutableRisk")
+                    .and_then(Value::as_bool)
+                    .is_some()
+        }
         "product.setting.save" => {
             exact_keys(
                 payload,
@@ -382,5 +441,83 @@ mod tests {
         let mut smuggled = create.as_object().expect("object").clone();
         smuggled.insert("credential".into(), Value::String("forbidden".into()));
         assert!(validate_product_request("product.session.create", &smuggled).is_err());
+    }
+
+    fn package_install(source: &str) -> Map<String, Value> {
+        serde_json::json!({
+            "schemaVersion": 1,
+            "sessionId": "session-0123456789abcdef0123456789abcdef",
+            "expectedGeneration": 3,
+            "source": source,
+            "scope": "project",
+            "online": false,
+            "acknowledgedExecutableRisk": true
+        })
+        .as_object()
+        .expect("object")
+        .clone()
+    }
+
+    fn package_mutation() -> Map<String, Value> {
+        serde_json::json!({
+            "schemaVersion": 1,
+            "sessionId": "session-0123456789abcdef0123456789abcdef",
+            "expectedGeneration": 3,
+            "resourceId": "resource-0123456789abcdef0123456789abcdef",
+            "operation": "update",
+            "online": true,
+            "acknowledgedExecutableRisk": false
+        })
+        .as_object()
+        .expect("object")
+        .clone()
+    }
+
+    #[test]
+    fn package_install_matches_the_sidecar_router_contract() {
+        let install = "product.package.install";
+        assert!(validate_product_request(install, &package_install("npm:@scope/pkg")).is_ok());
+        assert!(validate_product_request(install, &package_install("")).is_ok());
+        assert!(validate_product_request(install, &package_install(&"x".repeat(256))).is_ok());
+        // 128 astral characters are 256 UTF-16 units, as the sidecar counts.
+        assert!(validate_product_request(install, &package_install(&"😀".repeat(128))).is_ok());
+        assert!(validate_product_request(install, &package_install(&"x".repeat(257))).is_err());
+        assert!(validate_product_request(install, &package_install(&"😀".repeat(129))).is_err());
+        assert!(validate_product_request(install, &package_install("npm:pkg\n")).is_err());
+        assert!(validate_product_request(install, &package_install("npm:pkg\u{85}")).is_err());
+
+        let mut global = package_install("npm:pkg");
+        global.insert("scope".into(), Value::from("global"));
+        assert!(validate_product_request(install, &global).is_ok());
+        let mut wrong_scope = package_install("npm:pkg");
+        wrong_scope.insert("scope".into(), Value::from("user"));
+        assert!(validate_product_request(install, &wrong_scope).is_err());
+        let mut stale = package_install("npm:pkg");
+        stale.insert("expectedGeneration".into(), Value::from(0));
+        assert!(validate_product_request(install, &stale).is_err());
+        let mut untyped = package_install("npm:pkg");
+        untyped.insert("online".into(), Value::from("yes"));
+        assert!(validate_product_request(install, &untyped).is_err());
+        let mut smuggled = package_install("npm:pkg");
+        smuggled.insert("path".into(), Value::from("/private/tmp"));
+        assert!(validate_product_request(install, &smuggled).is_err());
+    }
+
+    #[test]
+    fn package_mutation_matches_the_sidecar_router_contract() {
+        let mutate = "product.package.mutate";
+        assert!(validate_product_request(mutate, &package_mutation()).is_ok());
+        let mut remove = package_mutation();
+        remove.insert("operation".into(), Value::from("remove"));
+        assert!(validate_product_request(mutate, &remove).is_ok());
+        let mut install = package_mutation();
+        install.insert("operation".into(), Value::from("install"));
+        assert!(validate_product_request(mutate, &install).is_err());
+        let mut resource = package_mutation();
+        resource.insert("resourceId".into(), Value::from("resource-XYZ"));
+        assert!(validate_product_request(mutate, &resource).is_err());
+        let mut missing = package_mutation();
+        missing.remove("acknowledgedExecutableRisk");
+        assert!(validate_product_request(mutate, &missing).is_err());
     }
 }
