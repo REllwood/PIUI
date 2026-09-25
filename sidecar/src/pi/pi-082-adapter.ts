@@ -595,81 +595,82 @@ export class Pi082Adapter implements PiAdapter {
     await this.#verifyRuntime(runtime);
     const active = this.#turns.begin(request, signal);
     this.#queueNumbers.set(request.sessionId, 0);
-    yield { requestId: request.requestId, sequence: active.nextSequence(), type: 'started' };
-    if (active.controller.signal.aborted) {
-      this.#queueNumbers.delete(request.sessionId);
-      this.#turns.finish(request.requestId, 'stopped');
-      yield { requestId: request.requestId, sequence: active.nextSequence(), type: 'stopped' };
-      return;
-    }
-    if (request.retryPrevious) {
-      const previous = runtime.session.getUserMessagesForForking().at(-1);
-      if (!previous || previous.text !== request.text) throw new Error('turn-retry-stale');
-      const navigation = await runtime.session.navigateTree(previous.entryId);
-      if (navigation.cancelled || navigation.editorText !== request.text) {
-        throw new Error('turn-retry-stale');
-      }
-    }
-    const pending: AdapterTurnEvent[] = [];
-    let wake: (() => void) | undefined;
-    let terminal = false;
-    const push = (event: Omit<AdapterTurnEvent, 'requestId' | 'sequence'>) => {
-      pending.push({ ...event, requestId: request.requestId, sequence: active.nextSequence() });
-      const release = wake;
-      wake = undefined;
-      release?.();
-    };
-    const unsubscribe = runtime.session.subscribe((event) => {
-      if (event.type === 'message_update' && event.assistantMessageEvent.type === 'text_delta') {
-        push({ type: 'text', text: event.assistantMessageEvent.delta });
-      } else if (event.type === 'tool_execution_start') {
-        push({
-          type: 'tool',
-          text: event.toolName,
-          code: 'started',
-          toolCallId: event.toolCallId,
-        });
-      } else if (event.type === 'tool_execution_end') {
-        push({
-          type: 'tool',
-          text: event.toolName,
-          code: event.isError ? 'failed' : 'complete',
-          toolCallId: event.toolCallId,
-        });
-      }
-    });
     const abort = () => {
       void runtime.session.abort();
     };
-    active.controller.signal.addEventListener('abort', abort, { once: true });
-    void runtime.session
-      .prompt(request.text, {
-        source: 'interactive',
-        images: request.images.map((image) => ({ ...image })),
-      })
-      .then(
-        async () => {
-          await this.#acknowledgeRuntime(runtime);
-          terminal = true;
-          push({ type: active.controller.signal.aborted ? 'stopped' : 'complete' });
-        },
-        async (error: unknown) => {
-          runtime.session.clearQueue();
-          await this.#acknowledgeRuntime(runtime);
-          terminal = true;
-          const code =
-            error instanceof Error && error.message === 'This action was not approved.'
-              ? 'tool-not-approved'
-              : 'provider-turn-failed';
-          push({ type: active.controller.signal.aborted ? 'stopped' : 'failed', code });
-        },
-      )
-      .catch(() => {
-        runtime.session.clearQueue();
-        terminal = true;
-        push({ type: 'failed', code: 'session-external-change' });
-      });
+    let unsubscribe: (() => void) | undefined;
+    // Everything after begin() sits inside this try so that every exit,
+    // including a stale retry, retires the turn registry entry.
     try {
+      yield { requestId: request.requestId, sequence: active.nextSequence(), type: 'started' };
+      if (active.controller.signal.aborted) {
+        yield { requestId: request.requestId, sequence: active.nextSequence(), type: 'stopped' };
+        return;
+      }
+      if (request.retryPrevious) {
+        const previous = runtime.session.getUserMessagesForForking().at(-1);
+        if (!previous || previous.text !== request.text) throw new Error('turn-retry-stale');
+        const navigation = await runtime.session.navigateTree(previous.entryId);
+        if (navigation.cancelled || navigation.editorText !== request.text) {
+          throw new Error('turn-retry-stale');
+        }
+      }
+      const pending: AdapterTurnEvent[] = [];
+      let wake: (() => void) | undefined;
+      let terminal = false;
+      const push = (event: Omit<AdapterTurnEvent, 'requestId' | 'sequence'>) => {
+        pending.push({ ...event, requestId: request.requestId, sequence: active.nextSequence() });
+        const release = wake;
+        wake = undefined;
+        release?.();
+      };
+      unsubscribe = runtime.session.subscribe((event) => {
+        if (event.type === 'message_update' && event.assistantMessageEvent.type === 'text_delta') {
+          push({ type: 'text', text: event.assistantMessageEvent.delta });
+        } else if (event.type === 'tool_execution_start') {
+          push({
+            type: 'tool',
+            text: event.toolName,
+            code: 'started',
+            toolCallId: event.toolCallId,
+          });
+        } else if (event.type === 'tool_execution_end') {
+          push({
+            type: 'tool',
+            text: event.toolName,
+            code: event.isError ? 'failed' : 'complete',
+            toolCallId: event.toolCallId,
+          });
+        }
+      });
+      active.controller.signal.addEventListener('abort', abort, { once: true });
+      void runtime.session
+        .prompt(request.text, {
+          source: 'interactive',
+          images: request.images.map((image) => ({ ...image })),
+        })
+        .then(
+          async () => {
+            await this.#acknowledgeRuntime(runtime);
+            terminal = true;
+            push({ type: active.controller.signal.aborted ? 'stopped' : 'complete' });
+          },
+          async (error: unknown) => {
+            runtime.session.clearQueue();
+            await this.#acknowledgeRuntime(runtime);
+            terminal = true;
+            const code =
+              error instanceof Error && error.message === 'This action was not approved.'
+                ? 'tool-not-approved'
+                : 'provider-turn-failed';
+            push({ type: active.controller.signal.aborted ? 'stopped' : 'failed', code });
+          },
+        )
+        .catch(() => {
+          runtime.session.clearQueue();
+          terminal = true;
+          push({ type: 'failed', code: 'session-external-change' });
+        });
       while (!terminal || pending.length > 0) {
         if (pending.length === 0) {
           await new Promise<void>((resolve) => {
@@ -683,7 +684,7 @@ export class Pi082Adapter implements PiAdapter {
     } finally {
       this.#queueNumbers.delete(request.sessionId);
       active.controller.signal.removeEventListener('abort', abort);
-      unsubscribe();
+      unsubscribe?.();
       this.#turns.finish(
         request.requestId,
         active.controller.signal.aborted ? 'stopped' : 'complete',
