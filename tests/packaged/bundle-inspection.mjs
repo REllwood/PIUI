@@ -14,6 +14,18 @@ export const NODE_PATH = 'Contents/MacOS/piui-node';
 const INFO_PATH = 'Contents/Info.plist';
 const NOTICES_PATH = 'Contents/Resources/resources/THIRD-PARTY-NOTICES.txt';
 const SBOM_PATH = 'Contents/Resources/resources/piui.cdx.json';
+// Tauri copies the configured .icns byte-for-byte under its own file name and
+// names it in Info.plist, so the bundled icon is pinned to the source bytes.
+export const ICON_PATH = 'Contents/Resources/icon.icns';
+export const ICON_SOURCE_PATH = 'src-tauri/icons/icon.icns';
+const ICON_PLIST_NAME = 'icon.icns';
+const BUNDLE_ICON_CONFIG = Object.freeze([
+  'icons/32x32.png',
+  'icons/128x128.png',
+  'icons/128x128@2x.png',
+  'icons/icon.icns',
+  'icons/icon.png',
+]);
 const FORBIDDEN_NAMES = /^(?:\.env(?:\..*)?|\.npmrc|\.netrc|\.git-credentials|auth\.json|credentials\.json|id_(?:rsa|ecdsa|ed25519)|.*\.(?:p12|pfx|pem|key|mobileprovision))$/i;
 const SECRET_TEXT = /(?:-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|\b(?:authorization|proxy-authorization)\s*:\s*(?:bearer|basic)\s+|\b(?:apple|github|npm|updater|openai|anthropic|aws|azure|google)[_-]+(?:api[_-]?key|token|password|secret|private[_-]?key)\s*[=:]\s*[^\s"']+)/i;
 const MACHO_64_LE_BYTES = 0xcffaedfe;
@@ -65,6 +77,19 @@ function inspectXattrs(path, label) {
     throw new Error(`Could not read provenance attribute for ${label}`);
   }
   return value.stdout.replace(/\s+/g, '').toLowerCase();
+}
+
+// Reads one string value from already-held plist bytes (XML or binary) via
+// stdin, so the checked bytes are exactly the inventoried ones.
+function plistString(bytes, key) {
+  const result = spawnSync('/usr/bin/plutil', ['-extract', key, 'raw', '-expect', 'string', '-o', '-', '-'], {
+    input: bytes,
+    encoding: 'utf8',
+    env: { PATH: '/usr/bin:/bin' },
+    maxBuffer: 65_536,
+  });
+  if (result.status !== 0 || result.signal !== null || result.error || !result.stdout.endsWith('\n')) return null;
+  return result.stdout.slice(0, -1);
 }
 
 export async function inventoryBundle(appPath) {
@@ -328,7 +353,7 @@ export async function inspectBundle({
     const entry = files.find((candidate) => candidate.path === `${SIDECAR_ROOT}/${expected.path}`);
     if (!entry || entry.bytes !== expected.bytes || entry.sha256 !== expected.sha256) throw new Error('Bundled sidecar file differs from anchored manifest');
   }
-  const allowedFiles = [INFO_PATH, HOST_PATH, NODE_PATH, NOTICES_PATH, SBOM_PATH, SIDECAR_MANIFEST, ...manifest.files.map((entry) => `${SIDECAR_ROOT}/${entry.path}`)].sort((a, b) => Buffer.from(a).compare(Buffer.from(b)));
+  const allowedFiles = [INFO_PATH, HOST_PATH, NODE_PATH, NOTICES_PATH, SBOM_PATH, ICON_PATH, SIDECAR_MANIFEST, ...manifest.files.map((entry) => `${SIDECAR_ROOT}/${entry.path}`)].sort((a, b) => Buffer.from(a).compare(Buffer.from(b)));
   const sortedFiles = [...filePaths].sort((a, b) => Buffer.from(a).compare(Buffer.from(b)));
   if (JSON.stringify(sortedFiles) !== JSON.stringify(allowedFiles)) throw new Error('Bundle contains a file outside the explicit layout');
   const actualDirectories = inventory.entries.filter((entry) => entry.kind === 'directory').map((entry) => entry.path).sort((a, b) => Buffer.from(a).compare(Buffer.from(b)));
@@ -356,6 +381,19 @@ export async function inspectBundle({
     || !Array.isArray(sbom.components)
     || sbom.components.length < 1) {
     throw new Error('Bundled SBOM is invalid');
+  }
+  const iconEntry = files.find((entry) => entry.path === ICON_PATH);
+  const sourceIconBytes = await readFile(resolve(sourceRoot, ICON_SOURCE_PATH));
+  if (!iconEntry
+    || iconEntry.bytes !== sourceIconBytes.length
+    || iconEntry.sha256 !== sha256(sourceIconBytes)) {
+    throw new Error('Bundled app icon differs from the pinned source icon');
+  }
+  const infoEntry = files.find((entry) => entry.path === INFO_PATH);
+  const infoBytes = await readFile(resolve(inventory.root, INFO_PATH));
+  if (!infoEntry || sha256(infoBytes) !== infoEntry.sha256) throw new Error('Bundle Info.plist changed after inventory');
+  if (plistString(infoBytes, 'CFBundleIconFile') !== ICON_PLIST_NAME) {
+    throw new Error('Bundle Info.plist does not declare the pinned app icon');
   }
 
   const signatureStates = {};
@@ -424,6 +462,7 @@ export async function inspectBundle({
       'resources/THIRD-PARTY-NOTICES.txt',
       'resources/piui.cdx.json',
     ])) throw new Error('Unexpected bundle resource configuration');
+  if (JSON.stringify(config.bundle?.icon) !== JSON.stringify(BUNDLE_ICON_CONFIG)) throw new Error('Unexpected bundle icon configuration');
 
   const hostPath = resolve(inventory.root, HOST_PATH);
   const nodePath = resolve(inventory.root, NODE_PATH);
