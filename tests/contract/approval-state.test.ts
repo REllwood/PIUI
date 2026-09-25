@@ -20,7 +20,9 @@ import {
   type ApprovalRequestPayload,
 } from '../../sidecar/src/bridge/host-requests.js';
 import { canonicaliseApprovalInput, createApprovalGate } from '../../sidecar/src/pi/approval-hook.js';
+import { APPROVAL_CANONICAL_LIMITS } from '../../sidecar/src/pi/approval-canonical.js';
 import { SidecarRouter } from '../../sidecar/src/bridge/router.js';
+import { ProtocolDecoder } from '@piui/protocol/codec';
 
 const context = Object.freeze({
   generation: 7,
@@ -152,15 +154,32 @@ describe('A.17 authoritative approval proof', () => {
     }
   });
 
-  it('enforces exact depth, node and byte bounds plus hostile JavaScript graph rejection', () => {
+  it('enforces exact depth, node and byte bounds plus hostile JavaScript graph rejection', async () => {
+    // Contract C4: 393,216 canonical bytes, 4,096 nodes, depth 16.
+    expect(APPROVAL_CANONICAL_LIMITS).toEqual({ maxBytes: 393_216, maxDepth: 16, maxNodes: 4_096 });
+    const fixture = JSON.parse(await readFile(new URL('../../packages/protocol/fixtures/approval-contract.json', import.meta.url), 'utf8'));
+    const bounds = Object.fromEntries(
+      (fixture.canonicalBounds as Array<Record<string, number | string>>).map((entry) => [entry.name, entry]),
+    ) as Record<string, Record<string, number>>;
     let depth: unknown = 0;
-    for (let index = 0; index < 15; index += 1) depth = [depth];
+    for (let index = 0; index < bounds.depth.validNestedArrays; index += 1) depth = [depth];
     expect(() => canonicaliseApprovalInput({ v: depth })).not.toThrow();
-    expect(() => canonicaliseApprovalInput({ v: [depth] })).toThrow();
-    expect(canonicaliseApprovalInput({ v: Array(254).fill(0) }).bytes.length).toBeLessThan(65_536);
-    expect(() => canonicaliseApprovalInput({ v: Array(255).fill(0) })).toThrow();
-    expect(canonicaliseApprovalInput({ v: 'x'.repeat(65_528) }).bytes.length).toBe(65_536);
-    expect(() => canonicaliseApprovalInput({ v: 'x'.repeat(65_529) })).toThrow();
+    expect(() => canonicaliseApprovalInput({ v: [depth] })).toThrow('approval-input-too-large');
+    expect(bounds.depth.rejectedNestedArrays).toBe(bounds.depth.validNestedArrays + 1);
+    expect(canonicaliseApprovalInput({ v: Array(bounds.nodes.validArrayItems).fill(0) }).bytes.length)
+      .toBeLessThan(APPROVAL_CANONICAL_LIMITS.maxBytes);
+    expect(() => canonicaliseApprovalInput({ v: Array(bounds.nodes.rejectedArrayItems).fill(0) }))
+      .toThrow('approval-input-too-large');
+    expect(bounds.nodes.validArrayItems + 2).toBe(APPROVAL_CANONICAL_LIMITS.maxNodes);
+    expect(canonicaliseApprovalInput({ v: 'x'.repeat(bounds.bytes.validStringBytes) }).bytes.length)
+      .toBe(APPROVAL_CANONICAL_LIMITS.maxBytes);
+    expect(() => canonicaliseApprovalInput({ v: 'x'.repeat(bounds.bytes.rejectedStringBytes) }))
+      .toThrow('approval-input-too-large');
+    // An escaped string whose raw bytes fit but whose canonical text does not.
+    expect(() => canonicaliseApprovalInput({ v: '\n'.repeat(bounds.bytes.validStringBytes / 2 + 1) }))
+      .toThrow('approval-input-too-large');
+    // Floats stay rejected at every size; they are not a size failure.
+    expect(() => canonicaliseApprovalInput({ v: 1.5 })).toThrow('approval-input-rejected');
 
     const accessor = Object.defineProperty({}, 'secret', { enumerable: true, get: () => 'x' });
     const custom = Object.create({ inherited: true }); custom.safe = true;
@@ -170,6 +189,42 @@ describe('A.17 authoritative approval proof', () => {
     for (const value of [accessor, custom, sparse, cycle, symbol, { value: 1.5 }, { value: Number.NaN }, { value: Number.POSITIVE_INFINITY }, { value: -0 }, { value: 9_007_199_254_740_992 }, { value: '\ud800' }]) {
       expect(() => canonicaliseApprovalInput(value)).toThrow('approval-input-rejected');
     }
+  });
+
+  it('carries a maximum C4 input with a full cohort inside the private protocol limits', () => {
+    const written: Buffer[] = [];
+    const client = new HostRequestClient({
+      router: new SidecarRouter(),
+      write: (envelope) => written.push(Buffer.from(`${JSON.stringify(envelope)}\n`, 'utf8')),
+    });
+    const orderedMembers = Array.from({ length: 32 }, (_, ordinal) => ({
+      ordinal,
+      toolCallId: `c4-call-${ordinal.toString().padStart(2, '0')}-${'x'.repeat(100)}`,
+      toolName: `tool_${'y'.repeat(90)}`,
+    }));
+    const descriptor = { assistantEntryId: `assistant-${'z'.repeat(110)}`, orderedMembers };
+    const descriptorCanonical = canonicaliseApprovalInput(descriptor);
+    const cohort = { ...descriptor, cohortDigest: descriptorCanonical.digest };
+    descriptorCanonical.bytes.fill(0);
+    // An ordinary large `write` just under the bound, including escapes.
+    const content = 'line of source code\n'.repeat(18_500);
+    const input = { path: 'src/generated.ts', content };
+    const canonical = canonicaliseApprovalInput(input);
+    expect(canonical.bytes.length).toBeGreaterThan(385_000);
+    expect(canonical.bytes.length).toBeLessThanOrEqual(APPROVAL_CANONICAL_LIMITS.maxBytes);
+    const pending = client.requestApproval({
+      method: 'approval.request', schemaVersion: 2, ...context,
+      invocationId: `invocation-${'7'.repeat(32)}`,
+      toolCallId: orderedMembers[0].toolCallId, toolName: orderedMembers[0].toolName,
+      inputDigest: canonical.digest, input, cohort,
+    }).catch((error: unknown) => error);
+    canonical.bytes.fill(0);
+    expect(client.pendingApprovalCount).toBe(1);
+    expect(written).toHaveLength(1);
+    const decoded = new ProtocolDecoder().decode(written[0]);
+    expect(decoded.payload.inputDigest).toBe(canonical.digest);
+    client.disconnect();
+    return pending;
   });
 
   it('keeps approval and credential capacities independent and correlations exact', async () => {

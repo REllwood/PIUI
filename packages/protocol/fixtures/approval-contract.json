@@ -91,7 +91,7 @@
   ],
   "canonicalBounds": [
     {"name":"depth","validNestedArrays":15,"rejectedNestedArrays":16},
-    {"name":"nodes","validArrayItems":254,"rejectedArrayItems":255},
-    {"name":"bytes","validStringBytes":65528,"rejectedStringBytes":65529}
+    {"name":"nodes","validArrayItems":4094,"rejectedArrayItems":4095},
+    {"name":"bytes","validStringBytes":393208,"rejectedStringBytes":393209}
   ]
 }

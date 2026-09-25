@@ -11,6 +11,7 @@ import {
   APPROVAL_CANONICAL_LIMITS,
   canonicaliseApprovalInput,
   deepFreezeApprovalValue,
+  isApprovalInputTooLarge,
 } from './approval-canonical.js';
 import type {
   PublicAgentSession,
@@ -20,6 +21,10 @@ import type {
 } from './public-sdk.js';
 
 const FIXED_BLOCK_REASON = 'This action was not approved.';
+// Seen by the model when only the C4 review bound was exceeded, so it can
+// retry the same change as several smaller tool calls.
+const TOO_LARGE_BLOCK_REASON =
+  'This action was too large to review, so it was not approved. Split the change into several smaller tool calls.';
 const MAX_COHORT_MEMBERS = 32;
 const MAX_ACTIVE_COHORTS = 64;
 const MAX_ACTIVE_MEMBERS = 128;
@@ -83,6 +88,8 @@ type CohortState = {
   timer: ReturnType<typeof setTimeout>;
   failed: boolean;
   abandonSent: boolean;
+  /** True once any member's approval.request has been written to the host. */
+  hostRegistered: boolean;
   completed: number;
 };
 
@@ -273,6 +280,7 @@ function createCohort(
     timer,
     failed: false,
     abandonSent: false,
+    hostRegistered: false,
     completed: 0,
   };
 }
@@ -352,6 +360,10 @@ export function createApprovalGate(
     }
     if (cohort.abandonSent) return;
     cohort.abandonSent = true;
+    // The host only knows cohorts it has seen a request for. With none sent it
+    // has nothing to cancel, and an abandon for an unknown cohort is fatal to
+    // the whole generation there; the local tombstone alone keeps it closed.
+    if (!cohort.hostRegistered) return;
     void host
       .abandonApproval({
         method: 'approval.abandon',
@@ -475,6 +487,7 @@ export function createApprovalGate(
         const originalInput = event.input;
         let canonical: ReturnType<typeof canonicaliseApprovalInput> | undefined;
         let cohort: CohortState | undefined;
+        let inputTooLarge = false;
         try {
           const descriptor = deriveCohort(ctx, event.toolCallId, event.toolName);
           const key = privateCohortKey(context, descriptor);
@@ -509,7 +522,12 @@ export function createApprovalGate(
             throw new Error('approval-cohort-rejected');
           }
 
-          canonical = canonicaliseApprovalInput(originalInput);
+          try {
+            canonical = canonicaliseApprovalInput(originalInput);
+          } catch (error) {
+            inputTooLarge = isApprovalInputTooLarge(error);
+            throw error;
+          }
           const invocationId = opaque('invocation');
           const approval = host
             .requestApproval({
@@ -530,6 +548,7 @@ export function createApprovalGate(
               (grant) => Object.freeze({ grant, failed: false }),
               () => Object.freeze({ failed: true }),
             );
+          cohort.hostRegistered = true;
           const pending: PendingInvocation = {
             invocationId,
             toolCallId: event.toolCallId,
@@ -551,7 +570,7 @@ export function createApprovalGate(
           return undefined;
         } catch {
           if (cohort && !cohort.failed) abandon(cohort, 'extension-error');
-          return { block: true, reason: FIXED_BLOCK_REASON };
+          return { block: true, reason: inputTooLarge ? TOO_LARGE_BLOCK_REASON : FIXED_BLOCK_REASON };
         } finally {
           canonical?.bytes.fill(0);
         }
