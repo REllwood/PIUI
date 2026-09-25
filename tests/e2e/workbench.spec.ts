@@ -141,6 +141,45 @@ test('the work trace keeps the event waiting on the person in view', async ({ pa
   await expect(summary).toContainText('Waiting for your approval');
 });
 
+for (const viewport of [
+  { width: 1280, height: 800 },
+  { width: 680, height: 560 },
+]) {
+  test(`approval decisions stay in reach at ${viewport.width}×${viewport.height}`, async ({
+    page,
+  }) => {
+    await page.setViewportSize(viewport);
+    await page.goto('/?fixture=product');
+    const review = page.getByRole('complementary', { name: 'Context review' });
+    if (!(await review.isVisible())) {
+      await page.getByRole('button', { name: /Open 1 pending approval/ }).click();
+    }
+    const approve = review.getByRole('button', { name: 'Approve once' });
+    const deny = review.getByRole('button', { name: 'Deny' });
+    // Both decisions are on screen and uncovered without scrolling the request details.
+    for (const action of [approve, deny]) {
+      await expect(action).toBeInViewport({ ratio: 1 });
+      expect(
+        await action.evaluate((button) => {
+          const box = button.getBoundingClientRect();
+          return button.contains(
+            document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2),
+          );
+        }),
+      ).toBe(true);
+    }
+    // The details still scroll beneath the pinned actions, and the actions follow them in
+    // reading and tab order.
+    const reversible = review.getByText('Reversible', { exact: true });
+    await reversible.scrollIntoViewIfNeeded();
+    await expect(reversible).toBeInViewport();
+    await expect(approve).toBeInViewport({ ratio: 1 });
+    await review.getByRole('region', { name: 'Command' }).focus();
+    await page.keyboard.press('Tab');
+    await expect(deny).toBeFocused();
+  });
+}
+
 test('compact navigation hides its controls and keeps keyboard focus in the drawer', async ({
   page,
 }) => {

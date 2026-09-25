@@ -460,12 +460,36 @@
   color: var(--success);
   background: var(--accent-surface);
 }
+/* The decision stays in reach however long the request is: the actions form a footer
+   pinned to the bottom of the scrolling context plane, after the details in reading and
+   tab order. */
+.approval-surface {
+  --approval-inset: clamp(18px, 3cqi, 28px);
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 0;
+}
+.approval-surface > .status-pill {
+  align-self: flex-start;
+}
+.approval-surface > :last-child:not(.approval-surface__actions) {
+  margin-bottom: var(--approval-inset);
+}
+.context-plane:has(> .approval-surface) {
+  scroll-padding-bottom: 96px;
+}
 .approval-surface__actions {
+  position: sticky;
+  z-index: 1;
+  bottom: 0;
   display: flex;
   justify-content: flex-end;
   flex-wrap: wrap;
   gap: 8px;
-  margin-top: 24px;
+  margin: auto calc(-1 * var(--approval-inset)) 0;
+  padding: 14px var(--approval-inset) var(--approval-inset);
+  border-top: 1px solid var(--divider);
+  background: var(--surface-raised);
 }
 .approval-subject {
   margin-top: 18px;
@@ -907,6 +931,13 @@
     inset: 0;
     width: 100%;
     border-radius: var(--radius-plane);
+  }
+  /* A short window leaves the overlay little height, so the pinned decision bar is slimmer. */
+  .approval-surface__actions {
+    padding-block: 10px 12px;
+  }
+  .context-plane:has(> .approval-surface) {
+    scroll-padding-bottom: 72px;
   }
   .conversation-work {
     display: none;
