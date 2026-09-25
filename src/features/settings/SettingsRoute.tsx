@@ -4,6 +4,7 @@ import { Icon, type IconName } from '../../components/icons/Icon';
 import { LoadingLabel } from '../../components/primitives/LoadingLabel';
 import { StatusPill } from '../../components/primitives/StatusPill';
 import { redactForDisplay } from '../../domain/errors';
+import { visibleLogLines } from '../../domain/logs';
 import { isTurnActive } from '../../domain/machines';
 import { DEFAULT_THINKING_LEVEL, isThinkingLevel, thinkingChoices } from '../../domain/thinking';
 import { AppearanceControls, Toggle } from '../appearance/AppearanceControls';
@@ -1213,13 +1214,10 @@ function LogsSection() {
   const product = useProduct();
   const [query, setQuery] = useState('');
   const [severity, setSeverity] = useState('all');
-  const visible = product.diagnosticLogs.filter((line) => {
-    const normalised = line.toLowerCase();
-    return (
-      normalised.includes(query.toLowerCase()) &&
-      (severity === 'all' || normalised.includes(severity))
-    );
-  });
+  const visible = useMemo(
+    () => visibleLogLines(product.diagnosticLogs, query, severity),
+    [product.diagnosticLogs, query, severity],
+  );
   return (
     <SectionGroup
       title="Redacted local logs"
@@ -1250,7 +1248,7 @@ function LogsSection() {
       <div className="log-list" role="log" aria-label="Local redacted log entries">
         {visible.map((line, index) => (
           <div key={`${index}-${line.slice(0, 40)}`} className="ui-mono">
-            {redactForDisplay(line)}
+            {line}
           </div>
         ))}
         {visible.length === 0 ? (
