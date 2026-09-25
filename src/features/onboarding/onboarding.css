@@ -475,7 +475,8 @@
 .trust-choices .button {
   margin-top: 12px;
 }
-.trust-disclaimer {
+/* Scoped to the preview so it outranks `.project-preview p` and keeps its spacing and tone. */
+.project-preview .trust-disclaimer {
   margin-top: 16px;
   padding-left: 12px;
   border-left: 2px solid var(--warning);

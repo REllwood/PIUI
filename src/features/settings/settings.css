@@ -442,7 +442,8 @@
 .resource-card .button {
   margin-top: 12px;
 }
-.resource-warning {
+/* Scoped to the card so it outranks `.resource-card p` and keeps the warning tone. */
+.resource-card .resource-warning {
   padding-left: 10px;
   border-left: 2px solid var(--warning);
   color: var(--warning);

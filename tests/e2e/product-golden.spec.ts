@@ -7,6 +7,18 @@ async function openFixture(page: Page, viewport = { width: 1577, height: 877 }) 
   await expect(page.locator('[data-test-fixture="product"]')).toBeVisible();
 }
 
+// Resolves a theme token to the computed colour string the browser reports for text.
+async function tokenColour(page: Page, token: string): Promise<string> {
+  return page.evaluate((name) => {
+    const probe = document.createElement('span');
+    probe.style.color = `var(${name})`;
+    document.body.append(probe);
+    const colour = getComputedStyle(probe).color;
+    probe.remove();
+    return colour;
+  }, token);
+}
+
 async function expectNoHorizontalOverflow(page: Page) {
   const overflow = await page.evaluate(
     () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
@@ -105,6 +117,11 @@ test('advanced package lifecycle is explicit, acknowledged and visibly pending',
 
   const card = page.locator('.resource-card').filter({ hasText: '@piui/fixture-package' });
   await expect(card.getByText('Disabled', { exact: true })).toBeVisible();
+  // The executable-code warning keeps its warning tone rather than the muted card copy.
+  await expect(card.getByText(/This code runs with your permissions/)).toHaveCSS(
+    'color',
+    await tokenColour(page, '--warning'),
+  );
   page.once('dialog', (dialog) => dialog.accept());
   await card.getByRole('button', { name: 'Update' }).click();
   await expect(page.getByText('Updating…')).toBeVisible();
