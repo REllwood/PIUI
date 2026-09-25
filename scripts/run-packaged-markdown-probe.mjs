@@ -177,6 +177,8 @@ const BUNDLE_KEYS = Object.freeze([
 
 const FRONTEND_INVENTORY_KEYS = Object.freeze([
   'fileCount',
+  'hostileFixtureChunks',
+  'hostileFixtureSha256',
   'inventorySha256',
   'javascriptRegexEngineChunks',
   'moduleProvenanceSha256',
@@ -247,7 +249,20 @@ const A26_REQUIRED_ROUTE_MODULE_KINDS = Object.freeze(
     kind !== 'a26-engine-oniguruma' && kind !== 'a26-wasm-module'
   )),
 );
-const A26_PROVENANCE_KEYS = Object.freeze(['chunks', 'schemaVersion']);
+// The product renderer ships the same highlighter, but only the flagged A.26 probe build
+// may carry the hostile fixture. A production build must contain no trace of it.
+const A26_PRODUCTION_ROUTE_MODULE_KINDS = Object.freeze(
+  A26_REQUIRED_ROUTE_MODULE_KINDS.filter((kind) => kind !== 'a26-hostile-fixture'),
+);
+export const A26_FRONTEND_ROLES = Object.freeze(['automation', 'production']);
+// Fixture-only markers that survive bundling as plain bytes. They appear nowhere in the
+// application source, so a production file containing one carries the fixture.
+export const A26_HOSTILE_FIXTURE_CANARIES = Object.freeze([
+  'custom-element-canary',
+  'custom-fetch-probe',
+  'srcset-canary',
+]);
+const A26_PROVENANCE_KEYS = Object.freeze(['chunks', 'hostileFixtureSha256', 'schemaVersion']);
 const A26_PROVENANCE_CHUNK_KEYS = Object.freeze([
   'assets',
   'css',
@@ -306,7 +321,10 @@ export function parseA26ModuleProvenance(bytes) {
   if (value.schemaVersion !== 1
     || !Array.isArray(value.chunks)
     || value.chunks.length < 1
-    || value.chunks.length > 4_096) fail();
+    || value.chunks.length > 4_096
+    || !(value.hostileFixtureSha256 === null
+      || (typeof value.hostileFixtureSha256 === 'string'
+        && SHA256.test(value.hostileFixtureSha256)))) fail();
   const chunks = [];
   let previousFileName;
   for (const chunk of value.chunks) {
@@ -337,11 +355,20 @@ export function parseA26ModuleProvenance(bytes) {
     }));
   }
   const chunkNames = new Set(chunks.map((chunk) => chunk.fileName));
+  const carriesHostileFixture = chunks.some((chunk) => (
+    chunk.moduleKinds.includes('a26-hostile-fixture')
+  ));
   if (chunks.filter((chunk) => chunk.isEntry).length < 1
     || chunks.some((chunk) => (
       [...chunk.imports, ...chunk.dynamicImports].some((path) => !chunkNames.has(path))
-    ))) fail();
-  return Object.freeze({ schemaVersion: 1, chunks: Object.freeze(chunks) });
+    ))
+    // A fixture digest is recorded exactly when a chunk carries the fixture module.
+    || carriesHostileFixture !== (value.hostileFixtureSha256 !== null)) fail();
+  return Object.freeze({
+    schemaVersion: 1,
+    chunks: Object.freeze(chunks),
+    hostileFixtureSha256: value.hostileFixtureSha256,
+  });
 }
 
 function indexResourcePaths(indexBytes) {
@@ -349,17 +376,29 @@ function indexResourcePaths(indexBytes) {
   const html = indexBytes.toString('utf8');
   if (!Buffer.from(html, 'utf8').equals(indexBytes)) fail();
   const resources = new Set();
+  // Vite emits `<link rel="modulepreload">` for chunks the entry imports statically.
+  // They are fetched up front but are not entries, so they are kept apart from scripts.
+  const scripts = new Set();
+  const preloads = new Set();
   for (const tag of html.matchAll(/<(?:script|link)\b[^>]*>/giu)) {
+    const isScript = /^<script\b/iu.test(tag[0]);
+    const isPreload = /\brel="modulepreload"/iu.test(tag[0]);
     for (const attribute of tag[0].matchAll(/\b(?:src|href)="([^"]+)"/gu)) {
       const path = attribute[1];
       if (!path.startsWith('/')) continue;
       const relativePath = path.slice(1);
       if (!A26_OUTPUT_PATH.test(relativePath)) fail();
       resources.add(relativePath);
+      if (isScript) scripts.add(relativePath);
+      if (isPreload) preloads.add(relativePath);
     }
   }
   if (resources.size < 1 || resources.size > 4_095) fail();
-  return Object.freeze([...resources].sort());
+  return Object.freeze({
+    all: Object.freeze([...resources].sort()),
+    preloads: Object.freeze([...preloads].sort()),
+    scripts: Object.freeze([...scripts].sort()),
+  });
 }
 
 function containsRawWasmMagic(bytes) {
@@ -375,7 +414,12 @@ function containsEncodedWasmPayload(bytes) {
     || /(?:^|[^A-Za-z0-9_.-])(?:[A-Za-z0-9_./-]+\.wasm)(?:[^A-Za-z0-9_.-]|$)/iu.test(text);
 }
 
-export function deriveA26FrontendInventory(frontend, provenanceBytes) {
+function containsHostileFixtureCanary(bytes) {
+  return A26_HOSTILE_FIXTURE_CANARIES.some((canary) => bytes.includes(Buffer.from(canary, 'utf8')));
+}
+
+export function deriveA26FrontendInventory(frontend, provenanceBytes, role) {
+  if (!A26_FRONTEND_ROLES.includes(role)) fail();
   if (!Array.isArray(frontend)
     || frontend.length < 2
     || frontend.length > 4_096
@@ -405,11 +449,28 @@ export function deriveA26FrontendInventory(frontend, provenanceBytes) {
   const chunkByName = new Map(provenance.chunks.map((chunk) => [chunk.fileName, chunk]));
   const indexFile = frontendByPath.get('index.html');
   if (!indexFile) fail();
-  const indexResources = indexResourcePaths(indexFile.bytes);
+  const indexReferences = indexResourcePaths(indexFile.bytes);
+  const indexResources = indexReferences.all;
   if (indexResources.some((path) => !frontendByPath.has(path))) fail();
 
-  const entryChunks = indexResources.filter((path) => chunkByName.has(path));
+  const entryChunks = indexReferences.scripts.filter((path) => chunkByName.has(path));
   if (entryChunks.length < 1 || entryChunks.some((path) => !chunkByName.get(path).isEntry)) fail();
+  // A preloaded chunk must be one the entries import statically, never a lazy route.
+  const staticallyImported = new Set();
+  const importQueue = [...entryChunks];
+  while (importQueue.length > 0) {
+    const name = importQueue.shift();
+    if (staticallyImported.has(name)) continue;
+    staticallyImported.add(name);
+    const chunk = chunkByName.get(name);
+    if (!chunk) fail();
+    importQueue.push(...chunk.imports);
+  }
+  if (indexResources.some((path) => (
+    chunkByName.has(path)
+    && !indexReferences.scripts.includes(path)
+    && !(indexReferences.preloads.includes(path) && staticallyImported.has(path))
+  ))) fail();
   const dynamicallyReachable = new Set();
   const allQueue = [...entryChunks];
   while (allQueue.length > 0) {
@@ -421,12 +482,30 @@ export function deriveA26FrontendInventory(frontend, provenanceBytes) {
     allQueue.push(...chunk.imports, ...chunk.dynamicImports);
   }
 
+  const requiredRouteKinds = role === 'automation'
+    ? A26_REQUIRED_ROUTE_MODULE_KINDS
+    : A26_PRODUCTION_ROUTE_MODULE_KINDS;
   const routeRootChunks = provenance.chunks.filter((chunk) => (
-    chunk.moduleKinds.some((kind) => A26_REQUIRED_ROUTE_MODULE_KINDS.includes(kind))
+    chunk.moduleKinds.some((kind) => requiredRouteKinds.includes(kind))
   ));
   const observedKinds = new Set(routeRootChunks.flatMap((chunk) => chunk.moduleKinds));
-  if (A26_REQUIRED_ROUTE_MODULE_KINDS.some((kind) => !observedKinds.has(kind))
+  if (requiredRouteKinds.some((kind) => !observedKinds.has(kind))
     || routeRootChunks.some((chunk) => !dynamicallyReachable.has(chunk.fileName))) fail();
+
+  const hostileFixtureChunkNames = new Set(provenance.chunks
+    .filter((chunk) => chunk.moduleKinds.includes('a26-hostile-fixture'))
+    .map((chunk) => chunk.fileName));
+  const hostileCanaryFiles = frontend.filter((file) => containsHostileFixtureCanary(file.bytes));
+  if (role === 'production') {
+    // Production ships no fixture module, no fixture digest and no fixture bytes.
+    if (hostileFixtureChunkNames.size !== 0
+      || provenance.hostileFixtureSha256 !== null
+      || hostileCanaryFiles.length !== 0) fail();
+  } else if (hostileFixtureChunkNames.size < 1
+    // The probe build carries exactly the pinned fixture, and only in its fixture chunks.
+    || provenance.hostileFixtureSha256 !== A26_HOSTILE_FIXTURE_SHA256
+    || hostileCanaryFiles.length < 1
+    || hostileCanaryFiles.some((file) => !hostileFixtureChunkNames.has(file.path))) fail();
 
   const selectedResources = new Set(indexResources);
   const staticQueue = [...entryChunks, ...routeRootChunks.map((chunk) => chunk.fileName)];
@@ -459,6 +538,8 @@ export function deriveA26FrontendInventory(frontend, provenanceBytes) {
   }
   const evidence = Object.freeze({
     fileCount: frontend.length,
+    hostileFixtureChunks: hostileFixtureChunkNames.size,
+    hostileFixtureSha256: provenance.hostileFixtureSha256,
     inventorySha256: createHash('sha256')
       .update(Buffer.from(`${JSON.stringify(canonicalFiles)}\n`, 'utf8'))
       .digest('hex'),
@@ -638,7 +719,8 @@ function assertDriver(value) {
   return Object.freeze({ ...value });
 }
 
-export function assertA26FrontendInventory(value) {
+export function assertA26FrontendInventory(value, role) {
+  if (!A26_FRONTEND_ROLES.includes(role)) fail();
   exactKeys(value, FRONTEND_INVENTORY_KEYS);
   exactSha(value.inventorySha256);
   exactSha(value.moduleProvenanceSha256);
@@ -655,7 +737,13 @@ export function assertA26FrontendInventory(value) {
     || value.onigurumaEngineChunks !== 0
     || !Number.isSafeInteger(value.javascriptRegexEngineChunks)
     || value.javascriptRegexEngineChunks < 1
-    || value.javascriptRegexEngineChunks > value.resourceAllowlistEntries) fail();
+    || value.javascriptRegexEngineChunks > value.resourceAllowlistEntries
+    || !Number.isSafeInteger(value.hostileFixtureChunks)) fail();
+  if (role === 'production'
+    ? value.hostileFixtureChunks !== 0 || value.hostileFixtureSha256 !== null
+    : value.hostileFixtureChunks < 1
+      || value.hostileFixtureChunks > value.resourceAllowlistEntries
+      || value.hostileFixtureSha256 !== A26_HOSTILE_FIXTURE_SHA256) fail();
   return Object.freeze({ ...value });
 }
 
@@ -665,10 +753,11 @@ export function assertA26BundleEvidence(value) {
     || value.automationWebdriverIncluded !== true
     || value.cspExact !== true
     || value.piuiRasterOnlyImageAddition !== true) fail();
-  const productionFrontend = assertA26FrontendInventory(value.productionFrontend);
-  const automationFrontend = assertA26FrontendInventory(value.automationFrontend);
+  const productionFrontend = assertA26FrontendInventory(value.productionFrontend, 'production');
+  const automationFrontend = assertA26FrontendInventory(value.automationFrontend, 'automation');
   const repeatAutomationFrontend = assertA26FrontendInventory(
     value.repeatAutomationFrontend,
+    'automation',
   );
   if (!isDeepStrictEqual(automationFrontend, repeatAutomationFrontend)) fail();
   return Object.freeze({

@@ -40,6 +40,18 @@ export function reduceAuth(state: AuthState, event: AuthEvent): AuthState {
   return state;
 }
 
+const ACTIVE_TURN_STATUSES: ReadonlySet<TurnStatus> = new Set([
+  'sending',
+  'streaming',
+  'tool-running',
+  'stop-requested',
+  'cancel-too-late',
+]);
+
+export function isTurnActive(status: TurnStatus): boolean {
+  return ACTIVE_TURN_STATUSES.has(status);
+}
+
 const turnTransitions: Readonly<Record<TurnStatus, readonly TurnStatus[]>> = {
   idle: ['sending', 'offline-queued'],
   sending: ['streaming', 'failed', 'stop-requested'],

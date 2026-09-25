@@ -103,9 +103,17 @@ export type ActivityEvent = Readonly<{
 }>;
 
 export type ApprovalDecision = 'approve-once' | 'approve-project' | 'deny';
+// Exactly what an approval would run or change. Shown only as plain text.
+export type ApprovalSubject = Readonly<{
+  label: 'Command' | 'File' | 'Folder' | 'Pattern' | 'Address' | 'Search';
+  text: string;
+  truncated: boolean;
+}>;
 export type ApprovalRequest = Readonly<{
   id: string;
   decisionId: string;
+  // The host's revision of this approval; a new revision may carry a new expiry.
+  revision?: number;
   state:
     | 'policy-check'
     | 'awaiting'
@@ -125,6 +133,7 @@ export type ApprovalRequest = Readonly<{
   permittedDecisions: readonly ApprovalDecision[];
   rememberedScopeEligible: boolean;
   scopeIds?: readonly string[];
+  subject?: ApprovalSubject | null;
 }>;
 
 export type FileChange = Readonly<{

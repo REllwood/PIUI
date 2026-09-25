@@ -5,6 +5,7 @@ import { StatusPill } from '../../components/primitives/StatusPill';
 export function ChooseProjectStep({
   project,
   busy,
+  error = null,
   onChoose,
   onTrust,
 }: Readonly<{
@@ -15,6 +16,7 @@ export function ChooseProjectStep({
     trust: 'untrusted' | 'trusted' | 'revoked';
   }> | null;
   busy: boolean;
+  error?: string | null;
   onChoose: () => Promise<void>;
   onTrust: () => Promise<void>;
 }>) {
@@ -42,6 +44,11 @@ export function ChooseProjectStep({
             </>
           )}
         </button>
+        {error ? (
+          <div className="inline-notice" data-tone="warning" role="alert">
+            {error}
+          </div>
+        ) : null}
       </div>
       <section className="project-preview">
         {project ? (

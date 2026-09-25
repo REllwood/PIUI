@@ -16,7 +16,7 @@ export type HandshakeState =
   | { status: 'ready' }
   | {
       status: 'incompatible';
-      message: 'PIUI’s local helper is incompatible. Reinstall PIUI or open Diagnostics.';
+      message: "PIUI's local helper is incompatible. Reinstall PIUI or open Diagnostics.";
     };
 
 export function acceptHandshake(
@@ -43,6 +43,6 @@ export function acceptHandshake(
     ? { status: 'ready' }
     : {
         status: 'incompatible',
-        message: 'PIUI’s local helper is incompatible. Reinstall PIUI or open Diagnostics.',
+        message: "PIUI's local helper is incompatible. Reinstall PIUI or open Diagnostics.",
       };
 }

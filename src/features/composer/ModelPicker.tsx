@@ -2,29 +2,19 @@ import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useProduct } from '../../app/ProductContext';
 import { Icon } from '../../components/icons/Icon';
 import { LoadingLabel } from '../../components/primitives/LoadingLabel';
+import { productErrorMessage } from '../../domain/errors';
+import { isTurnActive } from '../../domain/machines';
+import {
+  DEFAULT_THINKING_LEVEL,
+  isThinkingLevel,
+  thinkingChoices,
+  thinkingOption,
+  type ThinkingLevel,
+} from '../../domain/thinking';
 import './model-picker.css';
 
-const thinkingOptions = [
-  { value: 'off', label: 'Off', detail: 'Respond without extended thinking.' },
-  { value: 'minimal', label: 'Minimal', detail: 'A little thinking for straightforward tasks.' },
-  { value: 'low', label: 'Quick', detail: 'Keep thinking brief for everyday questions.' },
-  { value: 'medium', label: 'Balanced', detail: 'A balance of depth and response time.' },
-  { value: 'high', label: 'Deep', detail: 'Spend more time on complex changes and decisions.' },
-  { value: 'xhigh', label: 'Extended', detail: 'The most thinking time for demanding work.' },
-] as const;
-
-const activeTurnStates = new Set([
-  'sending',
-  'streaming',
-  'tool-running',
-  'stop-requested',
-  'cancel-too-late',
-]);
-
-type ThinkingLevel = (typeof thinkingOptions)[number]['value'];
-
 function thinkingLevel(value: unknown): ThinkingLevel {
-  return thinkingOptions.find((option) => option.value === value)?.value ?? 'medium';
+  return isThinkingLevel(value) ? value : DEFAULT_THINKING_LEVEL;
 }
 
 export function ModelPicker() {
@@ -40,7 +30,7 @@ export function ModelPicker() {
   const [query, setQuery] = useState('');
   const [providerId, setProviderId] = useState('');
   const [modelId, setModelId] = useState('');
-  const [thinking, setThinking] = useState<ThinkingLevel>('medium');
+  const [thinking, setThinking] = useState<ThinkingLevel>(DEFAULT_THINKING_LEVEL);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const titleId = useId();
@@ -54,14 +44,13 @@ export function ModelPicker() {
     (provider) => provider.id === providerSetting?.value,
   );
   const currentModel = currentProvider?.models.find((model) => model.id === modelSetting?.value);
-  const currentThinking = thinkingOptions.find(
-    (option) => option.value === thinkingLevel(thinkingSetting?.value),
-  );
+  const currentThinking = thinkingOption(thinkingLevel(thinkingSetting?.value));
+  const thinkingOptions = thinkingChoices(thinkingSetting?.value);
   const selectedProvider = snapshot.providers.find(
     (provider) => provider.connected && provider.id === providerId,
   );
   const selectedModel = selectedProvider?.models.find((model) => model.id === modelId);
-  const turnActive = activeTurnStates.has(snapshot.turnStatus);
+  const turnActive = isTurnActive(snapshot.turnStatus);
   const busy = saving || product.activeOperation !== null || turnActive;
   const connectedProviders = snapshot.providers.filter(
     (provider) => provider.connected && provider.models.length > 0,
@@ -160,9 +149,11 @@ export function ModelPicker() {
         savingRef.current = false;
         close();
       }
-    } catch {
+    } catch (error) {
       if (mountedRef.current) {
-        setError('Your choice could not be fully saved. Review it and try again.');
+        setError(
+          productErrorMessage(error, 'Your choice could not be fully saved. Review it and try again.'),
+        );
       }
     } finally {
       savingRef.current = false;

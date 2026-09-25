@@ -4,18 +4,38 @@ import {
   canActivateUpdates,
   createQueueItem,
   failQueueItem,
+  isTurnActive,
   reduceAuth,
   requestUpdateCheck,
   submitApproval,
   transitionTurn,
 } from './machines';
-import type { ApprovalRequest, UpdateState } from './types';
+import type { ApprovalRequest, TurnStatus, UpdateState } from './types';
 
 describe('domain state machines', () => {
   it('rejects illegal turn transitions and accepts terminal recovery', () => {
     expect(transitionTurn('idle', 'complete')).toBe('idle');
     expect(transitionTurn('streaming', 'complete')).toBe('complete');
     expect(transitionTurn('failed', 'sending')).toBe('sending');
+  });
+
+  it('treats only in-flight turn states as active', () => {
+    const active: readonly TurnStatus[] = [
+      'sending',
+      'streaming',
+      'tool-running',
+      'stop-requested',
+      'cancel-too-late',
+    ];
+    const settled: readonly TurnStatus[] = [
+      'idle',
+      'stopped',
+      'failed',
+      'complete',
+      'offline-queued',
+    ];
+    for (const status of active) expect(isTurnActive(status), status).toBe(true);
+    for (const status of settled) expect(isTurnActive(status), status).toBe(false);
   });
 
   it('preserves queue identity while acknowledgement assigns one ordering number', () => {

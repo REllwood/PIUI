@@ -4,9 +4,12 @@ import { type AppCommandId } from './commands';
 import { CommandMenu } from './CommandMenu';
 import { ComposerDraftProvider } from '../features/composer/ComposerDrafts';
 import { CommandRouter } from './CommandRouter';
+import { productErrorMessage } from '../domain/errors';
+import { isTurnActive } from '../domain/machines';
+import { canCreateConversation } from '../domain/readiness';
 import { MainToolbar } from './MainToolbar';
 import { NavigationPlane } from './NavigationPlane';
-import { useProduct } from './ProductContext';
+import { useProduct, type OperationId } from './ProductContext';
 import { RouteHost } from './RouteHost';
 import {
   closeNativeMainWindow,
@@ -15,6 +18,23 @@ import {
   setNativeMenuEnabledState,
 } from '../platform/native';
 import { LoadingLabel } from '../components/primitives/LoadingLabel';
+
+// Keyed on every operation so a new one cannot ship without its own status copy.
+const OPERATION_LABELS: Readonly<Record<OperationId, string>> = {
+  send: 'Sending to Pi…',
+  stop: 'Stopping Pi…',
+  queue: 'Queuing follow-up…',
+  approval: 'Recording your decision…',
+  settings: 'Saving changes…',
+  diagnostics: 'Checking PIUI…',
+  provider: 'Updating provider connection…',
+  project: 'Updating project access…',
+  update: 'Checking for updates…',
+  session: 'Updating session…',
+  export: 'Exporting a copy…',
+  change: 'Updating file changes…',
+  resource: 'Updating Pi resource…',
+};
 
 export function AppShell() {
   const product = useProduct();
@@ -27,14 +47,8 @@ export function AppShell() {
   const pendingApproval = product.snapshot.approvals.find(
     (approval) => approval.state === 'awaiting' || approval.state === 'unacknowledged',
   );
-  const turnRunning = ['sending', 'streaming', 'tool-running', 'stop-requested', 'cancel-too-late'].includes(
-    product.snapshot.turnStatus,
-  );
-  const canCreate =
-    product.snapshot.workspace?.trust === 'trusted' &&
-    product.snapshot.providers.some((provider) => provider.connected && provider.models.length > 0) &&
-    !turnRunning &&
-    product.activeOperation === null;
+  const turnRunning = isTurnActive(product.snapshot.turnStatus);
+  const canCreate = canCreateConversation(product.snapshot, product.activeOperation);
   useEffect(() => {
     const query = window.matchMedia('(max-width: 760px)');
     const update = () => {
@@ -96,8 +110,10 @@ export function AppShell() {
       if (!commandEnabled(command)) return;
       setCommandError(null);
       const run = (operation: Promise<unknown>) => {
-        void operation.catch(() =>
-          setCommandError('That action could not be completed. Please try again.'),
+        void operation.catch((error: unknown) =>
+          setCommandError(
+            productErrorMessage(error, 'That action could not be completed. Please try again.'),
+          ),
         );
       };
       if (command === 'open-settings') product.openSettings();
@@ -193,17 +209,7 @@ export function AppShell() {
       ) : null}
       {product.activeOperation ? (
         <div className="global-operation-status" role="status">
-          <LoadingLabel>
-            {product.activeOperation === 'project'
-              ? 'Updating project access…'
-              : product.activeOperation === 'provider'
-                ? 'Updating provider connection…'
-                : product.activeOperation === 'session'
-                  ? 'Updating session…'
-                  : product.activeOperation === 'resource'
-                    ? 'Updating Pi resource…'
-                    : 'Working…'}
-          </LoadingLabel>
+          <LoadingLabel>{OPERATION_LABELS[product.activeOperation]}</LoadingLabel>
         </div>
       ) : null}
       <CommandMenu

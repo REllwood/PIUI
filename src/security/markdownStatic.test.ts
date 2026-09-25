@@ -114,6 +114,31 @@ describe('Markdown static containment', () => {
     }
   });
 
+  it('keeps test fixtures and probe styling out of the production renderer', () => {
+    const renderer = `${source(componentPath)}\n${source(resolve(root, 'src/components/markdown/SafeMarkdown.tsx'))}`;
+    expect(renderer).not.toContain('tests/fixtures');
+    expect(renderer).not.toContain('markdown-probe__');
+    expect(renderer).not.toContain('__PIUI_MARKDOWN_HARNESS__');
+  });
+
+  it('only creates probe routes behind a development or test-build gate', () => {
+    const app = source(resolve(root, 'src/App.tsx'));
+    const probeImports = [
+      "import('./architecture-gate/CredentialProbe')",
+      "import('./architecture-gate/LifecycleProbe')",
+      "import('./architecture-gate/MarkdownProbe')",
+      "import('./architecture-gate/StreamProbe')",
+      "import('./architecture-gate/AccessibilityProbe')",
+      "import('./security/SafeMarkdownSpikeRoute')",
+    ];
+    for (const probe of probeImports) {
+      const index = app.indexOf(probe);
+      expect(index, probe).toBeGreaterThan(-1);
+      const declaration = app.slice(app.lastIndexOf('\nconst ', index), index);
+      expect(declaration, probe).toMatch(/import\.meta\.env\.(?:DEV|VITE_PIUI_A2[3-8]_[A-Z]+_TEST)/u);
+    }
+  });
+
   it('does not grant a shell, opener, filesystem, HTTP or generic Markdown command', () => {
     const capability = JSON.parse(source(capabilityPath)) as { permissions: unknown };
     expect(capability.permissions).toEqual(['core:default']);

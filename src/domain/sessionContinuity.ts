@@ -1,3 +1,4 @@
+import { isSaveableThinkingLevel } from './thinking';
 import type { ProductSnapshot } from './types';
 
 type SessionProvider = Readonly<{
@@ -31,10 +32,7 @@ export function preferredSessionModel(
 
 export function preferredSessionThinking(settings: readonly SessionSetting[]): string | null {
   const value = settings.find((setting) => setting.key === 'reasoning.level')?.value;
-  return typeof value === 'string' &&
-    ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'].includes(value)
-    ? value
-    : null;
+  return isSaveableThinkingLevel(value) ? value : null;
 }
 
 export type CompletedTranscript = Readonly<{

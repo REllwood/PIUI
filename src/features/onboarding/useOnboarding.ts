@@ -27,6 +27,7 @@ import {
   type NativeDiagnosticCheck,
   type NativeProvider,
 } from '../../platform/native';
+import { productErrorMessage } from '../../domain/errors';
 
 type CheckState = 'idle' | 'running' | 'pass' | 'fail' | 'offline';
 type AuthState = 'idle' | 'opening' | 'waiting' | 'validated' | 'cancelled' | 'expired' | 'failed';
@@ -108,6 +109,7 @@ export function useOnboarding(
       : null;
   });
   const [projectBusy, setProjectBusy] = useState(false);
+  const [projectError, setProjectError] = useState<string | null>(null);
   const [finishing, setFinishing] = useState(false);
   const [importState, setImportState] = useState<
     'checking' | 'available' | 'unavailable' | 'importing' | 'complete' | 'failed'
@@ -290,6 +292,7 @@ export function useOnboarding(
   const chooseProject = useCallback(async () => {
     if (projectBusy) return;
     setProjectBusy(true);
+    setProjectError(null);
     try {
       const summary = await services.selectWorkspaceDirectory();
       if (summary) {
@@ -306,8 +309,11 @@ export function useOnboarding(
         });
         setState((current) => reduceOnboarding(current, { type: 'project-selected' }));
       }
-    } catch {
+    } catch (error) {
       setProject(null);
+      setProjectError(
+        productErrorMessage(error, 'PIUI could not open that folder. Choose the project folder again.'),
+      );
     } finally {
       setProjectBusy(false);
     }
@@ -316,6 +322,7 @@ export function useOnboarding(
   const trustProject = useCallback(async () => {
     if (!project || projectBusy || project.trust === 'trusted') return;
     setProjectBusy(true);
+    setProjectError(null);
     try {
       const trusted = await services.authoriseWorkspace(project.id, project.revision);
       const loaded = await services.loadTrustedWorkspace(trusted.workspaceId, trusted.revision);
@@ -325,6 +332,14 @@ export function useOnboarding(
         revision: loaded.revision,
         trust: 'trusted',
       });
+    } catch (error) {
+      // The step shows why trust was not granted; the project stays untrusted.
+      setProjectError(
+        productErrorMessage(
+          error,
+          'PIUI could not trust this project. It stays untrusted; try again or choose another folder.',
+        ),
+      );
     } finally {
       setProjectBusy(false);
     }
@@ -395,6 +410,7 @@ export function useOnboarding(
       importExistingCredentials,
       project,
       projectBusy,
+      projectError,
       chooseProject,
       trustProject,
       finish,
@@ -419,6 +435,7 @@ export function useOnboarding(
       importExistingCredentials,
       project,
       projectBusy,
+      projectError,
       chooseProject,
       trustProject,
       finish,

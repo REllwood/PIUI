@@ -1,11 +1,15 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useProduct } from '../../app/ProductContext';
 import { Icon, type IconName } from '../../components/icons/Icon';
+import { ModalDialog, useConfirmation } from '../../components/dialog/ModalDialog';
 import { LoadingLabel } from '../../components/primitives/LoadingLabel';
 import { StatusPill } from '../../components/primitives/StatusPill';
-import { redactForDisplay } from '../../domain/errors';
+import { productErrorMessage, redactForDisplay } from '../../domain/errors';
+import { visibleLogLines } from '../../domain/logs';
+import { DEFAULT_THINKING_LEVEL, isThinkingLevel, thinkingChoices } from '../../domain/thinking';
 import { AppearanceControls, Toggle } from '../appearance/AppearanceControls';
 import { DiagnosticsRoute } from '../diagnostics/DiagnosticsRoute';
+import { ProductTour } from '../onboarding/ProductTour';
 import { UpdateStatus } from '../updates/UpdateStatus';
 import { AboutPanel } from './AboutPanel';
 import { SettingRow } from './SettingRow';
@@ -192,7 +196,7 @@ export function SettingsRoute() {
       setSaveError(
         error instanceof Error && error.message.includes('conflict')
           ? 'A setting changed elsewhere. Your draft is preserved; review the latest values or retry.'
-          : 'PIUI could not save every setting. Your draft is preserved.',
+          : productErrorMessage(error, 'PIUI could not save every setting. Your draft is preserved.'),
       );
     }
   };
@@ -292,6 +296,8 @@ function SettingsSection({
   const { snapshot } = product;
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const [confirm, confirmation] = useConfirmation();
+  const [tourOpen, setTourOpen] = useState(false);
   useEffect(() => {
     setPendingAction(null);
     setActionMessage(null);
@@ -309,9 +315,7 @@ function SettingsSection({
       setActionMessage(success);
     } catch (error) {
       setActionMessage(
-        error instanceof Error && error.message.includes('turn-active')
-          ? 'Stop the active turn before changing the project.'
-          : 'PIUI could not complete that action. No hidden fallback was used.',
+        productErrorMessage(error, 'PIUI could not complete that action. No hidden fallback was used.'),
       );
     } finally {
       setPendingAction(null);
@@ -339,19 +343,20 @@ function SettingsSection({
           label="Product tour"
           description="Replay the short Conversation, work-trace and approval tour."
         >
-          <button
-            type="button"
-            className="button"
-            disabled={
-              product.activeOperation !== null ||
-              ['sending', 'streaming', 'tool-running', 'stop-requested'].includes(
-                product.snapshot.turnStatus,
-              )
-            }
-            onClick={() => window.location.assign(`${window.location.pathname}?onboarding=1`)}
-          >
+          {/* The tour opens in place, so it is safe to replay while Pi is working. */}
+          <button type="button" className="button" onClick={() => setTourOpen(true)}>
             Replay product tour
           </button>
+          {tourOpen ? (
+            // Only the tour replays; onboarding and its saved progress are left alone.
+            <ModalDialog
+              labelledBy="product-tour-title"
+              className="modal-dialog--tour"
+              onDismiss={() => setTourOpen(false)}
+            >
+              <ProductTour onSkip={() => setTourOpen(false)} />
+            </ModalDialog>
+          ) : null}
         </SettingRow>
         <SettingRow
           label="Open last project"
@@ -393,14 +398,16 @@ function SettingsSection({
                     type="button"
                     className="button"
                     disabled={product.activeOperation !== null}
-                    onClick={() => {
-                      if (
-                        !window.confirm(
-                          `Disconnect ${provider.name} and remove its saved credential?`,
-                        )
-                      )
-                        return;
-                      void runAction(
+                    onClick={async () => {
+                      const confirmed = await confirm({
+                        title: `Disconnect ${provider.name}?`,
+                        message:
+                          'Its saved credential will be removed from this Mac. You can connect again later.',
+                        confirmLabel: 'Disconnect',
+                        tone: 'danger',
+                      });
+                      if (!confirmed) return;
+                      await runAction(
                         `logout-${provider.id}`,
                         () => product.logoutProvider(provider.id),
                         `${provider.name} disconnected.`,
@@ -478,6 +485,7 @@ function SettingsSection({
           <p role="status">{product.providerAuthNotice.message}</p>
         ) : null}
         {actionMessage ? <p role="status">{actionMessage}</p> : null}
+        {confirmation}
       </SectionGroup>
     );
   if (id === 'projects')
@@ -518,14 +526,16 @@ function SettingsSection({
               type="button"
               className="button button--danger"
               disabled={product.activeOperation !== null}
-              onClick={() => {
-                if (
-                  !window.confirm(
-                    'Revoke trust for this project? Active executable resources will be cut off.',
-                  )
-                )
-                  return;
-                void runAction(
+              onClick={async () => {
+                const confirmed = await confirm({
+                  title: 'Revoke trust for this project?',
+                  message:
+                    'Active executable resources will be cut off. You can trust the project again later.',
+                  confirmLabel: 'Revoke trust',
+                  tone: 'danger',
+                });
+                if (!confirmed) return;
+                await runAction(
                   'revoke-project',
                   () => product.revokeProject(),
                   'Project trust revoked and active project state cleared.',
@@ -570,6 +580,7 @@ function SettingsSection({
           </div>
         </div>
         {actionMessage ? <p role="status">{actionMessage}</p> : null}
+        {confirmation}
       </SectionGroup>
     );
   if (id === 'permissions')
@@ -636,81 +647,7 @@ function SettingsSection({
       </SectionGroup>
     );
   if (id === 'models')
-    return (() => {
-      const providerId = typeof draft['model.provider'] === 'string' ? draft['model.provider'] : '';
-      const provider = snapshot.providers.find((candidate) => candidate.id === providerId);
-      return (
-        <SectionGroup
-          title="Model configuration"
-          description="Values show their scope and saved origin."
-        >
-          <SettingRow
-            label="Provider"
-            description="The provider used for new turns."
-            scope="Project"
-            origin={product.settings.find((setting) => setting.key === 'model.provider')?.origin}
-          >
-            <select
-              className="select"
-              value={providerId}
-              onChange={(event) => {
-                const next = snapshot.providers.find(
-                  (candidate) => candidate.id === event.target.value,
-                );
-                onChange('model.provider', event.target.value);
-                if (next?.models[0]) onChange('model.id', next.models[0].id);
-              }}
-            >
-              {snapshot.providers.map((candidate) => (
-                <option key={candidate.id} value={candidate.id} disabled={!candidate.connected}>
-                  {candidate.name}
-                  {candidate.connected ? '' : ' — not connected'}
-                </option>
-              ))}
-            </select>
-          </SettingRow>
-          <SettingRow
-            label="Model"
-            description="Only models reported by the connected provider are available."
-            scope="Project"
-            origin={product.settings.find((setting) => setting.key === 'model.id')?.origin}
-          >
-            <select
-              className="select"
-              value={typeof draft['model.id'] === 'string' ? draft['model.id'] : ''}
-              onChange={(event) => onChange('model.id', event.target.value)}
-              disabled={!provider?.connected}
-            >
-              {(provider?.models ?? []).map((model) => (
-                <option key={model.id} value={model.id}>
-                  {model.name}
-                  {model.acceptsImages ? ' · images' : ''}
-                </option>
-              ))}
-            </select>
-          </SettingRow>
-          <SettingRow
-            label="Reasoning"
-            description="Choose how deeply Pi reasons before responding."
-            scope="Project"
-            origin={product.settings.find((setting) => setting.key === 'reasoning.level')?.origin}
-          >
-            <select
-              className="select"
-              value={
-                typeof draft['reasoning.level'] === 'string' ? draft['reasoning.level'] : 'medium'
-              }
-              onChange={(event) => onChange('reasoning.level', event.target.value)}
-            >
-              <option value="low">Quick</option>
-              <option value="medium">Balanced</option>
-              <option value="high">Deep</option>
-              <option value="xhigh">Extended</option>
-            </select>
-          </SettingRow>
-        </SectionGroup>
-      );
-    })();
+    return <ModelsSection draft={draft} onChange={onChange} />;
   if (id === 'tools') {
     const availableTools = [
       { id: 'read', label: 'Read project files' },
@@ -842,6 +779,95 @@ function SectionGroup({
   );
 }
 
+function ModelsSection({
+  draft,
+  onChange,
+}: Readonly<{
+  draft: Readonly<Record<string, unknown>>;
+  onChange: (key: string, value: unknown) => void;
+}>) {
+  const product = useProduct();
+  const { snapshot } = product;
+  const providerId = typeof draft['model.provider'] === 'string' ? draft['model.provider'] : '';
+  const provider = snapshot.providers.find((candidate) => candidate.id === providerId);
+  const savedReasoning = product.settings.find(
+    (setting) => setting.key === 'reasoning.level',
+  )?.value;
+  const reasoning = isThinkingLevel(draft['reasoning.level'])
+    ? draft['reasoning.level']
+    : DEFAULT_THINKING_LEVEL;
+  return (
+    <SectionGroup
+      title="Model configuration"
+      description="Values show their scope and saved origin."
+    >
+      <SettingRow
+        label="Provider"
+        description="The provider used for new turns."
+        scope="Project"
+        origin={product.settings.find((setting) => setting.key === 'model.provider')?.origin}
+      >
+        <select
+          className="select"
+          value={providerId}
+          onChange={(event) => {
+            const next = snapshot.providers.find(
+              (candidate) => candidate.id === event.target.value,
+            );
+            onChange('model.provider', event.target.value);
+            if (next?.models[0]) onChange('model.id', next.models[0].id);
+          }}
+        >
+          {snapshot.providers.map((candidate) => (
+            <option key={candidate.id} value={candidate.id} disabled={!candidate.connected}>
+              {candidate.name}
+              {candidate.connected ? '' : ' — not connected'}
+            </option>
+          ))}
+        </select>
+      </SettingRow>
+      <SettingRow
+        label="Model"
+        description="Only models reported by the connected provider are available."
+        scope="Project"
+        origin={product.settings.find((setting) => setting.key === 'model.id')?.origin}
+      >
+        <select
+          className="select"
+          value={typeof draft['model.id'] === 'string' ? draft['model.id'] : ''}
+          onChange={(event) => onChange('model.id', event.target.value)}
+          disabled={!provider?.connected}
+        >
+          {(provider?.models ?? []).map((model) => (
+            <option key={model.id} value={model.id}>
+              {model.name}
+              {model.acceptsImages ? ' · images' : ''}
+            </option>
+          ))}
+        </select>
+      </SettingRow>
+      <SettingRow
+        label="Reasoning"
+        description="Choose how deeply Pi reasons before responding."
+        scope="Project"
+        origin={product.settings.find((setting) => setting.key === 'reasoning.level')?.origin}
+      >
+        <select
+          className="select"
+          value={reasoning}
+          onChange={(event) => onChange('reasoning.level', event.target.value)}
+        >
+          {thinkingChoices(savedReasoning).map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      </SettingRow>
+    </SectionGroup>
+  );
+}
+
 function ResourcesSection() {
   const product = useProduct();
   const { snapshot, mode } = product;
@@ -850,6 +876,7 @@ function ResourcesSection() {
   const [message, setMessage] = useState<string | null>(null);
   const [packageSource, setPackageSource] = useState('');
   const [packageScope, setPackageScope] = useState<'global' | 'project'>('project');
+  const [confirm, confirmation] = useConfirmation();
   const resources = snapshot.resources.filter(
     (resource) => kind === 'all' || resource.kind === kind,
   );
@@ -859,9 +886,12 @@ function ResourcesSection() {
     if (
       resource.executable &&
       enabling &&
-      !window.confirm(
-        `Enable “${resource.name}”? This executable code runs with your permissions and may act outside PIUI-mediated approvals.`,
-      )
+      !(await confirm({
+        title: `Enable “${resource.name}”?`,
+        message:
+          'This executable code runs with your permissions and may act outside PIUI-mediated approvals.',
+        confirmLabel: 'Enable',
+      }))
     )
       return;
     setPending(resource.id);
@@ -869,11 +899,14 @@ function ResourcesSection() {
     try {
       await product.setResourceEnabled(resource.id, enabling, resource.executable && enabling);
       setMessage(`${resource.name} ${enabling ? 'enabled' : 'disabled'} and acknowledged by Pi.`);
-    } catch {
+    } catch (error) {
       setMessage(
-        resource.executable
-          ? 'The executable resource could not be loaded safely. It remains disabled.'
-          : 'The resource change was not acknowledged. The previous state is retained.',
+        productErrorMessage(
+          error,
+          resource.executable
+            ? 'The executable resource could not be loaded safely. It remains disabled.'
+            : 'The resource change was not acknowledged. The previous state is retained.',
+        ),
       );
     } finally {
       setPending(null);
@@ -887,9 +920,12 @@ function ResourcesSection() {
       return;
     }
     if (
-      !window.confirm(
-        `Install “${source}” from npm? Packages are executable code and may act outside PIUI-mediated approvals. Installation may contact npm.`,
-      )
+      !(await confirm({
+        title: `Install “${source}” from npm?`,
+        message:
+          'Packages are executable code and may act outside PIUI-mediated approvals. Installation may contact npm.',
+        confirmLabel: 'Install',
+      }))
     )
       return;
     setPending('package-install');
@@ -902,7 +938,10 @@ function ResourcesSection() {
       setMessage(
         error instanceof Error && error.message.includes('offline')
           ? 'Package installation is unavailable while this Mac is offline.'
-          : 'The package was not installed. PIUI retained the previous catalogue.',
+          : productErrorMessage(
+              error,
+              'The package was not installed. PIUI retained the previous catalogue.',
+            ),
       );
     } finally {
       setPending(null);
@@ -917,11 +956,23 @@ function ResourcesSection() {
       setMessage(`Package ${operation} is unavailable while this Mac is offline.`);
       return;
     }
-    const warning =
+    const confirmed = await confirm(
       operation === 'remove'
-        ? `Remove “${resource.name}” from Pi and this catalogue? Its package files will be removed by Pi’s package manager.`
-        : `Update “${resource.name}” using Pi’s package manager? Updated executable code remains subject to your current enabled state.`;
-    if (!window.confirm(warning)) return;
+        ? {
+            title: `Remove “${resource.name}”?`,
+            message:
+              'It will be removed from Pi and this catalogue, and Pi’s package manager will remove its package files.',
+            confirmLabel: 'Remove',
+            tone: 'danger',
+          }
+        : {
+            title: `Update “${resource.name}”?`,
+            message:
+              'Pi’s package manager will update it. Updated executable code keeps its current enabled state.',
+            confirmLabel: 'Update',
+          },
+    );
+    if (!confirmed) return;
     setPending(`${resource.id}-${operation}`);
     setMessage(null);
     try {
@@ -931,8 +982,13 @@ function ResourcesSection() {
           ? `${resource.name} removed.`
           : `${resource.name} updated. Review its trust before continuing.`,
       );
-    } catch {
-      setMessage(`The package ${operation} did not complete. Review Diagnostics before retrying.`);
+    } catch (error) {
+      setMessage(
+        productErrorMessage(
+          error,
+          `The package ${operation} did not complete. Review Diagnostics before retrying.`,
+        ),
+      );
     } finally {
       setPending(null);
     }
@@ -1096,6 +1152,7 @@ function ResourcesSection() {
         ) : null}
       </div>
       {message ? <p role="status">{message}</p> : null}
+      {confirmation}
     </SectionGroup>
   );
 }
@@ -1198,13 +1255,10 @@ function LogsSection() {
   const product = useProduct();
   const [query, setQuery] = useState('');
   const [severity, setSeverity] = useState('all');
-  const visible = product.diagnosticLogs.filter((line) => {
-    const normalised = line.toLowerCase();
-    return (
-      normalised.includes(query.toLowerCase()) &&
-      (severity === 'all' || normalised.includes(severity))
-    );
-  });
+  const visible = useMemo(
+    () => visibleLogLines(product.diagnosticLogs, query, severity),
+    [product.diagnosticLogs, query, severity],
+  );
   return (
     <SectionGroup
       title="Redacted local logs"
@@ -1233,9 +1287,9 @@ function LogsSection() {
         </select>
       </label>
       <div className="log-list" role="log" aria-label="Local redacted log entries">
-        {visible.map((line) => (
-          <div key={line} className="ui-mono">
-            {redactForDisplay(line)}
+        {visible.map((line, index) => (
+          <div key={`${index}-${line.slice(0, 40)}`} className="ui-mono">
+            {line}
           </div>
         ))}
         {visible.length === 0 ? (

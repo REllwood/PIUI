@@ -25,6 +25,10 @@ vi.mock('../platform/native', async (importOriginal) => ({
   queueProductFollowUp: vi.fn(),
   createProductSession: vi.fn(),
   saveProductSetting: vi.fn(),
+  renameProductSession: vi.fn(),
+  inspectWorkspace: vi.fn(),
+  authoriseWorkspace: vi.fn(),
+  loadTrustedWorkspace: vi.fn(),
 }));
 
 const session: native.NativeProductSession = {
@@ -295,6 +299,130 @@ describe('production conversation continuity', () => {
     });
     expect(currentProduct().snapshot.messages.at(-2)?.markdown).toBe('A newer task');
     expect(currentProduct().snapshot.turnStatus).toBe('streaming');
+  });
+
+  it('leaves the store untouched when an approval poll finds nothing new', async () => {
+    vi.mocked(native.listPendingApprovals).mockResolvedValue([
+      {
+        approvalId: 'approval-1',
+        decisionId: 'decision-1',
+        revision: 1,
+        state: 'awaiting',
+        verb: 'Run command',
+        target: 'pnpm test',
+        risk: 'routine',
+        scopeIds: [],
+        expiresInMs: 60_000,
+        subject: { label: 'Command', text: 'pnpm test', truncated: false },
+      },
+    ]);
+    await boot();
+    await waitFor(() => expect(currentProduct().snapshot.approvals).toHaveLength(1));
+    const before = productionBridgeStore.getSnapshot().product;
+    const polls = vi.mocked(native.listPendingApprovals).mock.calls.length;
+    await waitFor(
+      () =>
+        expect(vi.mocked(native.listPendingApprovals).mock.calls.length).toBeGreaterThan(
+          polls + 1,
+        ),
+      { timeout: 2_500 },
+    );
+    expect(productionBridgeStore.getSnapshot().product).toBe(before);
+  });
+
+  it('applies a burst of streamed text as one transcript update', async () => {
+    await boot();
+    await act(async () => {
+      await currentProduct().send('Stream a reply');
+    });
+    const transcripts = new Set<unknown>();
+    const unsubscribe = productionBridgeStore.subscribe(() => {
+      transcripts.add(productionBridgeStore.getSnapshot().product.messages);
+    });
+    act(() => {
+      currentTurn().onDelta('Planning ');
+      currentTurn().onDelta('a safe ');
+      currentTurn().onDelta('change');
+    });
+    expect(transcripts.size).toBe(0);
+    await waitFor(() =>
+      expect(currentProduct().snapshot.messages.at(-1)?.markdown).toBe('Planning a safe change'),
+    );
+    unsubscribe();
+    expect(transcripts.size).toBe(1);
+  });
+
+  it('records a started tool as running work until it reports an outcome', async () => {
+    await boot();
+    await act(async () => {
+      await currentProduct().send('Run the checks');
+    });
+    act(() => {
+      currentTurn().onTool('tool-1', 'bash', 'started');
+    });
+    expect(currentProduct().snapshot.activity).toContainEqual(
+      expect.objectContaining({ id: 'activity-tool-1', state: 'running' }),
+    );
+    expect(currentProduct().snapshot.turnStatus).toBe('tool-running');
+    act(() => {
+      currentTurn().onTool('tool-1', 'bash', 'complete');
+    });
+    expect(currentProduct().snapshot.activity).toContainEqual(
+      expect.objectContaining({ id: 'activity-tool-1', state: 'complete' }),
+    );
+  });
+
+  it('asks for the project to be trusted again and re-lists sessions once it is', async () => {
+    await boot();
+    vi.mocked(native.renameProductSession).mockRejectedValue('session-workspace-untrusted');
+    await act(async () => {
+      await expect(currentProduct().renameSession('session-a', 'Renamed')).rejects.toBe(
+        'session-workspace-untrusted',
+      );
+    });
+    expect(currentProduct().snapshot.workspace?.trust).toBe('untrusted');
+
+    const trustedSummary: native.NativeWorkspaceSummary = {
+      workspaceId: 'workspace-a',
+      displayLabel: 'Project',
+      revision: 2,
+      trustState: 'trusted',
+      resourceState: 'loaded',
+    };
+    // The host moved the revision while the project was untrusted.
+    vi.mocked(native.inspectWorkspace).mockResolvedValue({
+      ...trustedSummary,
+      revision: 3,
+      trustState: 'untrusted',
+      resourceState: 'not-loaded',
+    });
+    vi.mocked(native.authoriseWorkspace).mockResolvedValue(trustedSummary);
+    vi.mocked(native.loadTrustedWorkspace).mockResolvedValue(trustedSummary);
+    vi.mocked(native.listProductSessions).mockClear();
+    vi.mocked(native.listProductSessions).mockResolvedValue([{ ...session, generation: 5 }]);
+    await act(async () => {
+      await currentProduct().trustProject();
+    });
+    expect(native.authoriseWorkspace).toHaveBeenCalledWith('workspace-a', 3);
+    expect(native.listProductSessions).toHaveBeenCalledWith('workspace-a', 2);
+    expect(currentProduct().snapshot.workspace?.trust).toBe('trusted');
+    expect(currentProduct().snapshot.sessions).toContainEqual(
+      expect.objectContaining({ id: 'session-a', generation: 5, status: 'active' }),
+    );
+  });
+
+  it('offers Reconnect with plain-English copy when the host stream is interrupted', async () => {
+    await boot();
+    await act(async () => {
+      await currentProduct().send('Keep going');
+    });
+    act(() => {
+      currentTurn().onFailed('host-stream-interrupted');
+    });
+    expect(currentProduct().snapshot.connection).toBe('restart-offered');
+    expect(currentProduct().snapshot.messages.at(-1)?.markdown).toBe(
+      'The connection to Pi was interrupted before the reply finished. Reconnect to Pi, then try again. Your message remains in the conversation.',
+    );
   });
 
   it('retires pending inspection and turn callbacks when the provider unmounts', async () => {

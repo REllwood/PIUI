@@ -188,6 +188,11 @@ export const productFixture: ProductSnapshot = Object.freeze({
       reversible: true,
       permittedDecisions: ['approve-once', 'deny'],
       rememberedScopeEligible: false,
+      subject: {
+        label: 'Command',
+        text: 'pnpm typecheck && pnpm test:unit && pnpm build',
+        truncated: false,
+      },
     },
   ],
   changes: [

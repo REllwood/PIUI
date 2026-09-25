@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import { SafeMarkdownSpike } from '../../security/SafeMarkdownSpike';
 import type { OpaqueAssetDescriptor, ValidatedExternalTarget } from '../../security/markdownPolicy';
 
@@ -11,7 +12,13 @@ function isLongPlainProse(markdown: string): boolean {
   );
 }
 
-export function SafeMarkdown({
+function openExternal(target: ValidatedExternalTarget) {
+  window.dispatchEvent(new CustomEvent('piui:open-external', { detail: target.canonicalUrl }));
+}
+
+// Parsing is the expensive part of a message, so it only reruns when the text or its
+// completeness changes.
+export const SafeMarkdown = memo(function SafeMarkdown({
   markdown,
   complete = true,
 }: Readonly<{ markdown: string; complete?: boolean }>) {
@@ -24,9 +31,6 @@ export function SafeMarkdown({
       </section>
     );
   }
-  const openExternal = (target: ValidatedExternalTarget) => {
-    window.dispatchEvent(new CustomEvent('piui:open-external', { detail: target.canonicalUrl }));
-  };
   return (
     <SafeMarkdownSpike
       markdown={markdown}
@@ -36,4 +40,4 @@ export function SafeMarkdown({
       embedded
     />
   );
-}
+});

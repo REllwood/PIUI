@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 import {
   A26_EXPECTED_NATIVE_EVIDENCE,
+  A26_HOSTILE_FIXTURE_CANARIES,
   A26_HOSTILE_FIXTURE_SHA256,
   A26_MODULE_KINDS,
   A26_NATIVE_EVIDENCE_KEYS,
@@ -87,9 +88,13 @@ function frontendInventory(
   inventoryCharacter: string,
   allowlistCharacter: string,
   provenanceCharacter: string,
+  role: 'automation' | 'production',
 ) {
   return {
     fileCount: 18,
+    // Only the flagged probe build carries the pinned hostile fixture.
+    hostileFixtureChunks: role === 'automation' ? 1 : 0,
+    hostileFixtureSha256: role === 'automation' ? A26_HOSTILE_FIXTURE_SHA256 : null,
     inventorySha256: sha(inventoryCharacter),
     javascriptRegexEngineChunks: 1,
     moduleProvenanceSha256: sha(provenanceCharacter),
@@ -103,13 +108,13 @@ function frontendInventory(
 }
 
 function bundleEvidence() {
-  const automationFrontend = frontendInventory('b', 'c', 'f');
+  const automationFrontend = frontendInventory('b', 'c', 'f', 'automation');
   return {
     productionWebdriverIncluded: false,
     automationWebdriverIncluded: true,
     cspExact: true,
     piuiRasterOnlyImageAddition: true,
-    productionFrontend: frontendInventory('a', 'd', 'e'),
+    productionFrontend: frontendInventory('a', 'd', 'e', 'production'),
     automationFrontend,
     repeatAutomationFrontend: { ...automationFrontend },
   };
@@ -136,17 +141,32 @@ type ReceiptChunk = Readonly<{
   moduleKinds: readonly string[];
 }>;
 
-function moduleProvenanceBytes(chunks: readonly ReceiptChunk[]): Buffer {
-  return Buffer.from(`${canonicalReceiptJson({ chunks, schemaVersion: 1 })}\n`, 'utf8');
+function moduleProvenanceBytes(
+  chunks: readonly ReceiptChunk[],
+  hostileFixtureSha256: string | null = chunks.some((chunk) => (
+    chunk.moduleKinds.includes('a26-hostile-fixture')
+  )) ? A26_HOSTILE_FIXTURE_SHA256 : null,
+): Buffer {
+  return Buffer.from(
+    `${canonicalReceiptJson({ chunks, hostileFixtureSha256, schemaVersion: 1 })}\n`,
+    'utf8',
+  );
 }
 
-function provenanceFixture() {
+// A small flagged probe build by default; the production variant drops the fixture
+// module and its bytes but keeps the shared highlighter.
+function provenanceFixture(role: 'automation' | 'production' = 'automation') {
   const requiredKinds = A26_MODULE_KINDS.filter((kind) => (
-    kind !== 'a26-engine-oniguruma' && kind !== 'a26-wasm-module'
+    kind !== 'a26-engine-oniguruma'
+    && kind !== 'a26-wasm-module'
+    && (role === 'automation' || kind !== 'a26-hostile-fixture')
   ));
+  const engineSource = role === 'automation'
+    ? `export const regexEngine = true; export const fixture = "${A26_HOSTILE_FIXTURE_CANARIES.join(' ')}";`
+    : 'export const regexEngine = true;';
   const frontend = [
     { path: 'assets/dormant.js', bytes: Buffer.from('export const dormant = true;') },
-    { path: 'assets/engine.js', bytes: Buffer.from('export const regexEngine = true;') },
+    { path: 'assets/engine.js', bytes: Buffer.from(engineSource) },
     { path: 'assets/main.js', bytes: Buffer.from('export const entry = true;') },
     {
       path: 'index.html',
@@ -231,8 +251,10 @@ describe('A.26 packaged hostile-Markdown contract', () => {
     expect(assertA26BrowserEvidence({ ...browserEvidence(), rasterResourceEntries: 0 }))
       .toEqual({ ...browserEvidence(), rasterResourceEntries: 0 });
     expect(assertA26DomEvidence(domEvidence())).toEqual(domEvidence());
-    expect(assertA26FrontendInventory(bundleEvidence().productionFrontend))
+    expect(assertA26FrontendInventory(bundleEvidence().productionFrontend, 'production'))
       .toEqual(bundleEvidence().productionFrontend);
+    expect(assertA26FrontendInventory(bundleEvidence().automationFrontend, 'automation'))
+      .toEqual(bundleEvidence().automationFrontend);
     expect(assertA26BundleEvidence(bundleEvidence())).toEqual(bundleEvidence());
     expect(JSON.stringify({
       native: A26_EXPECTED_NATIVE_EVIDENCE,
@@ -265,6 +287,45 @@ describe('A.26 packaged hostile-Markdown contract', () => {
         repeatAutomationFrontend: {
           ...valid.repeatAutomationFrontend,
           inventorySha256: sha('e'),
+        },
+      },
+    ]) {
+      expect(() => assertA26BundleEvidence(candidate))
+        .toThrow('A.26 packaged Markdown probe rejected');
+    }
+  });
+
+  it('requires production to carry no hostile fixture and the probe build the pinned one', () => {
+    const valid = bundleEvidence();
+    for (const candidate of [
+      {
+        ...valid,
+        productionFrontend: { ...valid.productionFrontend, hostileFixtureChunks: 1 },
+      },
+      {
+        ...valid,
+        productionFrontend: {
+          ...valid.productionFrontend,
+          hostileFixtureSha256: A26_HOSTILE_FIXTURE_SHA256,
+        },
+      },
+      {
+        ...valid,
+        automationFrontend: { ...valid.automationFrontend, hostileFixtureChunks: 0 },
+      },
+      {
+        ...valid,
+        automationFrontend: { ...valid.automationFrontend, hostileFixtureSha256: sha('9') },
+        repeatAutomationFrontend: {
+          ...valid.repeatAutomationFrontend,
+          hostileFixtureSha256: sha('9'),
+        },
+      },
+      {
+        ...valid,
+        repeatAutomationFrontend: {
+          ...valid.repeatAutomationFrontend,
+          hostileFixtureSha256: null,
         },
       },
     ]) {
@@ -372,7 +433,7 @@ describe('A.26 packaged hostile-Markdown contract', () => {
   it('derives the exact route closure from path-free provenance and rejects hidden engines or payloads', () => {
     const fixture = provenanceFixture();
     expect(parseA26ModuleProvenance(fixture.provenance).chunks).toHaveLength(3);
-    const derived = deriveA26FrontendInventory(fixture.frontend, fixture.provenance);
+    const derived = deriveA26FrontendInventory(fixture.frontend, fixture.provenance, 'automation');
     expect(derived.expectedResourcePaths).toEqual([
       '/assets/engine.js',
       '/assets/main.js',
@@ -393,6 +454,7 @@ describe('A.26 packaged hostile-Markdown contract', () => {
     expect(() => deriveA26FrontendInventory(
       fixture.frontend,
       moduleProvenanceBytes(hiddenOniguruma),
+      'automation',
     )).toThrow('A.26 packaged Markdown probe rejected');
 
     for (const bytes of [
@@ -403,7 +465,7 @@ describe('A.26 packaged hostile-Markdown contract', () => {
       const frontend = fixture.frontend.map((file) => (
         file.path === 'assets/dormant.js' ? { ...file, bytes } : file
       ));
-      expect(() => deriveA26FrontendInventory(frontend, fixture.provenance))
+      expect(() => deriveA26FrontendInventory(frontend, fixture.provenance, 'automation'))
         .toThrow('A.26 packaged Markdown probe rejected');
     }
 
@@ -415,6 +477,7 @@ describe('A.26 packaged hostile-Markdown contract', () => {
     expect(() => deriveA26FrontendInventory(
       fixture.frontend,
       moduleProvenanceBytes(missingLanguage),
+      'automation',
     )).toThrow('A.26 packaged Markdown probe rejected');
 
     const nonCanonical = Buffer.from(
@@ -423,6 +486,136 @@ describe('A.26 packaged hostile-Markdown contract', () => {
     );
     expect(() => parseA26ModuleProvenance(nonCanonical))
       .toThrow('A.26 packaged Markdown probe rejected');
+    expect(() => deriveA26FrontendInventory(fixture.frontend, fixture.provenance, 'twin'))
+      .toThrow('A.26 packaged Markdown probe rejected');
+  });
+
+  it('asserts the production bundle carries no hostile fixture module, digest or bytes', () => {
+    const production = provenanceFixture('production');
+    const derived = deriveA26FrontendInventory(
+      production.frontend,
+      production.provenance,
+      'production',
+    );
+    expect(derived.evidence.hostileFixtureChunks).toBe(0);
+    expect(derived.evidence.hostileFixtureSha256).toBeNull();
+    expect(() => deriveA26FrontendInventory(
+      production.frontend,
+      production.provenance,
+      'automation',
+    )).toThrow('A.26 packaged Markdown probe rejected');
+
+    const probe = provenanceFixture('automation');
+    expect(() => deriveA26FrontendInventory(probe.frontend, probe.provenance, 'production'))
+      .toThrow('A.26 packaged Markdown probe rejected');
+
+    for (const canary of A26_HOSTILE_FIXTURE_CANARIES) {
+      const leaked = production.frontend.map((file) => (
+        file.path === 'assets/dormant.js'
+          ? { ...file, bytes: Buffer.from(`export const leaked = "${canary}";`) }
+          : file
+      ));
+      expect(() => deriveA26FrontendInventory(leaked, production.provenance, 'production'))
+        .toThrow('A.26 packaged Markdown probe rejected');
+    }
+
+    // A receipt may not claim a digest without a fixture chunk, or hide one without it.
+    expect(() => parseA26ModuleProvenance(
+      moduleProvenanceBytes(production.chunks, A26_HOSTILE_FIXTURE_SHA256),
+    )).toThrow('A.26 packaged Markdown probe rejected');
+    expect(() => parseA26ModuleProvenance(moduleProvenanceBytes(probe.chunks, null)))
+      .toThrow('A.26 packaged Markdown probe rejected');
+  });
+
+  it('binds the probe build to the pinned hostile fixture and keeps its bytes in fixture chunks', () => {
+    const probe = provenanceFixture('automation');
+    const derived = deriveA26FrontendInventory(probe.frontend, probe.provenance, 'automation');
+    expect(derived.evidence.hostileFixtureChunks).toBe(1);
+    expect(derived.evidence.hostileFixtureSha256).toBe(A26_HOSTILE_FIXTURE_SHA256);
+
+    expect(() => deriveA26FrontendInventory(
+      probe.frontend,
+      moduleProvenanceBytes(probe.chunks, sha('9')),
+      'automation',
+    )).toThrow('A.26 packaged Markdown probe rejected');
+
+    const withoutBytes = probe.frontend.map((file) => (
+      file.path === 'assets/engine.js'
+        ? { ...file, bytes: Buffer.from('export const regexEngine = true;') }
+        : file
+    ));
+    expect(() => deriveA26FrontendInventory(withoutBytes, probe.provenance, 'automation'))
+      .toThrow('A.26 packaged Markdown probe rejected');
+
+    const strayBytes = probe.frontend.map((file) => (
+      file.path === 'assets/dormant.js'
+        ? { ...file, bytes: Buffer.from(`export const stray = "${A26_HOSTILE_FIXTURE_CANARIES[0]}";`) }
+        : file
+    ));
+    expect(() => deriveA26FrontendInventory(strayBytes, probe.provenance, 'automation'))
+      .toThrow('A.26 packaged Markdown probe rejected');
+  });
+
+  it('accepts statically imported module preloads but not a preloaded lazy route', () => {
+    const probe = provenanceFixture('automation');
+    const shared = { path: 'assets/shared.js', bytes: Buffer.from('export const shared = 1;') };
+    const chunks: ReceiptChunk[] = [
+      ...probe.chunks.map((chunk) => (
+        chunk.fileName === 'assets/main.js' ? { ...chunk, imports: ['assets/shared.js'] } : chunk
+      )),
+      {
+        assets: [],
+        css: [],
+        dynamicImports: [],
+        fileName: 'assets/shared.js',
+        imports: [],
+        isEntry: false,
+        moduleKinds: [],
+      },
+    ].sort((left, right) => (left.fileName < right.fileName ? -1 : 1));
+    const index = (preload: string) => ({
+      path: 'index.html',
+      bytes: Buffer.from(
+        '<!doctype html><script type="module" src="/assets/main.js"></script>'
+          + `<link rel="modulepreload" href="/${preload}">`,
+      ),
+    });
+    const frontend = (preload: string) => [
+      ...probe.frontend.filter((file) => file.path !== 'index.html'),
+      shared,
+      index(preload),
+    ].sort((left, right) => (left.path < right.path ? -1 : 1));
+
+    const derived = deriveA26FrontendInventory(
+      frontend('assets/shared.js'),
+      moduleProvenanceBytes(chunks),
+      'automation',
+    );
+    expect(derived.expectedResourcePaths).toContain('/assets/shared.js');
+    expect(() => deriveA26FrontendInventory(
+      frontend('assets/dormant.js'),
+      moduleProvenanceBytes(chunks),
+      'automation',
+    )).toThrow('A.26 packaged Markdown probe rejected');
+  });
+
+  it('uses fixture-only canaries that never appear in application source', async () => {
+    const fixture = await readFile(new URL('../fixtures/markdown/hostile.md', import.meta.url), 'utf8');
+    for (const canary of A26_HOSTILE_FIXTURE_CANARIES) expect(fixture).toContain(canary);
+    const sourceRoot = new URL('../../src/', import.meta.url);
+    const entries = await readdir(sourceRoot, { recursive: true, withFileTypes: true });
+    const sources = entries.filter((entry) => (
+      entry.isFile()
+      && /\.(?:tsx?|css)$/u.test(entry.name)
+      && !/\.test\.tsx?$/u.test(entry.name)
+    ));
+    expect(sources.length).toBeGreaterThan(0);
+    for (const entry of sources) {
+      const source = await readFile(`${entry.parentPath}/${entry.name}`, 'utf8');
+      for (const canary of A26_HOSTILE_FIXTURE_CANARIES) {
+        expect(source, `${entry.name} must not contain ${canary}`).not.toContain(canary);
+      }
+    }
   });
 
   it('accepts the closed authoritative and post-cleanup reports and rejects substitutions', () => {
@@ -573,11 +766,14 @@ describe('A.26 packaged hostile-Markdown contract', () => {
     expect(packageRunner).toContain('productionProvenance,');
     expect(packageRunner).toContain('automationProvenance,');
     expect(packageRunner).toContain('repeatAutomationProvenance,');
-    expect(packageRunner).toContain('deriveA26FrontendInventoryFromProvenance(frontend, provenance)');
+    expect(packageRunner).toContain('deriveA26FrontendInventoryFromProvenance(frontend, provenance, role)');
+    expect(packageRunner).toMatch(/productionFrontend,\s*productionProvenance,\s*'production',/u);
+    expect(packageRunner).toMatch(/automationFrontend,\s*automationProvenance,\s*'automation',/u);
     expect(packageRunner).toContain(
       'expectedResourcePaths: markdownBundleDerivation.expectedResourcePaths',
     );
     expect(viteConfig).toContain("name: 'piui-a26-module-provenance'");
+    expect(viteConfig).toContain('hostileFixtureSha256: [...hostileFixtureDigests][0] ?? null');
     expect(viteConfig).toContain("flag: 'wx'");
     expect(viteConfig).toContain('mode: 0o600');
     expect(viteConfig).toContain('moduleKinds: sorted(moduleKinds)');

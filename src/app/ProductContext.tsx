@@ -10,7 +10,15 @@ import {
 } from 'react';
 import { productionBridgeStore } from '../bridge/store';
 import { useBridgeSelector } from '../bridge/useBridgeSelector';
-import { createQueueItem, failQueueItem, submitApproval } from '../domain/machines';
+import { createDeltaBatcher } from './deltaBatcher';
+import { reconcileApprovals } from '../domain/approvals';
+import {
+  GENERIC_PRODUCT_ERROR,
+  productErrorCode,
+  productErrorCopy,
+  productErrorMessage,
+} from '../domain/errors';
+import { createQueueItem, failQueueItem, isTurnActive, submitApproval } from '../domain/machines';
 import {
   canReconcileTranscript,
   preferredSessionModel,
@@ -77,7 +85,7 @@ import {
   type NativeApplicationDataUpdate,
 } from '../platform/native';
 
-type OperationId =
+export type OperationId =
   | 'send'
   | 'stop'
   | 'queue'
@@ -231,18 +239,22 @@ function sessionSummary(session: NativeProductSession, project: string) {
   });
 }
 
-function relativeTime(timestamp: number): string {
-  const elapsed = Math.max(0, Date.now() - timestamp);
-  if (elapsed < 60_000) return 'Just now';
-  if (elapsed < 3_600_000) return `${Math.floor(elapsed / 60_000)} min ago`;
-  if (elapsed < 86_400_000) return `${Math.floor(elapsed / 3_600_000)} hr ago`;
-  return new Date(timestamp).toLocaleDateString('en-AU', { day: 'numeric', month: 'short' });
-}
+const relativeFormatter = new Intl.RelativeTimeFormat('en-AU', { numeric: 'auto' });
+const absoluteDateFormatter = new Intl.DateTimeFormat('en-AU', { day: 'numeric', month: 'short' });
 
-function isTurnActive(status: ProductSnapshot['turnStatus']): boolean {
-  return ['sending', 'streaming', 'tool-running', 'stop-requested', 'cancel-too-late'].includes(
-    status,
-  );
+function relativeTime(timestamp: number): string {
+  // A clock-skewed future timestamp is also shown as just now.
+  const elapsed = Date.now() - timestamp;
+  if (elapsed < 60_000) return 'Just now';
+  if (elapsed < 3_600_000) {
+    const minutes = Math.floor(elapsed / 60_000);
+    return relativeFormatter.format(-minutes, 'minute');
+  }
+  if (elapsed < 86_400_000) {
+    const hours = Math.floor(elapsed / 3_600_000);
+    return relativeFormatter.format(-hours, 'hour');
+  }
+  return absoluteDateFormatter.format(new Date(timestamp));
 }
 
 function messageView(message: import('../platform/native').NativeProductMessage) {
@@ -262,11 +274,12 @@ function messageView(message: import('../platform/native').NativeProductMessage)
   });
 }
 
-function approvalView(approval: NativeApproval) {
+function approvalView(approval: NativeApproval, now: number) {
   const consequential = approval.risk === 'destructive' || approval.risk === 'external';
   return Object.freeze({
     id: approval.approvalId,
     decisionId: approval.decisionId,
+    revision: approval.revision,
     state: approval.state,
     action: approval.verb,
     target: approval.target,
@@ -279,10 +292,12 @@ function approvalView(approval: NativeApproval) {
       ? 'Review the target carefully; this action may be difficult to reverse.'
       : 'The action is limited to the displayed target and current request.',
     reversible: !consequential,
-    expiresAt: new Date(Date.now() + approval.expiresInMs).toISOString(),
+    // Derived once per revision; reconcileApprovals keeps it steady across polls.
+    expiresAt: new Date(now + approval.expiresInMs).toISOString(),
     permittedDecisions: ['approve-once', 'deny'] as const,
     rememberedScopeEligible: false,
     scopeIds: approval.scopeIds,
+    subject: approval.subject,
   });
 }
 
@@ -526,7 +541,14 @@ export function ProductProvider({
   const refreshApprovals = useCallback(async () => {
     try {
       const approvals = await listPendingApprovals();
-      productionBridgeStore.updateLocalFixture({ approvals: approvals.map(approvalView) });
+      const now = Date.now();
+      const live = productionBridgeStore.getSnapshot().product;
+      const next = reconcileApprovals(
+        live.approvals,
+        approvals.map((approval) => approvalView(approval, now)),
+      );
+      // The poll runs every 750 ms; only a real change may patch the store and re-render.
+      if (next !== live.approvals) productionBridgeStore.updateLocalFixture({ approvals: next });
     } catch {
       // Connection recovery owns the global offline state. A failed background
       // refresh must not discard an approval already visible to the user.
@@ -587,6 +609,22 @@ export function ProductProvider({
     },
     [onPersist],
   );
+
+  // The host rejects session commands once the project is no longer trusted at the
+  // revision a session was bound to. Showing the project as untrusted offers Trust
+  // project again; re-trusting then re-lists sessions, which the host requires before
+  // any session command works.
+  const noteSessionFailure = useCallback((error: unknown) => {
+    if (productErrorCode(error) !== 'session-workspace-untrusted') return;
+    const workspace = activeWorkspace.current;
+    if (workspace) activeWorkspace.current = Object.freeze({ ...workspace, trust: 'untrusted' });
+    const live = productionBridgeStore.getSnapshot().product;
+    if (live.workspace && live.workspace.trust !== 'untrusted') {
+      productionBridgeStore.updateLocalFixture({
+        workspace: { ...live.workspace, trust: 'untrusted' },
+      });
+    }
+  }, []);
 
   const refreshChanges = useCallback(async () => {
     const live = productionBridgeStore.getSnapshot().product;
@@ -764,7 +802,10 @@ export function ProductProvider({
     if (!beginOperation('project')) throw new Error('operation-busy');
     try {
       await startLocalHelper();
-      const authorised = await authoriseWorkspace(workspace.id, workspace.revision);
+      // The host may have moved the revision since it was stored (for example after a
+      // revoke), so authorise against the project as it is now.
+      const inspected = await inspectWorkspace(workspace.id);
+      const authorised = await authoriseWorkspace(inspected.workspaceId, inspected.revision);
       const loaded = await loadTrustedWorkspace(authorised.workspaceId, authorised.revision);
       const trusted: StoredWorkspace = Object.freeze({
         id: loaded.workspaceId,
@@ -773,7 +814,10 @@ export function ProductProvider({
         trust: loaded.trustState,
       });
       activeWorkspace.current = trusted;
+      // Sessions bound to the old trust must be re-listed before the host accepts any
+      // session command, so this always runs after a successful (re-)trust.
       const listed = await listProductSessions(trusted.id, trusted.revision);
+      const current = productionBridgeStore.getSnapshot().product;
       productionBridgeStore.updateLocalFixture({
         workspace: {
           capabilityId: trusted.id,
@@ -782,7 +826,12 @@ export function ProductProvider({
           trust: trusted.trust,
           lastOpenedAt: 'Just now',
         },
-        sessions: listed.map((session) => sessionSummary(session, trusted.name)),
+        sessions: listed.map((session) => {
+          const summary = sessionSummary(session, trusted.name);
+          return summary.id === current.activeSessionId
+            ? { ...summary, status: 'active' as const }
+            : summary;
+        }),
         connection: 'ready',
       });
       await persistWorkspace(trusted);
@@ -902,6 +951,20 @@ export function ProductProvider({
         turnStatus: 'sending',
       });
       let failed = false;
+      // Streamed text reaches the store at most once per frame; every other turn event
+      // flushes first so it observes the complete response so far.
+      const deltas = createDeltaBatcher((text) => {
+        if (!ownsTurn()) return;
+        const live = productionBridgeStore.getSnapshot().product;
+        productionBridgeStore.updateLocalFixture({
+          messages: live.messages.map((item) =>
+            item.id === responseId
+              ? { ...item, markdown: `${item.markdown}${text}`, status: 'streaming' }
+              : item,
+          ),
+          turnStatus: 'streaming',
+        });
+      });
       try {
         await startProductTurn({
           sessionId: session.id,
@@ -916,18 +979,11 @@ export function ProductProvider({
           },
           onDelta: (delta) => {
             if (!ownsTurn()) return;
-            const live = productionBridgeStore.getSnapshot().product;
-            productionBridgeStore.updateLocalFixture({
-              messages: live.messages.map((item) =>
-                item.id === responseId
-                  ? { ...item, markdown: `${item.markdown}${delta}`, status: 'streaming' }
-                  : item,
-              ),
-              turnStatus: 'streaming',
-            });
+            deltas.push(delta);
           },
           onTool: (toolCallId, detail, state) => {
             if (!ownsTurn()) return;
+            deltas.flush();
             const live = productionBridgeStore.getSnapshot().product;
             const activityId = `activity-${toolCallId}`;
             const category = ['read', 'edit', 'write'].includes(detail)
@@ -958,13 +1014,15 @@ export function ProductProvider({
               activity: [
                 ...live.activity,
                 {
+                  // A started tool is running; any approval it needs is polled separately
+                  // and takes precedence in the work summary.
                   id: activityId,
                   category,
-                  verb: 'Waiting',
+                  verb: 'Running',
                   target: detail,
-                  state: 'waiting',
+                  state: 'running' as const,
                   elapsed: '—',
-                  summary: 'Review the exact local action before it runs.',
+                  summary: 'Pi is using this tool.',
                 },
               ],
               turnStatus: 'tool-running',
@@ -973,6 +1031,8 @@ export function ProductProvider({
           },
           onFailed: (code) => {
             if (!ownsTurn()) return;
+            deltas.flush();
+            noteSessionFailure(code);
             failed = true;
             turnContinuity.current = null;
             activeTurnRequest.current = null;
@@ -984,7 +1044,10 @@ export function ProductProvider({
                       ...item,
                       markdown:
                         item.markdown ||
-                        `The provider turn failed (${code}). Your message remains in the conversation.`,
+                        `${productErrorMessage(
+                          code,
+                          'Pi could not finish this turn. Try again, or open Diagnostics if it keeps happening.',
+                        )} Your message remains in the conversation.`,
                       status: 'failed',
                     }
                   : item,
@@ -993,12 +1056,16 @@ export function ProductProvider({
               queue: [],
               ...(code === 'session-external-change'
                 ? { connection: 'external-change' as const }
-                : {}),
+                : code === 'host-stream-interrupted'
+                  ? // Offers Reconnect: the copy's next step for an interrupted stream.
+                    { connection: 'restart-offered' as const }
+                  : {}),
             });
             void refreshChanges();
           },
           onComplete: (terminal) => {
             if (!ownsTurn()) return;
+            deltas.flush();
             turnContinuity.current = null;
             activeTurnRequest.current = null;
             const live = productionBridgeStore.getSnapshot().product;
@@ -1026,12 +1093,16 @@ export function ProductProvider({
           },
         });
         return true;
-      } catch {
+      } catch (error) {
+        deltas.cancel();
+        noteSessionFailure(error);
         if (!ownsTurn()) return false;
         failed = true;
         turnContinuity.current = null;
         activeTurnRequest.current = null;
         const live = productionBridgeStore.getSnapshot().product;
+        const rejection = productErrorCopy(error);
+        const known = rejection.code !== GENERIC_PRODUCT_ERROR;
         productionBridgeStore.updateLocalFixture({
           messages: retainedMessages,
           turnStatus: 'failed',
@@ -1042,9 +1113,12 @@ export function ProductProvider({
               id: 'turn-start',
               label: 'Turn start',
               status: 'fail',
-              detail:
-                'The provider turn was not accepted. Your draft has been kept in the composer.',
-              recovery: 'Check Diagnostics, then send the retained draft again.',
+              detail: `${
+                known ? rejection.message : 'The provider turn was not accepted.'
+              } Your draft has been kept in the composer.`,
+              recovery: known
+                ? rejection.recovery
+                : 'Check Diagnostics, then send the retained draft again.',
             },
           ],
         });
@@ -1053,7 +1127,7 @@ export function ProductProvider({
         endOperation('send');
       }
     },
-    [beginOperation, endOperation, refreshApprovals, refreshChanges],
+    [beginOperation, endOperation, refreshApprovals, refreshChanges, noteSessionFailure],
   );
 
   const stop = useCallback(async () => {
@@ -1096,7 +1170,8 @@ export function ProductProvider({
           ),
         });
         return true;
-      } catch {
+      } catch (error) {
+        noteSessionFailure(error);
         const current = productionBridgeStore.getSnapshot().product;
         productionBridgeStore.updateLocalFixture({
           queue: failQueueItem(current.queue, item.localId),
@@ -1106,7 +1181,7 @@ export function ProductProvider({
         endOperation('queue');
       }
     },
-    [beginOperation, endOperation],
+    [beginOperation, endOperation, noteSessionFailure],
   );
 
   const retryQueueItem = useCallback(
@@ -1152,11 +1227,14 @@ export function ProductProvider({
         productionBridgeStore.updateLocalFixture({
           queue: remaining.map((item, index) => ({ ...item, number: index + 1 })),
         });
+      } catch (error) {
+        noteSessionFailure(error);
+        throw error;
       } finally {
         endOperation('queue');
       }
     },
-    [beginOperation, endOperation],
+    [beginOperation, endOperation, noteSessionFailure],
   );
 
   const decideApproval = useCallback(
@@ -1388,10 +1466,13 @@ export function ProductProvider({
       setSettings(activeSettings);
       setRoute('conversation');
       return true;
+    } catch (error) {
+      noteSessionFailure(error);
+      throw error;
     } finally {
       endOperation('session');
     }
-  }, [beginOperation, endOperation, settings]);
+  }, [beginOperation, endOperation, settings, noteSessionFailure]);
 
   const resumeSession = useCallback(
     async (sessionId: string) => {
@@ -1429,6 +1510,7 @@ export function ProductProvider({
         setSettings(activeSettings);
         setRoute('conversation');
       } catch (error) {
+        noteSessionFailure(error);
         if (error instanceof Error && error.message.includes('external-change')) {
           productionBridgeStore.updateLocalFixture({ connection: 'external-change' });
         }
@@ -1437,7 +1519,7 @@ export function ProductProvider({
         endOperation('session');
       }
     },
-    [beginOperation, endOperation],
+    [beginOperation, endOperation, noteSessionFailure],
   );
 
   const branchSession = useCallback(
@@ -1473,11 +1555,14 @@ export function ProductProvider({
         });
         setSettings(activeSettings);
         setRoute('conversation');
+      } catch (error) {
+        noteSessionFailure(error);
+        throw error;
       } finally {
         endOperation('session');
       }
     },
-    [beginOperation, endOperation],
+    [beginOperation, endOperation, noteSessionFailure],
   );
 
   const renameSession = useCallback(
@@ -1495,11 +1580,14 @@ export function ProductProvider({
             candidate.id === renamed.id ? sessionSummary(renamed, candidate.project) : candidate,
           ),
         });
+      } catch (error) {
+        noteSessionFailure(error);
+        throw error;
       } finally {
         endOperation('settings');
       }
     },
-    [beginOperation, endOperation],
+    [beginOperation, endOperation, noteSessionFailure],
   );
 
   const compactSession = useCallback(
@@ -1513,11 +1601,14 @@ export function ProductProvider({
         await compactProductSession(session.id, session.generation);
         const messages = await inspectProductSession(session.id, session.generation);
         productionBridgeStore.updateLocalFixture({ messages: messages.map(messageView) });
+      } catch (error) {
+        noteSessionFailure(error);
+        throw error;
       } finally {
         endOperation('session');
       }
     },
-    [beginOperation, endOperation],
+    [beginOperation, endOperation, noteSessionFailure],
   );
 
   const trashSession = useCallback(
@@ -1535,11 +1626,14 @@ export function ProductProvider({
         productionBridgeStore.updateLocalFixture({
           sessions: current.sessions.filter((candidate) => candidate.id !== session.id),
         });
+      } catch (error) {
+        noteSessionFailure(error);
+        throw error;
       } finally {
         endOperation('session');
       }
     },
-    [beginOperation, endOperation],
+    [beginOperation, endOperation, noteSessionFailure],
   );
 
   const rebuildSessions = useCallback(async () => {
@@ -1558,10 +1652,13 @@ export function ProductProvider({
             : summary;
         }),
       });
+    } catch (error) {
+      noteSessionFailure(error);
+      throw error;
     } finally {
       endOperation('session');
     }
-  }, [beginOperation, endOperation]);
+  }, [beginOperation, endOperation, noteSessionFailure]);
 
   const retryLastTurn = useCallback(async () => {
     const live = productionBridgeStore.getSnapshot().product;
@@ -1582,11 +1679,14 @@ export function ProductProvider({
       if (!beginOperation('export')) return false;
       try {
         return await exportProductSession(session.id, session.generation);
+      } catch (error) {
+        noteSessionFailure(error);
+        throw error;
       } finally {
         endOperation('export');
       }
     },
-    [beginOperation, endOperation],
+    [beginOperation, endOperation, noteSessionFailure],
   );
 
   const undoChange = useCallback(
@@ -1609,7 +1709,8 @@ export function ProductProvider({
             candidate.id === changeId ? updated : candidate,
           ),
         });
-      } catch {
+      } catch (error) {
+        noteSessionFailure(error);
         const current = productionBridgeStore.getSnapshot().product;
         productionBridgeStore.updateLocalFixture({
           changes: current.changes.map((candidate) =>
@@ -1620,7 +1721,7 @@ export function ProductProvider({
         endOperation('change');
       }
     },
-    [beginOperation, endOperation],
+    [beginOperation, endOperation, noteSessionFailure],
   );
 
   const revealChange = useCallback(
@@ -1631,11 +1732,14 @@ export function ProductProvider({
       if (!beginOperation('change')) throw new Error('operation-busy');
       try {
         await revealProductChange(session.id, session.generation, changeId);
+      } catch (error) {
+        noteSessionFailure(error);
+        throw error;
       } finally {
         endOperation('change');
       }
     },
-    [beginOperation, endOperation],
+    [beginOperation, endOperation, noteSessionFailure],
   );
 
   const saveSettings = useCallback(
@@ -1663,13 +1767,14 @@ export function ProductProvider({
         }
         setSettings(await listProductSettings(session.id, session.generation));
       } catch (error) {
+        noteSessionFailure(error);
         setSettings(await listProductSettings(session.id, session.generation));
         throw error;
       } finally {
         endOperation('settings');
       }
     },
-    [beginOperation, endOperation],
+    [beginOperation, endOperation, noteSessionFailure],
   );
 
   const setResourceEnabled = useCallback(
@@ -1690,11 +1795,14 @@ export function ProductProvider({
         productionBridgeStore.updateLocalFixture({
           resources: await listProductResources(session.id, session.generation),
         });
+      } catch (error) {
+        noteSessionFailure(error);
+        throw error;
       } finally {
         endOperation('resource');
       }
     },
-    [beginOperation, endOperation],
+    [beginOperation, endOperation, noteSessionFailure],
   );
 
   const installPackage = useCallback(
@@ -1715,11 +1823,14 @@ export function ProductProvider({
         productionBridgeStore.updateLocalFixture({
           resources: await listProductResources(session.id, session.generation),
         });
+      } catch (error) {
+        noteSessionFailure(error);
+        throw error;
       } finally {
         endOperation('resource');
       }
     },
-    [beginOperation, endOperation],
+    [beginOperation, endOperation, noteSessionFailure],
   );
 
   const mutatePackage = useCallback(
@@ -1740,11 +1851,14 @@ export function ProductProvider({
         productionBridgeStore.updateLocalFixture({
           resources: await listProductResources(session.id, session.generation),
         });
+      } catch (error) {
+        noteSessionFailure(error);
+        throw error;
       } finally {
         endOperation('resource');
       }
     },
-    [beginOperation, endOperation],
+    [beginOperation, endOperation, noteSessionFailure],
   );
 
   const value = useMemo<ProductContextValue>(

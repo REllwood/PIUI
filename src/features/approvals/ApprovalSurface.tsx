@@ -1,4 +1,6 @@
+import { useId } from 'react';
 import { Icon } from '../../components/icons/Icon';
+import { visibleSubjectText } from '../../domain/approvals';
 import { LoadingLabel } from '../../components/primitives/LoadingLabel';
 import { StatusPill } from '../../components/primitives/StatusPill';
 import type { ApprovalDecision, ApprovalRequest } from '../../domain/types';
@@ -17,6 +19,8 @@ export function ApprovalSurface({
   onClose?: () => void;
 }>) {
   const waiting = request.state === 'awaiting' || request.state === 'unacknowledged';
+  const subject = request.subject ?? null;
+  const subjectLabelId = useId();
   return (
     <section className="approval-surface" aria-labelledby={`approval-${request.id}`}>
       <header className="context-detail__header">
@@ -46,6 +50,30 @@ export function ApprovalSurface({
       >
         {request.state === 'unacknowledged' ? 'Decision not confirmed' : request.state}
       </StatusPill>
+      {subject ? (
+        // Plain text only: the subject names exactly what would run or change, so it is
+        // never interpreted as Markdown or HTML, and hidden characters are made visible.
+        <div className="approval-subject">
+          <h3 id={subjectLabelId} className="approval-subject__label">
+            {subject.label}
+          </h3>
+          <pre
+            className="approval-subject__text"
+            role="region"
+            aria-labelledby={subjectLabelId}
+            tabIndex={0}
+            dir="ltr"
+          >
+            {visibleSubjectText(subject.text)}
+          </pre>
+          {subject.truncated ? (
+            <p className="approval-subject__note">
+              Shortened: the full {subject.label.toLowerCase()} is longer than shown here. Deny
+              if you need to see all of it first.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
       <dl className="detail-list">
         <div>
           <dt>Target</dt>

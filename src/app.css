@@ -104,13 +104,130 @@ dd {
   color: #b4bcb3;
 }
 
-.markdown-spike {
+/* Markdown palette. Dark is the default; the light palette follows the app's own
+   data-theme so an explicit app theme wins over the macOS appearance. Probe routes
+   render without the appearance provider, so they fall back to the system scheme. */
+:root {
   --markdown-accent: #caff3f;
   --markdown-focus: #ae76ff;
   --markdown-muted: #aeb7ae;
   --markdown-border: #343a35;
   --markdown-panel: #111411;
   --markdown-raised: #181c18;
+  --markdown-text: #eef2ed;
+  --markdown-heading: #fff;
+  --markdown-notice-border: #52612d;
+  --markdown-notice-text: #e6f9b3;
+  --markdown-notice-surface: #202812;
+  --markdown-audit-code-text: #f2f7e8;
+  --markdown-audit-code-surface: #0e120a;
+  --markdown-blocked-border: #754848;
+  --markdown-blocked-text: #ffc4c4;
+  --markdown-blocked-surface: #281717;
+  --markdown-link-border: #6c8830;
+  --markdown-link-text: #e9ffc1;
+  --markdown-link-surface: #1a220f;
+  --markdown-link-hover: #222d12;
+  --markdown-asset-text: #dbe2da;
+  --markdown-code-border: #303830;
+  --markdown-code-text: #e8eee7;
+  --markdown-code-surface: #090b09;
+  --markdown-code-note-surface: #181c18;
+  --markdown-inline-code-border: #394039;
+  --markdown-inline-code-surface: #202420;
+  --markdown-table-head-surface: #171b17;
+  --markdown-tok-comment: #94a394;
+  --markdown-tok-string: #b7e58a;
+  --markdown-tok-number: #e2b875;
+  --markdown-tok-keyword: #cda4ff;
+  --markdown-tok-function: #8bd9f7;
+  --markdown-tok-type: #f0d478;
+  --markdown-tok-variable: #dde6dc;
+  --markdown-tok-tag: #ff9a9a;
+  --markdown-tok-attribute: #a9d1ff;
+}
+:root[data-theme='light'] {
+  --markdown-accent: #536c00;
+  --markdown-focus: #7441c7;
+  --markdown-muted: #566055;
+  --markdown-border: #c5ccc3;
+  --markdown-panel: #fafbf9;
+  --markdown-raised: #f0f3ee;
+  --markdown-text: #1a1e19;
+  --markdown-heading: #111410;
+  --markdown-notice-border: #b8cb83;
+  --markdown-notice-text: #344500;
+  --markdown-notice-surface: #edf5d8;
+  --markdown-audit-code-text: #1d270d;
+  --markdown-audit-code-surface: #fbfff4;
+  --markdown-blocked-border: #c89191;
+  --markdown-blocked-text: #6f1d1d;
+  --markdown-blocked-surface: #fff0f0;
+  --markdown-link-border: #779342;
+  --markdown-link-text: #324700;
+  --markdown-link-surface: #eff7dc;
+  --markdown-link-hover: #e5f1c8;
+  --markdown-asset-text: #30382f;
+  --markdown-code-border: #c7cec4;
+  --markdown-code-text: #162016;
+  --markdown-code-surface: #f1f4ef;
+  --markdown-code-note-surface: #e7ece4;
+  --markdown-inline-code-border: #ccd2c9;
+  --markdown-inline-code-surface: #edf0eb;
+  --markdown-table-head-surface: #eef2eb;
+  --markdown-tok-comment: #526152;
+  --markdown-tok-string: #315f08;
+  --markdown-tok-number: #774d00;
+  --markdown-tok-keyword: #6e2ba6;
+  --markdown-tok-function: #075e78;
+  --markdown-tok-type: #6b5500;
+  --markdown-tok-variable: #253025;
+  --markdown-tok-tag: #9a2525;
+  --markdown-tok-attribute: #1a568c;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) {
+    --markdown-accent: #536c00;
+    --markdown-focus: #7441c7;
+    --markdown-muted: #566055;
+    --markdown-border: #c5ccc3;
+    --markdown-panel: #fafbf9;
+    --markdown-raised: #f0f3ee;
+    --markdown-text: #1a1e19;
+    --markdown-heading: #111410;
+    --markdown-notice-border: #b8cb83;
+    --markdown-notice-text: #344500;
+    --markdown-notice-surface: #edf5d8;
+    --markdown-audit-code-text: #1d270d;
+    --markdown-audit-code-surface: #fbfff4;
+    --markdown-blocked-border: #c89191;
+    --markdown-blocked-text: #6f1d1d;
+    --markdown-blocked-surface: #fff0f0;
+    --markdown-link-border: #779342;
+    --markdown-link-text: #324700;
+    --markdown-link-surface: #eff7dc;
+    --markdown-link-hover: #e5f1c8;
+    --markdown-asset-text: #30382f;
+    --markdown-code-border: #c7cec4;
+    --markdown-code-text: #162016;
+    --markdown-code-surface: #f1f4ef;
+    --markdown-code-note-surface: #e7ece4;
+    --markdown-inline-code-border: #ccd2c9;
+    --markdown-inline-code-surface: #edf0eb;
+    --markdown-table-head-surface: #eef2eb;
+    --markdown-tok-comment: #526152;
+    --markdown-tok-string: #315f08;
+    --markdown-tok-number: #774d00;
+    --markdown-tok-keyword: #6e2ba6;
+    --markdown-tok-function: #075e78;
+    --markdown-tok-type: #6b5500;
+    --markdown-tok-variable: #253025;
+    --markdown-tok-tag: #9a2525;
+    --markdown-tok-attribute: #1a568c;
+  }
+}
+
+.markdown-spike {
   min-height: 100vh;
   width: 100%;
   padding: 64px clamp(16px, 5vw, 48px) 28px;
@@ -169,7 +286,7 @@ dd {
   margin: 0;
   padding: clamp(18px, 4vw, 34px);
   overflow-wrap: anywhere;
-  color: #eef2ed;
+  color: var(--markdown-text);
   font-size: 0.98rem;
   line-height: 1.65;
 }
@@ -186,7 +303,7 @@ dd {
 .markdown__prose h5,
 .markdown__prose h6 {
   margin: 1.7em 0 0.55em;
-  color: #fff;
+  color: var(--markdown-heading);
   line-height: 1.15;
   letter-spacing: -0.025em;
 }
@@ -221,9 +338,9 @@ dd {
 .markdown__safety-notice {
   margin: 0;
   padding: 11px clamp(18px, 4vw, 34px);
-  border-bottom: 1px solid #52612d;
-  color: #e6f9b3;
-  background: #202812;
+  border-bottom: 1px solid var(--markdown-notice-border);
+  color: var(--markdown-notice-text);
+  background: var(--markdown-notice-surface);
   font-size: 0.86rem;
   font-weight: 700;
 }
@@ -255,10 +372,10 @@ dd {
 
 .markdown__blocked-label {
   padding: 1px 6px;
-  border: 1px solid #754848;
+  border: 1px solid var(--markdown-blocked-border);
   border-radius: 999px;
-  color: #ffc4c4;
-  background: #281717;
+  color: var(--markdown-blocked-text);
+  background: var(--markdown-blocked-surface);
 }
 
 .markdown__link-button {
@@ -266,10 +383,10 @@ dd {
   max-width: 100%;
   padding: 7px 10px;
   overflow-wrap: anywhere;
-  border: 1px solid #6c8830;
+  border: 1px solid var(--markdown-link-border);
   border-radius: 8px;
-  color: #e9ffc1;
-  background: #1a220f;
+  color: var(--markdown-link-text);
+  background: var(--markdown-link-surface);
   font: inherit;
   font-weight: 750;
   text-align: left;
@@ -281,7 +398,7 @@ dd {
 
 .markdown__link-button:hover {
   border-color: var(--markdown-accent);
-  background: #222d12;
+  background: var(--markdown-link-hover);
 }
 .markdown__link-button:focus-visible,
 .markdown__table-scroll:focus-visible,
@@ -303,7 +420,7 @@ dd {
   gap: 8px 12px;
   border: 1px dashed #596159;
   border-radius: 12px;
-  color: #dbe2da;
+  color: var(--markdown-asset-text);
   background: var(--markdown-raised);
 }
 
@@ -325,10 +442,10 @@ dd {
 .markdown__plain-fallback {
   max-width: 100%;
   overflow: auto;
-  border: 1px solid #303830;
+  border: 1px solid var(--markdown-code-border);
   border-radius: 12px;
-  color: #e8eee7;
-  background: #090b09;
+  color: var(--markdown-code-text);
+  background: var(--markdown-code-surface);
   font-family: 'SFMono-Regular', Consolas, monospace;
   font-size: 0.84rem;
   line-height: 1.6;
@@ -338,9 +455,9 @@ dd {
 .markdown__code-shell {
   margin-block: 1em;
   overflow: hidden;
-  border: 1px solid #303830;
+  border: 1px solid var(--markdown-code-border);
   border-radius: 12px;
-  background: #090b09;
+  background: var(--markdown-code-surface);
 }
 .markdown__code-toolbar {
   display: flex;
@@ -349,7 +466,7 @@ dd {
   justify-content: flex-end;
   gap: 4px;
   padding-inline: 6px;
-  border-bottom: 1px solid #303830;
+  border-bottom: 1px solid var(--markdown-code-border);
   background: var(--markdown-raised);
 }
 .markdown__code-toolbar button {
@@ -393,9 +510,9 @@ dd {
   display: block;
   margin: -16px -16px 14px;
   padding: 8px 12px;
-  border-bottom: 1px solid #303830;
+  border-bottom: 1px solid var(--markdown-code-border);
   color: var(--markdown-muted);
-  background: var(--markdown-raised);
+  background: var(--markdown-code-note-surface);
   font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif;
   font-size: 0.75rem;
   font-weight: 700;
@@ -410,7 +527,7 @@ dd {
 .markdown__code-loading {
   margin: -16px -16px 14px;
   padding: 8px 12px;
-  border-bottom: 1px solid #303830;
+  border-bottom: 1px solid var(--markdown-code-border);
   color: var(--markdown-muted);
   background: var(--markdown-raised);
   font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif;
@@ -424,6 +541,7 @@ dd {
   margin: 12px auto;
   color: var(--markdown-muted);
 }
+.markdown__spinner,
 .markdown-probe__spinner {
   width: 16px;
   height: 16px;
@@ -766,35 +884,35 @@ dd {
   display: inline;
 }
 .tok-comment {
-  color: #94a394;
+  color: var(--markdown-tok-comment);
   font-style: italic;
 }
 .tok-string {
-  color: #b7e58a;
+  color: var(--markdown-tok-string);
 }
 .tok-number,
 .tok-constant {
-  color: #e2b875;
+  color: var(--markdown-tok-number);
 }
 .tok-keyword {
-  color: #cda4ff;
+  color: var(--markdown-tok-keyword);
   font-weight: 700;
 }
 .tok-function {
-  color: #8bd9f7;
+  color: var(--markdown-tok-function);
 }
 .tok-type {
-  color: #f0d478;
+  color: var(--markdown-tok-type);
 }
 .tok-parameter,
 .tok-variable {
-  color: #dde6dc;
+  color: var(--markdown-tok-variable);
 }
 .tok-tag {
-  color: #ff9a9a;
+  color: var(--markdown-tok-tag);
 }
 .tok-attribute {
-  color: #a9d1ff;
+  color: var(--markdown-tok-attribute);
 }
 .tok-invalid {
   color: #fff;
@@ -802,18 +920,18 @@ dd {
 }
 .markdown__prose :not(pre) > code {
   padding: 0.15em 0.38em;
-  border: 1px solid #394039;
+  border: 1px solid var(--markdown-inline-code-border);
   border-radius: 5px;
-  background: #202420;
+  background: var(--markdown-inline-code-surface);
   font-family: 'SFMono-Regular', Consolas, monospace;
   font-size: 0.88em;
 }
 
 .markdown__raw-audit {
   padding: 12px clamp(18px, 4vw, 34px);
-  border-bottom: 1px solid #52612d;
-  color: #e6f9b3;
-  background: #202812;
+  border-bottom: 1px solid var(--markdown-notice-border);
+  color: var(--markdown-notice-text);
+  background: var(--markdown-notice-surface);
 }
 .markdown__raw-audit summary {
   min-height: 44px;
@@ -828,10 +946,10 @@ dd {
   margin: 8px 0 4px;
   padding: 12px;
   overflow: auto;
-  border: 1px solid #52612d;
+  border: 1px solid var(--markdown-notice-border);
   border-radius: 8px;
-  color: #f2f7e8;
-  background: #0e120a;
+  color: var(--markdown-audit-code-text);
+  background: var(--markdown-audit-code-surface);
   font:
     0.76rem/1.5 'SFMono-Regular',
     Consolas,
@@ -860,7 +978,7 @@ dd {
 }
 .markdown__table-scroll th {
   color: var(--markdown-accent);
-  background: #171b17;
+  background: var(--markdown-table-head-surface);
 }
 
 .markdown-spike__footer {
@@ -881,141 +999,47 @@ dd {
   }
 }
 
+/* Probe chrome only; the product sets data-theme and uses its own theme tokens. */
 @media (prefers-color-scheme: light) {
-  :root {
+  :root:not([data-theme]) {
     color: #171a17;
     background: #e9ece7;
   }
-  .gate {
+  :root:not([data-theme]) .gate {
     background: radial-gradient(circle at 70% 20%, rgb(112 68 188 / 10%), transparent 30%), #e9ece7;
   }
-  .gate__card {
+  :root:not([data-theme]) .gate__card {
     border-color: #c8cec6;
     background: #fafbf9;
     box-shadow: 0 24px 50px rgb(31 40 31 / 15%);
   }
-  .gate__eyebrow {
+  :root:not([data-theme]) .gate__eyebrow {
     color: #536c00;
   }
-  .gate__summary,
-  .credential-probe__status,
-  dt {
+  :root:not([data-theme]) .gate__summary,
+  :root:not([data-theme]) .credential-probe__status,
+  :root:not([data-theme]) dt {
     color: #535d52;
   }
-  .gate__status {
+  :root:not([data-theme]) .gate__status {
     border-color: #c8cec6;
     background: #c8cec6;
   }
-  .gate__status div {
+  :root:not([data-theme]) .gate__status div {
     background: #fff;
   }
-
-  .markdown-spike {
-    --markdown-accent: #536c00;
-    --markdown-focus: #7441c7;
-    --markdown-muted: #566055;
-    --markdown-border: #c5ccc3;
-    --markdown-panel: #fafbf9;
-    --markdown-raised: #f0f3ee;
+  :root:not([data-theme]) .markdown-spike {
     background:
       radial-gradient(circle at 78% 12%, rgb(116 65 199 / 12%), transparent 31%),
       linear-gradient(155deg, #e8ece6, #f4f6f2 72%);
   }
-  .markdown-spike__surface {
+  :root:not([data-theme]) .markdown-spike__surface {
     box-shadow: 0 28px 60px rgb(33 45 31 / 16%);
-  }
-  .markdown__prose,
-  .markdown__plain-fallback {
-    color: #1a1e19;
-  }
-  .markdown__prose h2,
-  .markdown__prose h3,
-  .markdown__prose h4,
-  .markdown__prose h5,
-  .markdown__prose h6 {
-    color: #111410;
-  }
-  .markdown__safety-notice {
-    border-color: #b8cb83;
-    color: #344500;
-    background: #edf5d8;
-  }
-  .markdown__raw-audit {
-    border-color: #b8cb83;
-    color: #344500;
-    background: #edf5d8;
-  }
-  .markdown__raw-audit pre {
-    border-color: #b8cb83;
-    color: #1d270d;
-    background: #fbfff4;
-  }
-  .markdown__blocked-label {
-    border-color: #c89191;
-    color: #6f1d1d;
-    background: #fff0f0;
-  }
-  .markdown__link-button {
-    border-color: #779342;
-    color: #324700;
-    background: #eff7dc;
-  }
-  .markdown__link-button:hover {
-    background: #e5f1c8;
-  }
-  .markdown__asset-omitted,
-  .markdown__asset-card {
-    color: #30382f;
-  }
-  .markdown__code-block,
-  .markdown__plain-fallback {
-    border-color: #c7cec4;
-    color: #162016;
-    background: #f1f4ef;
-  }
-  .markdown__code-reason {
-    border-color: #c7cec4;
-    background: #e7ece4;
-  }
-  .tok-comment {
-    color: #526152;
-  }
-  .tok-string {
-    color: #315f08;
-  }
-  .tok-number,
-  .tok-constant {
-    color: #774d00;
-  }
-  .tok-keyword {
-    color: #6e2ba6;
-  }
-  .tok-function {
-    color: #075e78;
-  }
-  .tok-type {
-    color: #6b5500;
-  }
-  .tok-parameter,
-  .tok-variable {
-    color: #253025;
-  }
-  .tok-tag {
-    color: #9a2525;
-  }
-  .tok-attribute {
-    color: #1a568c;
-  }
-  .markdown__prose :not(pre) > code {
-    border-color: #ccd2c9;
-    background: #edf0eb;
-  }
-  .markdown__table-scroll th {
-    background: #eef2eb;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .markdown__spinner,
   .markdown-probe__spinner {
     animation-duration: 1.4s;
   }

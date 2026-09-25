@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -58,10 +59,14 @@ function canonicalReceiptJson(value: unknown): string {
   )).join(',')}}`;
 }
 
+function isA26HostileFixtureModule(moduleId: string): boolean {
+  return moduleId.replaceAll('\\', '/').split('?')[0].endsWith('/tests/fixtures/markdown/hostile.md');
+}
+
 function a26KindsForModule(moduleId: string): string[] {
   const path = moduleId.replaceAll('\\', '/').split('?')[0];
   const kinds = new Set<string>();
-  if (path.endsWith('/tests/fixtures/markdown/hostile.md')) kinds.add('a26-hostile-fixture');
+  if (isA26HostileFixtureModule(moduleId)) kinds.add('a26-hostile-fixture');
   if (path.endsWith('/shiki/dist/core.mjs') || path.includes('/@shikijs/core/')) {
     kinds.add('a26-shiki-core');
   }
@@ -123,6 +128,10 @@ function a26ModuleProvenancePlugin() {
     apply: 'build' as const,
     writeBundle(_options: unknown, output: Record<string, unknown>) {
       if (path === undefined) return;
+      // The digest of the hostile fixture file the bundler actually resolved, so the
+      // flagged probe build can be bound to the pinned fixture and a production build
+      // can be shown to carry none.
+      const hostileFixtureDigests = new Set<string>();
       const chunks = Object.values(output)
         .filter((entry): entry is Record<string, unknown> => (
           entry !== null
@@ -138,6 +147,13 @@ function a26ModuleProvenancePlugin() {
           const moduleKinds = new Set<string>();
           for (const moduleId of Object.keys(entry.modules as Record<string, unknown>)) {
             for (const kind of a26KindsForModule(moduleId)) moduleKinds.add(kind);
+            if (isA26HostileFixtureModule(moduleId)) {
+              hostileFixtureDigests.add(
+                createHash('sha256')
+                  .update(readFileSync(moduleId.split('?')[0]))
+                  .digest('hex'),
+              );
+            }
           }
           const sorted = (values: Iterable<string>) => [...new Set(values)].sort();
           return {
@@ -153,8 +169,21 @@ function a26ModuleProvenancePlugin() {
             moduleKinds: sorted(moduleKinds),
           };
         })
-        .sort((left, right) => String(left.fileName).localeCompare(String(right.fileName), 'en'));
-      const receipt = { chunks, schemaVersion: 1 };
+        // Code-point order, as the receipt parser requires: a locale order puts
+        // `classPrivate…` before `CredentialProbe…` and the receipt is then rejected.
+        .sort((left, right) => {
+          const leftName = String(left.fileName);
+          const rightName = String(right.fileName);
+          return leftName < rightName ? -1 : leftName > rightName ? 1 : 0;
+        });
+      if (hostileFixtureDigests.size > 1) {
+        throw new Error('A.26 provenance hostile fixture digest is ambiguous');
+      }
+      const receipt = {
+        chunks,
+        hostileFixtureSha256: [...hostileFixtureDigests][0] ?? null,
+        schemaVersion: 1,
+      };
       writeFileSync(path, `${canonicalReceiptJson(receipt)}\n`, {
         encoding: 'utf8',
         flag: 'wx',

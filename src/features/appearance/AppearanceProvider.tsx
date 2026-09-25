@@ -4,6 +4,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react';
@@ -50,13 +51,16 @@ export function AppearanceProvider({
     root.style.colorScheme = resolvedTheme(preferences.theme, systemIsDark);
   }, [preferences, systemIsDark]);
 
+  // The latest preferences, including an update not yet rendered, so quick successive
+  // changes compose. Persistence runs here, outside the state updater, because React
+  // may call an updater more than once.
+  const latest = useRef(preferences);
   const update = useCallback(
     (patch: Partial<AppearancePreferences>) => {
-      setPreferences((current) => {
-        const next = Object.freeze({ ...current, ...patch });
-        onChange?.(next);
-        return next;
-      });
+      const next = Object.freeze({ ...latest.current, ...patch });
+      latest.current = next;
+      setPreferences(next);
+      onChange?.(next);
     },
     [onChange],
   );

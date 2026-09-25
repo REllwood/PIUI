@@ -393,7 +393,7 @@
 .resource-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px !important;
+  gap: 10px;
 }
 .package-install-panel {
   display: grid;
@@ -424,7 +424,7 @@
   border: 1px solid var(--control-border);
   border-radius: var(--radius-control);
   color: var(--text);
-  background: var(--control-surface);
+  background: var(--surface);
 }
 .resource-card__package-actions {
   display: flex;
@@ -442,10 +442,11 @@
 .resource-card .button {
   margin-top: 12px;
 }
-.resource-warning {
+/* Scoped to the card so it outranks `.resource-card p` and keeps the warning tone. */
+.resource-card .resource-warning {
   padding-left: 10px;
   border-left: 2px solid var(--warning);
-  color: var(--warning) !important;
+  color: var(--warning);
 }
 .environment-table {
   display: grid;
@@ -668,7 +669,7 @@
 }
 .about-panel dl {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
   gap: 8px;
 }
 .about-panel dl > div {

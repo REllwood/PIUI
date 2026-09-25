@@ -8,6 +8,18 @@ async function openOnboarding(page: Page, width = 1100, height = 720) {
   await expect(page.getByRole('heading', { name: 'A clear, local place to work with Pi.' })).toBeVisible();
 }
 
+// Resolves a theme token to the computed colour string the browser reports for text.
+async function tokenColour(page: Page, token: string): Promise<string> {
+  return page.evaluate((name) => {
+    const probe = document.createElement('span');
+    probe.style.color = `var(${name})`;
+    document.body.append(probe);
+    const colour = getComputedStyle(probe).color;
+    probe.remove();
+    return colour;
+  }, token);
+}
+
 async function expectNoOverflow(page: Page) {
   const overflow = await page.evaluate(
     () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
@@ -65,7 +77,11 @@ test('golden onboarding journey preserves loading, consent and trust boundaries'
   await page.getByRole('button', { name: 'Trust and open' }).click();
   await expect(page.getByText('Applying trust…')).toBeVisible();
   await expect(page.getByText('Trusted and ready')).toBeVisible();
-  await expect(page.getByText(/Trust does not change the approval policy/)).toBeVisible();
+  const disclaimer = page.getByText(/Trust does not change the approval policy/);
+  await expect(disclaimer).toBeVisible();
+  // The disclaimer keeps its warning tone and spacing inside the project preview.
+  await expect(disclaimer).toHaveCSS('color', await tokenColour(page, '--warning'));
+  await expect(disclaimer).toHaveCSS('margin-top', '16px');
   await continueButton.click();
 
   await expect(page.getByRole('heading', { name: 'Your local workspace is ready.' })).toBeVisible();

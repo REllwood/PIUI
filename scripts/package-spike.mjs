@@ -4638,8 +4638,9 @@ function containsAscii(bytes, value) {
   return bytes.includes(Buffer.from(value, 'utf8'));
 }
 
-function deriveA26FrontendInventory(frontend, provenance) {
-  return deriveA26FrontendInventoryFromProvenance(frontend, provenance);
+// Production must carry no hostile fixture; the automation twin must carry the pinned one.
+function deriveA26FrontendInventory(frontend, provenance, role) {
+  return deriveA26FrontendInventoryFromProvenance(frontend, provenance, role);
 }
 
 async function deriveA26BundleEvidence({
@@ -4666,14 +4667,17 @@ async function deriveA26BundleEvidence({
   const productionInventory = deriveA26FrontendInventory(
     productionFrontend,
     productionProvenance,
+    'production',
   );
   const automationInventory = deriveA26FrontendInventory(
     automationFrontend,
     automationProvenance,
+    'automation',
   );
   const repeatAutomationInventory = deriveA26FrontendInventory(
     repeatAutomationFrontend,
     repeatAutomationProvenance,
+    'automation',
   );
   if (JSON.stringify(automationInventory)
     !== JSON.stringify(repeatAutomationInventory)) {

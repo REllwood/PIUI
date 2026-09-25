@@ -1,0 +1,41 @@
+.piui .modal-dialog {
+  width: 440px;
+  max-width: calc(100% - 32px);
+  max-height: calc(100% - 32px);
+  margin: auto;
+  padding: 20px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-plane);
+  color: var(--text);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-large);
+}
+.piui .modal-dialog[open] {
+  animation: piui-sheet-enter var(--duration-sheet) var(--ease-standard);
+}
+.piui .modal-dialog::backdrop {
+  background: rgb(0 0 0 / 42%);
+  animation: piui-fade-in var(--duration-panel) ease-out;
+}
+.piui .modal-dialog__title {
+  margin: 0 0 8px;
+  font-size: 17px;
+  line-height: 24px;
+}
+.piui .modal-dialog__description {
+  margin: 0;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+.piui .modal-dialog__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 20px;
+}
+.piui .modal-dialog--tour {
+  width: 560px;
+}

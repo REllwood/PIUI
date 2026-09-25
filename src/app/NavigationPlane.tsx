@@ -3,6 +3,10 @@ import type { RouteId } from '../domain/types';
 import { Icon, type IconName } from '../components/icons/Icon';
 import { LoadingLabel } from '../components/primitives/LoadingLabel';
 import { StatusPill } from '../components/primitives/StatusPill';
+import { productErrorMessage } from '../domain/errors';
+import { isTurnActive } from '../domain/machines';
+import { canCreateConversation } from '../domain/readiness';
+import { isActivityInProgress } from '../domain/workSummary';
 import { useProduct } from './ProductContext';
 
 const routes: readonly Readonly<{ id: RouteId; label: string; icon: IconName }>[] = [
@@ -23,14 +27,8 @@ export function NavigationPlane({
     useProduct();
   const [creating, setCreating] = useState(false);
   const [openingSessionId, setOpeningSessionId] = useState<string | null>(null);
-  const turnRunning = ['sending', 'streaming', 'tool-running', 'stop-requested', 'cancel-too-late'].includes(
-    snapshot.turnStatus,
-  );
-  const canCreate =
-    snapshot.workspace?.trust === 'trusted' &&
-    snapshot.providers.some((provider) => provider.connected && provider.models.length > 0) &&
-    !turnRunning &&
-    activeOperation === null;
+  const turnRunning = isTurnActive(snapshot.turnStatus);
+  const canCreate = canCreateConversation(snapshot, activeOperation);
   useEffect(() => {
     if (!open || !compact) return;
     const previous = document.activeElement;
@@ -71,8 +69,8 @@ export function NavigationPlane({
         setRoute('conversation');
         onClose();
       }
-    } catch {
-      setNotice('The conversation could not be created. Please try again.');
+    } catch (error) {
+      setNotice(productErrorMessage(error, 'The conversation could not be created. Please try again.'));
     } finally {
       setCreating(false);
     }
@@ -85,8 +83,8 @@ export function NavigationPlane({
       await resumeSession(sessionId);
       setRoute('conversation');
       onClose();
-    } catch {
-      setNotice('This conversation could not be opened. Please try again.');
+    } catch (error) {
+      setNotice(productErrorMessage(error, 'This conversation could not be opened. Please try again.'));
     } finally {
       setOpeningSessionId(null);
     }
@@ -154,7 +152,7 @@ export function NavigationPlane({
             <Icon name={item.icon} />
             <span>{item.label}</span>
             {item.id === 'activity' &&
-            snapshot.activity.some((event) => event.state === 'running') ? (
+            snapshot.activity.some((event) => isActivityInProgress(event.state)) ? (
               <span className="navigation-plane__live" aria-label="Work running" />
             ) : null}
           </button>

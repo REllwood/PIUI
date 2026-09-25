@@ -1,8 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useProduct } from '../../app/ProductContext';
 import { Icon } from '../../components/icons/Icon';
+import { useConfirmation } from '../../components/dialog/ModalDialog';
 import { LoadingLabel } from '../../components/primitives/LoadingLabel';
 import { StatusPill } from '../../components/primitives/StatusPill';
+import { productErrorMessage } from '../../domain/errors';
+import { isTurnActive } from '../../domain/machines';
+import { canCreateConversation, hasConversationPrerequisites } from '../../domain/readiness';
 import type { SessionSummary } from '../../domain/types';
 import './supporting-routes.css';
 
@@ -17,12 +21,10 @@ export function SessionsRoute() {
   >(null);
   const [titleDraft, setTitleDraft] = useState('');
   const [actionError, setActionError] = useState<string | null>(null);
-  const turnBusy = ['sending', 'streaming', 'tool-running', 'stop-requested', 'cancel-too-late'].includes(
-    snapshot.turnStatus,
-  );
-  const canCreate =
-    snapshot.workspace?.trust === 'trusted' &&
-    snapshot.providers.some((provider) => provider.connected);
+  const [confirm, confirmation] = useConfirmation();
+  const turnBusy = isTurnActive(snapshot.turnStatus);
+  const prerequisitesMet = hasConversationPrerequisites(snapshot);
+  const canCreate = canCreateConversation(snapshot, product.activeOperation);
   const sessions = useMemo(
     () =>
       snapshot.sessions.filter(
@@ -45,8 +47,10 @@ export function SessionsRoute() {
     setActionError(null);
     try {
       await product.resumeSession(selected.id);
-    } catch {
-      setActionError('The session could not be opened. Its existing state is unchanged.');
+    } catch (error) {
+      setActionError(
+        productErrorMessage(error, 'The session could not be opened. Its existing state is unchanged.'),
+      );
     } finally {
       setOperation(null);
     }
@@ -58,8 +62,8 @@ export function SessionsRoute() {
       if (!(await product.createSession())) {
         setActionError('Choose and trust a project, then connect a provider before creating a conversation.');
       }
-    } catch {
-      setActionError('A new conversation could not be created.');
+    } catch (error) {
+      setActionError(productErrorMessage(error, 'A new conversation could not be created.'));
     }
   };
 
@@ -69,8 +73,10 @@ export function SessionsRoute() {
     setActionError(null);
     try {
       await product.branchSession(selected.id);
-    } catch {
-      setActionError('The branch could not be opened. The source session is unchanged.');
+    } catch (error) {
+      setActionError(
+        productErrorMessage(error, 'The branch could not be opened. The source session is unchanged.'),
+      );
     } finally {
       setOperation(null);
     }
@@ -82,8 +88,8 @@ export function SessionsRoute() {
     setActionError(null);
     try {
       await product.exportSession(selected.id);
-    } catch {
-      setActionError('The session export was not completed.');
+    } catch (error) {
+      setActionError(productErrorMessage(error, 'The session export was not completed.'));
     } finally {
       setOperation(null);
     }
@@ -96,8 +102,8 @@ export function SessionsRoute() {
     setActionError(null);
     try {
       await product.renameSession(selected.id, titleDraft);
-    } catch {
-      setActionError('The session name was not changed.');
+    } catch (error) {
+      setActionError(productErrorMessage(error, 'The session name was not changed.'));
     } finally {
       setOperation(null);
     }
@@ -109,8 +115,10 @@ export function SessionsRoute() {
     setActionError(null);
     try {
       await product.compactSession(selected.id);
-    } catch {
-      setActionError('The session was not compacted. Its prior history is retained.');
+    } catch (error) {
+      setActionError(
+        productErrorMessage(error, 'The session was not compacted. Its prior history is retained.'),
+      );
     } finally {
       setOperation(null);
     }
@@ -118,19 +126,21 @@ export function SessionsRoute() {
 
   const trash = async () => {
     if (!selected || operation || selected.id === snapshot.activeSessionId) return;
-    if (
-      !window.confirm(
-        `Move “${selected.title}” to the macOS Trash? PIUI will re-check the exact inactive session file before moving it.`,
-      )
-    )
-      return;
+    const confirmed = await confirm({
+      title: `Move “${selected.title}” to the Trash?`,
+      message:
+        'PIUI re-checks the exact inactive session file before moving it to the macOS Trash.',
+      confirmLabel: 'Move to Trash',
+      tone: 'danger',
+    });
+    if (!confirmed) return;
     setOperation('trash');
     setActionError(null);
     try {
       await product.trashSession(selected.id);
       setSelectedId('');
-    } catch {
-      setActionError('The named session was not moved to Trash.');
+    } catch (error) {
+      setActionError(productErrorMessage(error, 'The named session was not moved to Trash.'));
     } finally {
       setOperation(null);
     }
@@ -148,9 +158,9 @@ export function SessionsRoute() {
           type="button"
           className="button button--primary"
           onClick={() => void create()}
-          disabled={product.activeOperation !== null || turnBusy || !canCreate}
+          disabled={!canCreate}
           title={
-            canCreate
+            prerequisitesMet
               ? undefined
               : 'Choose and trust a project, then connect a provider first.'
           }
@@ -396,6 +406,7 @@ export function SessionsRoute() {
           )}
         </section>
       </div>
+      {confirmation}
     </main>
   );
 }

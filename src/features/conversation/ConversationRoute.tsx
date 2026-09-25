@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { BottomActionPlane } from '../../app/BottomActionPlane';
 import { useProduct } from '../../app/ProductContext';
+import { isTurnActive } from '../../domain/machines';
+import { thinkingLabel } from '../../domain/thinking';
+import { workSummaryLabel } from '../../domain/workSummary';
 import { Icon } from '../../components/icons/Icon';
 import { LoadingLabel } from '../../components/primitives/LoadingLabel';
 import { WorkTrace } from '../../components/work-trace/WorkTrace';
@@ -52,10 +55,9 @@ export function ConversationRoute({ approvalRequest = 0 }: Readonly<{ approvalRe
   const reasoning = product.settings.find((setting) => setting.key === 'reasoning.level')?.value;
   const provider = snapshot.providers.find((candidate) => candidate.id === providerId);
   const model = provider?.models.find((candidate) => candidate.id === modelId);
+  const reasoningLabel = thinkingLabel(reasoning);
   const modelLabel = `${model?.name ?? 'Model unavailable'} · ${
-    typeof reasoning === 'string'
-      ? reasoning.charAt(0).toUpperCase() + reasoning.slice(1)
-      : 'Default reasoning'
+    reasoningLabel ? `${reasoningLabel} thinking` : 'Default reasoning'
   }`;
   const runComposerCommand = async (command: string): Promise<boolean> => {
     if (command === '/compact' && session) {
@@ -138,16 +140,7 @@ export function ConversationRoute({ approvalRequest = 0 }: Readonly<{ approvalRe
                     ? 'export'
                     : null
               }
-              unavailable={
-                !session ||
-                [
-                  'sending',
-                  'streaming',
-                  'tool-running',
-                  'stop-requested',
-                  'cancel-too-late',
-                ].includes(snapshot.turnStatus)
-              }
+              unavailable={!session || isTurnActive(snapshot.turnStatus)}
               onBranch={() => (session ? product.branchSession(session.id) : Promise.resolve())}
               onExport={async () => {
                 if (session) await product.exportSession(session.id);
@@ -167,11 +160,11 @@ export function ConversationRoute({ approvalRequest = 0 }: Readonly<{ approvalRe
                   Pi’s work
                 </span>
                 <span>
-                  {snapshot.activity.some((item) => item.state === 'running')
-                    ? `${snapshot.activity.filter((item) => item.state === 'running').length} running`
-                    : pendingApproval
-                      ? 'Waiting for your approval'
-                      : 'Work complete'}
+                  {workSummaryLabel(
+                    snapshot.activity,
+                    Boolean(pendingApproval),
+                    snapshot.turnStatus,
+                  )}
                   <Icon name="chevron-down" />
                 </span>
               </summary>

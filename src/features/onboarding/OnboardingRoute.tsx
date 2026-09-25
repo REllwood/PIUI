@@ -62,6 +62,7 @@ export function OnboardingRoute({
       <ChooseProjectStep
         project={onboarding.project}
         busy={onboarding.projectBusy}
+        error={onboarding.projectError}
         onChoose={onboarding.chooseProject}
         onTrust={onboarding.trustProject}
       />

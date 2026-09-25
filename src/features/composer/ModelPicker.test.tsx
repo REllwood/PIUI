@@ -167,6 +167,41 @@ describe('composer model picker', () => {
     );
   });
 
+  it.each([
+    ['minimal', 'Minimal'],
+    ['max', 'Maximum'],
+  ])('shows a saved %s thinking level as itself', (value, label) => {
+    product = {
+      ...product,
+      settings: product.settings.map((setting) =>
+        setting.key === 'reasoning.level' ? { ...setting, value } : setting,
+      ),
+    };
+    render(<ModelPicker />);
+    fireEvent.click(
+      screen.getByRole('button', { name: `Choose model: Thorough, ${label} thinking` }),
+    );
+    const select = screen.getByRole('combobox', { name: 'Thinking' }) as HTMLSelectElement;
+    expect(select.value).toBe(value);
+    expect(Array.from(select.options).map((option) => option.textContent)).toContain(label);
+  });
+
+  it('explains a coded rejection in plain English with a next step', async () => {
+    product = {
+      ...product,
+      // Tauri rejects product commands with the bare code string.
+      saveSettings: vi.fn().mockRejectedValue('provider-model-unavailable'),
+    };
+    openPicker();
+    fireEvent.click(screen.getByRole('radio', { name: /Focus/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save choice' }));
+    await waitFor(() =>
+      expect(screen.getByRole('alert').textContent).toBe(
+        'The chosen model is not available from this provider right now. Choose another model, then try again.',
+      ),
+    );
+  });
+
   it('restores trigger focus when dismissed without saving', () => {
     const trigger = openPicker();
     fireEvent(screen.getByRole('dialog'), new Event('cancel', { cancelable: true }));

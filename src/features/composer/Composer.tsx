@@ -9,6 +9,7 @@ import {
 } from 'react';
 import { Icon } from '../../components/icons/Icon';
 import { LoadingLabel } from '../../components/primitives/LoadingLabel';
+import { isTurnActive } from '../../domain/machines';
 import type { QueueItem, ResourceRecord, TurnStatus, WorkspaceReference } from '../../domain/types';
 import { ComposerQueue } from './ComposerQueue';
 import { useComposerDraft } from './ComposerDrafts';
@@ -82,13 +83,7 @@ export function Composer({
     kind: 'retry' | 'remove';
   }> | null>(null);
   const descriptionId = useId();
-  const running = [
-    'sending',
-    'streaming',
-    'tool-running',
-    'stop-requested',
-    'cancel-too-late',
-  ].includes(turnStatus);
+  const running = isTurnActive(turnStatus);
   const currentWord = draft.split(/\s/u).at(-1) ?? '';
   useEffect(() => {
     let active = true;

@@ -397,6 +397,8 @@ function a25Evidence() {
 function a26Evidence(artifact, sourceDigest) {
   const automationFrontend = {
     fileCount: 18,
+    hostileFixtureChunks: 1,
+    hostileFixtureSha256: A26_HOSTILE_FIXTURE_SHA256,
     inventorySha256: architectureSha('b'),
     javascriptRegexEngineChunks: 1,
     moduleProvenanceSha256: architectureSha('f'),
@@ -439,6 +441,9 @@ function a26Evidence(artifact, sourceDigest) {
       piuiRasterOnlyImageAddition: true,
       productionFrontend: {
         ...automationFrontend,
+        // Production carries no hostile fixture; only the flagged probe build does.
+        hostileFixtureChunks: 0,
+        hostileFixtureSha256: null,
         inventorySha256: architectureSha('a'),
         moduleProvenanceSha256: architectureSha('e'),
         resourceAllowlistSha256: architectureSha('d'),

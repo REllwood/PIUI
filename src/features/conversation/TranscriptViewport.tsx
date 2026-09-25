@@ -20,8 +20,12 @@ export function TranscriptViewport({ messages }: Readonly<{ messages: readonly M
 
   useEffect(() => {
     const element = viewport.current;
-    if (!element || awayFromLatest) return;
-    element.scrollTop = element.scrollHeight;
+    if (!element || awayFromLatest) return undefined;
+    // Scroll after layout settles; a newer update or unmount retires the pending frame.
+    const frame = requestAnimationFrame(() => {
+      element.scrollTop = element.scrollHeight;
+    });
+    return () => cancelAnimationFrame(frame);
   }, [messages, awayFromLatest]);
 
   return (
