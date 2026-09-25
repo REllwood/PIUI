@@ -1,10 +1,17 @@
 import { readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
+import {
+  LOCAL_TRAIL_SKIPPED,
+  localDocumentationTrailPresent,
+  readLocalTrailFile,
+} from './local-documentation-trail.mjs';
 
 const root = resolve(import.meta.dirname, '..');
-const files = [
+const trackedFiles = [
   'README.md',
   'CHANGELOG.md',
+];
+const trailFiles = [
   'docs/PRIVACY.md',
   'docs/SECURITY.md',
   'docs/TROUBLESHOOTING.md',
@@ -16,9 +23,14 @@ const files = [
   'docs/testing/README.md',
   'docs/testing/MANUAL-ACCESSIBILITY.md',
 ];
+const trailPresent = await localDocumentationTrailPresent(root, ['docs']);
+const files = trailPresent ? [...trackedFiles, ...trailFiles] : trackedFiles;
 
 const contents = new Map();
-for (const file of files) contents.set(file, await readFile(resolve(root, file), 'utf8'));
+for (const file of trackedFiles) contents.set(file, await readFile(resolve(root, file), 'utf8'));
+if (trailPresent) {
+  for (const file of trailFiles) contents.set(file, await readLocalTrailFile(root, file));
+}
 
 const unsupportedClaims = [
   /public updates? (?:are|is) enabled/iu,
@@ -57,9 +69,14 @@ const readme = contents.get('README.md') ?? '';
 for (const command of ['pnpm verify:static', 'pnpm release:verify', 'pnpm release:local']) {
   if (!readme.includes(command)) throw new Error(`README.md: missing ${command}`);
 }
-const releasing = contents.get('docs/RELEASING.md') ?? '';
-for (const gate of ['Developer ID', 'notarisation', 'updater', 'hosting']) {
-  if (!releasing.includes(gate)) throw new Error(`docs/RELEASING.md: missing ${gate} gate`);
+if (trailPresent) {
+  const releasing = contents.get('docs/RELEASING.md') ?? '';
+  for (const gate of ['Developer ID', 'notarisation', 'updater', 'hosting']) {
+    if (!releasing.includes(gate)) throw new Error(`docs/RELEASING.md: missing ${gate} gate`);
+  }
+  process.stdout.write(`Documentation: ${files.length} files checked\n`);
+} else {
+  process.stdout.write(
+    `Documentation: ${files.length} tracked files checked; docs/ ${LOCAL_TRAIL_SKIPPED}\n`,
+  );
 }
-
-process.stdout.write(`Documentation: ${files.length} files checked\n`);

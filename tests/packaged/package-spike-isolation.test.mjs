@@ -34,14 +34,15 @@ import {
 import {
   CODE_SIGNATURE_VERIFICATION_TEST_HOOK,
   assertAutomationHostSigningEvidence,
-  automationHostSigningPolicy,
   automationSigningAuthoritySandbox,
   automationSigningKeychainPath,
+  automationSigningPolicy,
   automationSigningSandbox as exactAutomationSigningSandbox,
   inspectAppleDevelopmentHost,
   verifyCodeSignatureBytesWithLease,
 } from '../../scripts/automation-host-signing.mjs';
 import { inventoryBundle } from './bundle-inspection.mjs';
+import { realAutomationSigningSkipReason } from './helpers/automation-signing-policy.mjs';
 import {
   buildSandboxFor,
   copyBundleToPrivateControl,
@@ -65,6 +66,10 @@ import {
   releaseAppleToolchainAuthority,
   revalidateAppleToolchainAuthority,
 } from '../../scripts/apple-toolchain-trust.mjs';
+
+// Real codesign tests need the owner's local Apple Development pin; without
+// it they skip with the loader's reason instead of failing on a placeholder.
+const realSigningSkip = realAutomationSigningSkipReason();
 
 function compileTrustedNativeFixture(arguments_, input) {
   const authority = captureAppleToolchainAuthority();
@@ -1585,7 +1590,7 @@ test('bundle sealing rejects links and forbidden xattrs without mutating externa
   );
 });
 
-test('automation signing rejects same-byte host pathname replacement while held', async (t) => {
+test('automation signing rejects same-byte host pathname replacement while held', { skip: realSigningSkip }, async (t) => {
   const root = await mkdtemp(join(await realpath(tmpdir()), 'piui-sign-host-test.'));
   t.after(async () => removeFixture(root));
   const signedApp = resolve(root, 'Signed.app');
@@ -1620,7 +1625,7 @@ test('automation signing rejects same-byte host pathname replacement while held'
   );
 });
 
-test('automation signing produces two strictly verified identities that differ only in CMS material', async (t) => {
+test('automation signing produces two strictly verified identities that differ only in CMS material', { skip: realSigningSkip }, async (t) => {
   if (process.platform !== 'darwin') {
     t.skip('Apple Development codesign is required');
     return;
@@ -1681,15 +1686,16 @@ test('automation signing produces two strictly verified identities that differ o
   const firstEvidence = await signAutomationHost(first.app, {});
   await new Promise((resolveDelay) => setTimeout(resolveDelay, 1_100));
   const secondEvidence = await signAutomationHost(second.app, {});
+  const signingPolicy = automationSigningPolicy();
   for (const evidence of [firstEvidence, secondEvidence]) {
-    assert.equal(evidence.bundleIdentifier, automationHostSigningPolicy.bundleIdentifier);
-    assert.equal(evidence.certificateSha1, automationHostSigningPolicy.certificateSha1);
-    assert.equal(evidence.certificateSha256, automationHostSigningPolicy.certificateSha256);
+    assert.equal(evidence.bundleIdentifier, signingPolicy.bundleIdentifier);
+    assert.equal(evidence.certificateSha1, signingPolicy.certificateSha1);
+    assert.equal(evidence.certificateSha256, signingPolicy.certificateSha256);
     assert.equal(evidence.codeDirectoryFlags, 0);
-    assert.equal(evidence.designatedRequirement, automationHostSigningPolicy.designatedRequirement);
+    assert.equal(evidence.designatedRequirement, signingPolicy.designatedRequirement);
     assert.equal(evidence.entitlements, 'none');
     assert.equal(evidence.signature, 'apple-development');
-    assert.equal(evidence.teamIdentifier, automationHostSigningPolicy.teamIdentifier);
+    assert.equal(evidence.teamIdentifier, signingPolicy.teamIdentifier);
     assert.deepEqual(evidence.signatureSlots.map(({ slot }) => slot), [0, 2, 0x10000]);
   }
 
@@ -1747,7 +1753,7 @@ async function createSignedVerificationHost(root, name) {
   return host;
 }
 
-test('Apple host inspection verifies and describes one held private clone', async (t) => {
+test('Apple host inspection verifies and describes one held private clone', { skip: realSigningSkip }, async (t) => {
   if (process.platform !== 'darwin') {
     t.skip('Apple Development codesign is required');
     return;
@@ -1778,7 +1784,7 @@ test('Apple host inspection verifies and describes one held private clone', asyn
   assert.equal(new Set(observations.map(({ clonePath }) => clonePath)).size, 1);
 });
 
-test('held signature bytes are verified through separate held source and clone files', async (t) => {
+test('held signature bytes are verified through separate held source and clone files', { skip: realSigningSkip }, async (t) => {
   if (process.platform !== 'darwin') {
     t.skip('Apple Development codesign is required');
     return;
@@ -1808,7 +1814,7 @@ test('held signature bytes are verified through separate held source and clone f
   );
 });
 
-test('Apple host inspection rejects a valid decoy ABA swap around either codesign call', async (t) => {
+test('Apple host inspection rejects a valid decoy ABA swap around either codesign call', { skip: realSigningSkip }, async (t) => {
   if (process.platform !== 'darwin') {
     t.skip('Apple Development codesign is required');
     return;
@@ -1842,7 +1848,7 @@ test('Apple host inspection rejects a valid decoy ABA swap around either codesig
   }
 });
 
-test('Apple host inspection rejects a restored verification-parent ABA swap', async (t) => {
+test('Apple host inspection rejects a restored verification-parent ABA swap', { skip: realSigningSkip }, async (t) => {
   if (process.platform !== 'darwin') {
     t.skip('Apple Development codesign is required');
     return;
@@ -1896,7 +1902,7 @@ test('Apple host inspection rejects a restored verification-parent ABA swap', as
   assert.equal(restored, true);
 });
 
-test('Apple host inspection rejects a one-way verification-clone mutation', async (t) => {
+test('Apple host inspection rejects a one-way verification-clone mutation', { skip: realSigningSkip }, async (t) => {
   if (process.platform !== 'darwin') {
     t.skip('Apple Development codesign is required');
     return;

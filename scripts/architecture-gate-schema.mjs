@@ -1,4 +1,15 @@
 import { createHash } from 'node:crypto';
+import {
+  closeSync,
+  constants as fsConstants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+} from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname, resolve } from 'node:path';
 
 export const ARCHITECTURE_GATE_SCHEMA_VERSION = 1;
 export const ARCHITECTURE_GATE_TARGET = 'aarch64-apple-darwin';
@@ -6,13 +17,26 @@ export const MAX_ARCHITECTURE_RESULTS_BYTES = 1_048_576;
 const SHA256 = /^[0-9a-f]{64}$/;
 const SHA1 = /^[0-9A-F]{40}$/;
 const CDHASH = /^[0-9a-f]{40}$/;
-const AUTOMATION_SIGNING_IDENTITY = Object.freeze({
-  bundleIdentifier: 'au.com.piui.desktop.architecture-test',
-  certificateSha1: '0000000000000000000000000000000000000001',
-  certificateSha256: '0000000000000000000000000000000000000000000000000000000000000001',
-  designatedRequirement: 'anchor apple generic and identifier "au.com.piui.desktop.architecture-test" and certificate leaf[subject.OU] = "ZZZZ000002"',
-  teamIdentifier: 'ZZZZ000002',
-});
+const TEAM_ID = /^[A-Z0-9]{10}$/;
+const APPLE_DEVELOPMENT_COMMON_NAME = /^Apple Development: [^\p{Cc}"\\]{1,200} \([A-Z0-9]{10}\)$/u;
+export const AUTOMATION_SIGNING_BUNDLE_IDENTIFIER = 'au.com.piui.desktop.architecture-test';
+export const AUTOMATION_SIGNING_POLICY_ENVIRONMENT = 'PIUI_AUTOMATION_SIGNING_POLICY';
+export const AUTOMATION_SIGNING_POLICY_DEFAULT_RELATIVE_PATH =
+  'Library/Application Support/PIUI/automation-signing-policy.json';
+export const AUTOMATION_SIGNING_NOT_CONFIGURED = 'PIUI_AUTOMATION_SIGNING_NOT_CONFIGURED';
+const AUTOMATION_SIGNING_REQUIREMENTS_BYTES = 136;
+const MAX_AUTOMATION_SIGNING_POLICY_BYTES = 16_384;
+const AUTOMATION_SIGNING_POLICY_KEYS = Object.freeze([
+  'bundleIdentifier',
+  'certificateCommonName',
+  'certificateSha1',
+  'certificateSha256',
+  'designatedRequirement',
+  'requirementsBytes',
+  'schemaVersion',
+  'teamIdentifier',
+]);
+let configuredAutomationSigningPolicy;
 export const ARCHITECTURE_VARIANT_DEFINITION_SHA256 = Object.freeze({
   'approval-twin': 'e43d120f6b463a0cfb9abcc976f1623fed7c413345e993fd2c43af021fa78989',
   'automation-twin': '2b8951ea71e231e3dcef4f47e0871d39c6608e614fe4bf3a716fc8c5dbafffdd',
@@ -116,6 +140,140 @@ function canonicalise(value) {
 
 export function canonicalArchitectureJson(value) {
   return JSON.stringify(canonicalise(value));
+}
+
+/**
+ * The Apple Development identity that signs the automation twin belongs to
+ * one developer, so it is never committed. It lives in a local, owner-only
+ * JSON file outside the repository and is resolved lazily: copies of this
+ * schema inside narrower sandboxes never touch the file unless they validate
+ * automation-signed evidence.
+ */
+export function automationSigningPolicyPath(
+  environment = process.env,
+  home = homedir(),
+) {
+  const configured = environment?.[AUTOMATION_SIGNING_POLICY_ENVIRONMENT];
+  if (configured === undefined || configured === '') {
+    if (typeof home !== 'string' || !home.startsWith('/') || /[\0\r\n]/u.test(home)) {
+      reject('Automation signing policy home directory is invalid');
+    }
+    return resolve(home, AUTOMATION_SIGNING_POLICY_DEFAULT_RELATIVE_PATH);
+  }
+  if (typeof configured !== 'string'
+    || !configured.startsWith('/')
+    || resolve(configured) !== configured
+    || /[\0\r\n]/u.test(configured)) {
+    reject(`${AUTOMATION_SIGNING_POLICY_ENVIRONMENT} must be an absolute, normalised path`);
+  }
+  return configured;
+}
+
+export function parseAutomationSigningPolicy(value) {
+  const invalid = 'Automation signing policy is invalid';
+  if (!isRecord(value)) reject(invalid);
+  const keys = Object.keys(value).sort();
+  if (keys.length !== AUTOMATION_SIGNING_POLICY_KEYS.length
+    || keys.some((key, index) => key !== AUTOMATION_SIGNING_POLICY_KEYS[index])) reject(invalid);
+  if (value.schemaVersion !== 1
+    || value.bundleIdentifier !== AUTOMATION_SIGNING_BUNDLE_IDENTIFIER
+    || typeof value.certificateCommonName !== 'string'
+    || !APPLE_DEVELOPMENT_COMMON_NAME.test(value.certificateCommonName)
+    || typeof value.certificateSha1 !== 'string'
+    || !SHA1.test(value.certificateSha1)
+    || typeof value.certificateSha256 !== 'string'
+    || !SHA256.test(value.certificateSha256)
+    || typeof value.teamIdentifier !== 'string'
+    || !TEAM_ID.test(value.teamIdentifier)
+    || value.designatedRequirement
+      !== `anchor apple generic and identifier "${AUTOMATION_SIGNING_BUNDLE_IDENTIFIER}" and certificate leaf[subject.OU] = "${value.teamIdentifier}"`
+    || value.requirementsBytes !== AUTOMATION_SIGNING_REQUIREMENTS_BYTES) reject(invalid);
+  return Object.freeze({
+    bundleIdentifier: value.bundleIdentifier,
+    certificateCommonName: value.certificateCommonName,
+    certificateSha1: value.certificateSha1,
+    certificateSha256: value.certificateSha256,
+    designatedRequirement: value.designatedRequirement,
+    requirementsBytes: value.requirementsBytes,
+    schemaVersion: value.schemaVersion,
+    teamIdentifier: value.teamIdentifier,
+  });
+}
+
+/**
+ * Read one policy file without following links. The file and its parent must
+ * belong to the current account and be unwritable by group or world, so no
+ * other local account can redirect which certificate the gate trusts.
+ */
+export function readAutomationSigningPolicy(path) {
+  if (typeof path !== 'string'
+    || !path.startsWith('/')
+    || resolve(path) !== path
+    || /[\0\r\n]/u.test(path)) {
+    reject('Automation signing policy path is invalid');
+  }
+  let pathState;
+  try {
+    pathState = lstatSync(path, { bigint: true });
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+    const missing = new Error(
+      `Automation signing identity not configured: ${path} is absent; create it or set ${AUTOMATION_SIGNING_POLICY_ENVIRONMENT}`,
+    );
+    missing.code = AUTOMATION_SIGNING_NOT_CONFIGURED;
+    throw missing;
+  }
+  const unsafe = 'Automation signing policy file is unsafe';
+  const uid = typeof process.getuid === 'function' ? BigInt(process.getuid()) : undefined;
+  const parentState = lstatSync(dirname(path), { bigint: true });
+  if (pathState.isSymbolicLink()
+    || !pathState.isFile()
+    || !parentState.isDirectory()
+    || (parentState.mode & 0o022n) !== 0n
+    || (uid !== undefined && parentState.uid !== uid && parentState.uid !== 0n)
+    || realpathSync(path) !== path) reject(unsafe);
+  let descriptor;
+  let bytes;
+  try {
+    descriptor = openSync(
+      path,
+      fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK,
+    );
+    const state = fstatSync(descriptor, { bigint: true });
+    if (!state.isFile()
+      || state.dev !== pathState.dev
+      || state.ino !== pathState.ino
+      || state.nlink !== 1n
+      || (uid !== undefined && state.uid !== uid)
+      || (state.mode & 0o022n) !== 0n
+      || state.size < 2n
+      || state.size > BigInt(MAX_AUTOMATION_SIGNING_POLICY_BYTES)) reject(unsafe);
+    bytes = readFileSync(descriptor);
+    if (bytes.length !== Number(state.size)) reject(unsafe);
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+  const text = bytes.toString('utf8');
+  let parsed;
+  try {
+    if (Buffer.byteLength(text, 'utf8') !== bytes.length) throw new Error('not UTF-8');
+    parsed = JSON.parse(text);
+  } catch {
+    reject('Automation signing policy is invalid');
+  }
+  return parseAutomationSigningPolicy(parsed);
+}
+
+/**
+ * The process-wide pin. Anything that signs, inspects or accepts
+ * automation-signed evidence calls this, so an unconfigured machine fails
+ * closed before touching the Keychain or trusting recorded evidence.
+ */
+export function automationSigningPolicy() {
+  configuredAutomationSigningPolicy ??= readAutomationSigningPolicy(
+    automationSigningPolicyPath(),
+  );
+  return configuredAutomationSigningPolicy;
 }
 
 export function sha256Bytes(bytes) {
@@ -303,15 +461,14 @@ export function assertMeasuredTwinDeltaRecord(value, kind, {
     || host.repeatPreSignCodeDirectorySha256
       !== host.twinPreSignCodeDirectorySha256) reject();
   if (kind === 'automation-twin') {
+    const identity = automationSigningPolicy();
     if (host.twinSignature !== 'cms'
-      || host.postSignBundleIdentifier !== AUTOMATION_SIGNING_IDENTITY.bundleIdentifier
-      || host.postSignCertificateSha1 !== AUTOMATION_SIGNING_IDENTITY.certificateSha1
-      || host.postSignCertificateSha256
-        !== AUTOMATION_SIGNING_IDENTITY.certificateSha256
-      || host.postSignDesignatedRequirement
-        !== AUTOMATION_SIGNING_IDENTITY.designatedRequirement
+      || host.postSignBundleIdentifier !== identity.bundleIdentifier
+      || host.postSignCertificateSha1 !== identity.certificateSha1
+      || host.postSignCertificateSha256 !== identity.certificateSha256
+      || host.postSignDesignatedRequirement !== identity.designatedRequirement
       || host.postSignEntitlements !== 'none'
-      || host.postSignTeamIdentifier !== AUTOMATION_SIGNING_IDENTITY.teamIdentifier
+      || host.postSignTeamIdentifier !== identity.teamIdentifier
       || !CDHASH.test(host.postSignCdHash)
       || !SHA1.test(host.postSignCertificateSha1)
       || host.postSignCodeDirectoryFlags !== 0
@@ -348,8 +505,8 @@ export function assertMeasuredTwinDeltaRecord(value, kind, {
       || host.repeatPostSignSlots[1].sha256 !== host.postSignRequirementsSha256
       || host.repeatPostSignSlots[2].sha256 !== host.repeatPostSignCmsSha256
       || host.postSignSlots[0].size !== host.repeatPostSignSlots[0].size
-      || host.postSignSlots[1].size !== 136
-      || host.repeatPostSignSlots[1].size !== 136
+      || host.postSignSlots[1].size !== identity.requirementsBytes
+      || host.repeatPostSignSlots[1].size !== identity.requirementsBytes
       || host.postSignSlots[2].size !== host.postSignCmsBytes
       || host.repeatPostSignSlots[2].size !== host.repeatPostSignCmsBytes
       || host.postSignSignatureContainerBytes

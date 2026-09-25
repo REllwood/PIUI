@@ -1,18 +1,23 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
-import { lstat, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { lstat, readFile, rename, writeFile } from 'node:fs/promises';
 import { arch, platform } from 'node:os';
 import { resolve } from 'node:path';
 import { inventoryBundle, inspectMachOBytes } from '../tests/packaged/bundle-inspection.mjs';
+import {
+  localReleaseLaunchEnvironment,
+  localReleasePaths,
+  replaceDirectory,
+} from './local-release-support.mjs';
 
 const root = resolve(import.meta.dirname, '..');
-const runId = `${new Date().toISOString().replaceAll(/[-:.]/gu, '')}-${randomBytes(8).toString('hex')}`;
-const releasesRoot = resolve(root, '.forge/evidence/local-release-builds');
-const releaseRoot = resolve(releasesRoot, runId);
-const appPath = resolve(
-  root,
-  'src-tauri/target/aarch64-apple-darwin/release/bundle/macos/PIUI.app',
-);
+const {
+  appPath,
+  evidencePath,
+  evidenceRoot,
+  previousAppPath,
+  previousRoot,
+  runtimeRoot,
+} = localReleasePaths(root);
 
 function run(command, args) {
   process.stdout.write(`${command} ${args.join(' ')}\n`);
@@ -29,23 +34,22 @@ function run(command, args) {
 if (platform() !== 'darwin' || arch() !== 'arm64') {
   throw new Error('The PIUI local release target requires Apple Silicon macOS');
 }
-await mkdir(releasesRoot, { recursive: true, mode: 0o700 });
-await mkdir(releaseRoot, { recursive: false, mode: 0o700 });
+// Clear the previous run's evidence first so a failed run cannot leave a
+// stale pass behind.
+await replaceDirectory(evidenceRoot);
 
 let retainedCandidate = null;
 try {
   await lstat(appPath);
   const retainedInventory = await inventoryBundle(appPath);
-  const retainedParent = resolve(releaseRoot, 'retained-before-build');
-  const retainedPath = resolve(retainedParent, 'PIUI.app');
-  await mkdir(retainedParent, { recursive: false, mode: 0o700 });
-  await rename(appPath, retainedPath);
+  await replaceDirectory(previousRoot);
+  await rename(appPath, previousAppPath);
   retainedCandidate = {
-    path: retainedPath,
+    path: previousAppPath,
     fingerprint: retainedInventory.fingerprint,
     entries: retainedInventory.entries.length,
   };
-  process.stdout.write(`Retained previous local bundle: ${retainedPath}\n`);
+  process.stdout.write(`Retained previous local bundle: ${previousAppPath}\n`);
 } catch (error) {
   if (error?.code !== 'ENOENT') throw error;
 }
@@ -109,19 +113,11 @@ for (const entry of inventory.entries.filter((candidate) => candidate.kind === '
   }
 }
 
-const runtimeRoot = resolve(releaseRoot, 'runtime');
-await mkdir(runtimeRoot, { recursive: true, mode: 0o700 });
+await replaceDirectory(runtimeRoot);
 const child = spawn(resolve(appPath, 'Contents/MacOS/piui'), [], {
   cwd: runtimeRoot,
   detached: false,
-  env: {
-    ...process.env,
-    PIUI_AGENT_ROOT: resolve(runtimeRoot, 'agent'),
-    PIUI_SESSION_ROOT: resolve(runtimeRoot, 'sessions'),
-    XDG_CACHE_HOME: resolve(runtimeRoot, 'cache'),
-    XDG_CONFIG_HOME: resolve(runtimeRoot, 'config'),
-    XDG_DATA_HOME: resolve(runtimeRoot, 'data'),
-  },
+  env: localReleaseLaunchEnvironment(process.env, runtimeRoot),
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 let launchExit = null;
@@ -155,10 +151,10 @@ const evidence = {
   retainedCandidate,
   distributionAuthorised: false,
 };
-await writeFile(
-  resolve(runtimeRoot, 'release-evidence.json'),
-  `${JSON.stringify(evidence, null, 2)}\n`,
-  'utf8',
-);
+await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, {
+  encoding: 'utf8',
+  mode: 0o600,
+});
 process.stdout.write(`Local release candidate: pass (${inventory.fingerprint})\n`);
 process.stdout.write(`Local release bundle: ${appPath}\n`);
+process.stdout.write(`Local release evidence: ${evidencePath}\n`);

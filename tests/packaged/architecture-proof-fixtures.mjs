@@ -20,6 +20,9 @@ import {
   canonicalArchitectureJson,
   sha256Bytes,
 } from '../../scripts/architecture-gate-schema.mjs';
+import {
+  FIXTURE_AUTOMATION_SIGNING_POLICY as signer,
+} from './helpers/automation-signing-policy.mjs';
 
 export const architectureSha = (character) => character.repeat(64);
 
@@ -50,13 +53,13 @@ export function architectureMeasuredDelta(kind, {
   const twinHostSha256 = architectureSha(automation ? 'd' : 'c');
   const deterministicSigningIdentitySha256 = automation
     ? sha256Bytes(Buffer.from(canonicalArchitectureJson({
-      bundleIdentifier: 'au.com.piui.desktop.architecture-test',
+      bundleIdentifier: signer.bundleIdentifier,
       cdHash: codeDirectorySha256.slice(0, 40),
-      certificateSha1: '0000000000000000000000000000000000000001',
-      certificateSha256: '0000000000000000000000000000000000000000000000000000000000000001',
+      certificateSha1: signer.certificateSha1,
+      certificateSha256: signer.certificateSha256,
       codeDirectoryFlags: 0,
       codeDirectorySha256,
-      designatedRequirement: 'anchor apple generic and identifier "au.com.piui.desktop.architecture-test" and certificate leaf[subject.OU] = "ZZZZ000002"',
+      designatedRequirement: signer.designatedRequirement,
       entitlements: 'none',
       nonCmsSignatureSha256: architectureSha('1'),
       nonCmsSignatureSlots: [
@@ -66,7 +69,7 @@ export function architectureMeasuredDelta(kind, {
       requirementsSha256: architectureSha('e'),
       schemaVersion: 1,
       signature: 'apple-development',
-      teamIdentifier: 'ZZZZ000002',
+      teamIdentifier: signer.teamIdentifier,
     }), 'utf8'))
     : null;
   const record = {
@@ -102,21 +105,21 @@ export function architectureMeasuredDelta(kind, {
         loadCommandContractSha256: architectureSha('9'),
         path: 'Contents/MacOS/piui',
         postSignBundleIdentifier: automation
-          ? 'au.com.piui.desktop.architecture-test'
+          ? signer.bundleIdentifier
           : null,
         postSignCdHash: automation ? codeDirectorySha256.slice(0, 40) : null,
         postSignCertificateSha1: automation
-          ? '0000000000000000000000000000000000000001'
+          ? signer.certificateSha1
           : null,
         postSignCertificateSha256: automation
-          ? '0000000000000000000000000000000000000000000000000000000000000001'
+          ? signer.certificateSha256
           : null,
         postSignCmsBytes: automation ? 4_801 : null,
         postSignCmsSha256: automation ? architectureSha('f') : null,
         postSignCodeDirectoryFlags: automation ? 0 : 0x20002,
         postSignCodeDirectorySha256: codeDirectorySha256,
         postSignDesignatedRequirement: automation
-          ? 'anchor apple generic and identifier "au.com.piui.desktop.architecture-test" and certificate leaf[subject.OU] = "ZZZZ000002"'
+          ? signer.designatedRequirement
           : null,
         postSignDeterministicIdentitySha256: deterministicSigningIdentitySha256,
         postSignEntitlements: automation ? 'none' : null,
@@ -132,7 +135,7 @@ export function architectureMeasuredDelta(kind, {
             { sha256: architectureSha('f'), size: 4_801, slot: 0x10000 },
           ]
           : [{ sha256: codeDirectorySha256, size: 16, slot: 0 }],
-        postSignTeamIdentifier: automation ? 'ZZZZ000002' : null,
+        postSignTeamIdentifier: automation ? signer.teamIdentifier : null,
         repeatPreSignCodeDirectorySha256: architectureSha('a'),
         repeatPostSignCmsBytes: automation ? 4_802 : null,
         repeatPostSignCmsSha256: automation ? architectureSha('0') : null,

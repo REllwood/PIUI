@@ -163,6 +163,9 @@ const suites = Object.freeze({
     step('pnpm', 'test:updates'),
     step('pnpm', 'test:lifecycle'),
     step('cargo', 'test', '--manifest-path', 'src-tauri/Cargo.toml', '--all-targets', '--', '--test-threads=1'),
+    // Packaged checks inspect the staged sidecar, so it must match the
+    // current sidecar build before they run.
+    step('node', 'scripts/check-staged-sidecar-current.mjs'),
     step('pnpm', 'test:packaged'),
     step('pnpm', 'gate:architecture'),
     step('pnpm', 'docs:check'),

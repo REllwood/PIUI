@@ -8,6 +8,8 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
 import {
+  ICON_PATH,
+  ICON_SOURCE_PATH,
   SIDECAR_MANIFEST,
   inspectBundle,
   inspectMachOBytes,
@@ -87,14 +89,40 @@ async function basicFixture() {
   return root;
 }
 
-async function closedFixture({ sidecarPath = 'dist/index.js', sidecarBytes = Buffer.from('export {};\n'), hostBytes = thinMachO() } = {}) {
+function infoPlist(iconEntry = '<key>CFBundleIconFile</key>\n  <string>icon.icns</string>') {
+  return [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+    '<plist version="1.0">',
+    '<dict>',
+    '  <key>CFBundleExecutable</key>',
+    '  <string>piui</string>',
+    `  ${iconEntry}`,
+    '</dict>',
+    '</plist>',
+    '',
+  ].join('\n');
+}
+
+async function closedFixture({
+  sidecarPath = 'dist/index.js',
+  sidecarBytes = Buffer.from('export {};\n'),
+  hostBytes = thinMachO(),
+  iconBytes,
+  info = infoPlist(),
+} = {}) {
   const root = await mkdtemp(resolve(tmpdir(), 'piui-a21-closed-'));
   roots.push(root);
   const sidecarRoot = resolve(root, 'Contents/Resources/resources/sidecar');
   const resourcesRoot = resolve(root, 'Contents/Resources/resources');
   await mkdir(resolve(root, 'Contents/MacOS'), { recursive: true, mode: 0o755 });
   await mkdir(resolve(sidecarRoot, dirname(sidecarPath)), { recursive: true, mode: 0o755 });
-  await writeFile(resolve(root, 'Contents/Info.plist'), '<plist/>\n', { mode: 0o644 });
+  await writeFile(resolve(root, 'Contents/Info.plist'), info, { mode: 0o644 });
+  await writeFile(
+    resolve(root, ICON_PATH),
+    iconBytes ?? await readFile(resolve(sourceRoot, ICON_SOURCE_PATH)),
+    { mode: 0o644 },
+  );
   await writeFile(resolve(root, 'Contents/MacOS/piui'), hostBytes, { mode: 0o755 });
   const nodeBytes = thinMachO();
   await writeFile(resolve(root, 'Contents/MacOS/piui-node'), nodeBytes, { mode: 0o755 });
@@ -200,6 +228,72 @@ test('requires exact anchored canonical sidecar and whole-bundle layout', async 
   fixture = await closedFixture();
   await rename(resolve(fixture.root, SIDECAR_MANIFEST), resolve(fixture.sidecarRoot, 'decoy.json'));
   await assert.rejects(inspectFixture(fixture), /manifest missing/);
+});
+
+test('pins the bundled app icon to the source icns and its Info.plist declaration', async () => {
+  const sourceIcon = await readFile(resolve(sourceRoot, ICON_SOURCE_PATH));
+  assert.equal(sourceIcon.subarray(0, 4).toString('latin1'), 'icns');
+  let fixture = await closedFixture();
+  await inspectFixture(fixture);
+
+  const drop = async () => {
+    await rm(fixture.root, { recursive: true, force: true });
+    roots.splice(roots.indexOf(fixture.root), 1);
+  };
+
+  await drop();
+  const altered = Buffer.from(sourceIcon);
+  altered[altered.length - 1] ^= 0xff;
+  fixture = await closedFixture({ iconBytes: altered });
+  await assert.rejects(inspectFixture(fixture), /app icon differs from the pinned source icon/);
+
+  await drop();
+  fixture = await closedFixture();
+  await rm(resolve(fixture.root, ICON_PATH));
+  await assert.rejects(inspectFixture(fixture), /explicit layout/);
+
+  await drop();
+  fixture = await closedFixture();
+  await writeFile(resolve(fixture.root, 'Contents/Resources/PIUI.icns'), sourceIcon, { mode: 0o644 });
+  await assert.rejects(inspectFixture(fixture), /explicit layout/);
+
+  for (const iconEntry of [
+    '',
+    '<key>CFBundleIconFile</key>\n  <string>PIUI.icns</string>',
+    '<key>CFBundleIconFile</key>\n  <integer>1</integer>',
+  ]) {
+    await drop();
+    fixture = await closedFixture({ info: infoPlist(iconEntry) });
+    await assert.rejects(inspectFixture(fixture), /does not declare the pinned app icon/);
+  }
+
+  await drop();
+  fixture = await closedFixture({ info: '<plist/>\n' });
+  await assert.rejects(inspectFixture(fixture), /does not declare the pinned app icon/);
+});
+
+test('rejects a source config whose bundle icon set drifts from the pinned set', async () => {
+  const fixture = await closedFixture();
+  const altRoot = await mkdtemp(resolve(tmpdir(), 'piui-a21-source-'));
+  roots.push(altRoot);
+  await mkdir(resolve(altRoot, 'src-tauri/capabilities'), { recursive: true, mode: 0o755 });
+  await mkdir(resolve(altRoot, 'src-tauri/icons'), { recursive: true, mode: 0o755 });
+  for (const path of ['src-tauri/capabilities/default.json', ICON_SOURCE_PATH]) {
+    await writeFile(resolve(altRoot, path), await readFile(resolve(sourceRoot, path)), { mode: 0o644 });
+  }
+  const config = JSON.parse(await readFile(resolve(sourceRoot, 'src-tauri/tauri.conf.json'), 'utf8'));
+  const withIcons = (icon) => writeFile(
+    resolve(altRoot, 'src-tauri/tauri.conf.json'),
+    `${JSON.stringify({ ...config, bundle: { ...config.bundle, icon } }, null, 2)}\n`,
+  );
+  const inspectWithAltSource = () => inspectBundle({ appPath: fixture.root, sourceRoot: altRoot, anchors: fixture.anchors });
+
+  await withIcons(config.bundle.icon);
+  await inspectWithAltSource();
+  await withIcons(config.bundle.icon.filter((path) => !path.endsWith('.icns')));
+  await assert.rejects(inspectWithAltSource(), /Unexpected bundle icon configuration/);
+  await withIcons([...config.bundle.icon, 'icons/other.icns']);
+  await assert.rejects(inspectWithAltSource(), /Unexpected bundle icon configuration/);
 });
 
 test('detects every Mach-O regardless of mode and enforces signature policy', async () => {

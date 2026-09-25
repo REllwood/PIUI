@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import {
   constants,
   fstatSync,
@@ -1186,7 +1186,10 @@ async function quarantineLegacyDeployment(controlled = false) {
   if (controlled) {
     throw new Error('Controlled sidecar staging found a legacy deployment');
   }
-  const abandoned = resolve(cacheRoot, `sidecar-deploy-abandoned-${randomUUID()}`);
+  // One fixed quarantine path: a copy left by an interrupted cleanup is
+  // removed first rather than accumulating uniquely named siblings.
+  const abandoned = resolve(cacheRoot, 'sidecar-deploy-abandoned');
+  if (await pathExists(abandoned)) await cleanTreeMandatory(abandoned);
   await rename(legacy, abandoned);
   await cleanTreeMandatory(abandoned);
 }

@@ -68,7 +68,7 @@ test('requires a plausible two-token personal name and every live VoiceOver chec
     })));
   const evidence = {
     checks,
-    humanName: 'Avery Reviewer',
+    humanName: 'Avery Example',
     macosVersion: '15.6.1',
     observedAt: '2026-07-31T12:00:00.000Z',
     schemaVersion: 1,
@@ -80,7 +80,7 @@ test('requires a plausible two-token personal name and every live VoiceOver chec
     evidence,
   );
   for (const humanName of [
-    'Avery Reviewer',
+    'Avery Example',
     'María García',
     "Aoife O'Neill",
   ]) {
@@ -118,14 +118,14 @@ test('requires a plausible two-token personal name and every live VoiceOver chec
     'user',
   ]) {
     assert.throws(() => parseA28VoiceOverEvidence(
-      line({ ...evidence, humanName: `${forbiddenToken} Reviewer` }),
+      line({ ...evidence, humanName: `${forbiddenToken} Example` }),
       Date.parse('2026-07-31T12:01:00.000Z'),
     ));
   }
   for (const changed of [
     { ...evidence, humanName: 'AA' },
     { ...evidence, humanName: 'A B' },
-    { ...evidence, humanName: 'Avery 7Reviewer' },
+    { ...evidence, humanName: 'Avery 7Example' },
     { ...evidence, humanName: 'Manual Reviewer' },
     { ...evidence, humanName: 'QA Witness' },
     { ...evidence, humanName: 'Automated Tester' },
@@ -148,7 +148,7 @@ test('requires a plausible two-token personal name and every live VoiceOver chec
     { ...evidence, humanName: 'Codex' },
     { ...evidence, humanName: 'Codex Agent' },
     { ...evidence, humanName: '  ' },
-    { ...evidence, humanName: ' Avery Reviewer ' },
+    { ...evidence, humanName: ' Avery Example ' },
     { ...evidence, checks: checks.slice(0, 3) },
     { ...evidence, checks: checks.map((check) => ({ ...check, mode: 'accessible' })) },
     { ...evidence, checks: checks.map((check, index) => index === 0

@@ -51,13 +51,16 @@ const SOURCE_DIRECTORIES = Object.freeze(new Set([
 ]));
 
 const EXCLUDED_ROOT_DIRECTORIES = Object.freeze(new Set([
+  '.build',
   '.cache',
+  '.claude',
   '.git',
   '.idea',
   '.pi-subagents',
   '.vscode',
   'coverage',
   'dist',
+  'graphify-out',
   'node_modules',
   'playwright-report',
   'reports',
