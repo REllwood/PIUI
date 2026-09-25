@@ -115,7 +115,8 @@ pub(crate) fn validate_product_request(
                     .get("source")
                     .and_then(Value::as_str)
                     .is_some_and(|source| {
-                        source.encode_utf16().count() <= 256 && !source.chars().any(char::is_control)
+                        source.encode_utf16().count() <= 256
+                            && !source.chars().any(char::is_control)
                     })
                 && matches!(
                     payload.get("scope").and_then(Value::as_str),

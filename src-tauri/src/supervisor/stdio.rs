@@ -442,7 +442,10 @@ mod tests {
         .join();
         assert!(ring.is_poisoned());
         let mut child = Command::new("/bin/sh")
-            .args(["-c", "echo first diagnostic >&2; echo second diagnostic >&2"])
+            .args([
+                "-c",
+                "echo first diagnostic >&2; echo second diagnostic >&2",
+            ])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
