@@ -3,7 +3,7 @@ import { useProduct } from '../../app/ProductContext';
 import { Icon, type IconName } from '../../components/icons/Icon';
 import { LoadingLabel } from '../../components/primitives/LoadingLabel';
 import { StatusPill } from '../../components/primitives/StatusPill';
-import { redactForDisplay } from '../../domain/errors';
+import { productErrorMessage, redactForDisplay } from '../../domain/errors';
 import { visibleLogLines } from '../../domain/logs';
 import { isTurnActive } from '../../domain/machines';
 import { DEFAULT_THINKING_LEVEL, isThinkingLevel, thinkingChoices } from '../../domain/thinking';
@@ -195,7 +195,7 @@ export function SettingsRoute() {
       setSaveError(
         error instanceof Error && error.message.includes('conflict')
           ? 'A setting changed elsewhere. Your draft is preserved; review the latest values or retry.'
-          : 'PIUI could not save every setting. Your draft is preserved.',
+          : productErrorMessage(error, 'PIUI could not save every setting. Your draft is preserved.'),
       );
     }
   };
@@ -312,9 +312,7 @@ function SettingsSection({
       setActionMessage(success);
     } catch (error) {
       setActionMessage(
-        error instanceof Error && error.message.includes('turn-active')
-          ? 'Stop the active turn before changing the project.'
-          : 'PIUI could not complete that action. No hidden fallback was used.',
+        productErrorMessage(error, 'PIUI could not complete that action. No hidden fallback was used.'),
       );
     } finally {
       setPendingAction(null);
@@ -885,11 +883,14 @@ function ResourcesSection() {
     try {
       await product.setResourceEnabled(resource.id, enabling, resource.executable && enabling);
       setMessage(`${resource.name} ${enabling ? 'enabled' : 'disabled'} and acknowledged by Pi.`);
-    } catch {
+    } catch (error) {
       setMessage(
-        resource.executable
-          ? 'The executable resource could not be loaded safely. It remains disabled.'
-          : 'The resource change was not acknowledged. The previous state is retained.',
+        productErrorMessage(
+          error,
+          resource.executable
+            ? 'The executable resource could not be loaded safely. It remains disabled.'
+            : 'The resource change was not acknowledged. The previous state is retained.',
+        ),
       );
     } finally {
       setPending(null);
@@ -918,7 +919,10 @@ function ResourcesSection() {
       setMessage(
         error instanceof Error && error.message.includes('offline')
           ? 'Package installation is unavailable while this Mac is offline.'
-          : 'The package was not installed. PIUI retained the previous catalogue.',
+          : productErrorMessage(
+              error,
+              'The package was not installed. PIUI retained the previous catalogue.',
+            ),
       );
     } finally {
       setPending(null);
@@ -947,8 +951,13 @@ function ResourcesSection() {
           ? `${resource.name} removed.`
           : `${resource.name} updated. Review its trust before continuing.`,
       );
-    } catch {
-      setMessage(`The package ${operation} did not complete. Review Diagnostics before retrying.`);
+    } catch (error) {
+      setMessage(
+        productErrorMessage(
+          error,
+          `The package ${operation} did not complete. Review Diagnostics before retrying.`,
+        ),
+      );
     } finally {
       setPending(null);
     }

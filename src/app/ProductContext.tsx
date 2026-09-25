@@ -12,6 +12,7 @@ import { productionBridgeStore } from '../bridge/store';
 import { useBridgeSelector } from '../bridge/useBridgeSelector';
 import { createDeltaBatcher } from './deltaBatcher';
 import { reconcileApprovals } from '../domain/approvals';
+import { GENERIC_PRODUCT_ERROR, productErrorCopy, productErrorMessage } from '../domain/errors';
 import { createQueueItem, failQueueItem, isTurnActive, submitApproval } from '../domain/machines';
 import {
   canReconcileTranscript,
@@ -1009,7 +1010,10 @@ export function ProductProvider({
                       ...item,
                       markdown:
                         item.markdown ||
-                        `The provider turn failed (${code}). Your message remains in the conversation.`,
+                        `${productErrorMessage(
+                          code,
+                          'Pi could not finish this turn. Try again, or open Diagnostics if it keeps happening.',
+                        )} Your message remains in the conversation.`,
                       status: 'failed',
                     }
                   : item,
@@ -1052,13 +1056,15 @@ export function ProductProvider({
           },
         });
         return true;
-      } catch {
+      } catch (error) {
         deltas.cancel();
         if (!ownsTurn()) return false;
         failed = true;
         turnContinuity.current = null;
         activeTurnRequest.current = null;
         const live = productionBridgeStore.getSnapshot().product;
+        const rejection = productErrorCopy(error);
+        const known = rejection.code !== GENERIC_PRODUCT_ERROR;
         productionBridgeStore.updateLocalFixture({
           messages: retainedMessages,
           turnStatus: 'failed',
@@ -1069,9 +1075,12 @@ export function ProductProvider({
               id: 'turn-start',
               label: 'Turn start',
               status: 'fail',
-              detail:
-                'The provider turn was not accepted. Your draft has been kept in the composer.',
-              recovery: 'Check Diagnostics, then send the retained draft again.',
+              detail: `${
+                known ? rejection.message : 'The provider turn was not accepted.'
+              } Your draft has been kept in the composer.`,
+              recovery: known
+                ? rejection.recovery
+                : 'Check Diagnostics, then send the retained draft again.',
             },
           ],
         });

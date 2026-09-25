@@ -3,6 +3,7 @@ import { useProduct } from '../../app/ProductContext';
 import { Icon } from '../../components/icons/Icon';
 import { LoadingLabel } from '../../components/primitives/LoadingLabel';
 import { StatusPill } from '../../components/primitives/StatusPill';
+import { productErrorMessage } from '../../domain/errors';
 import { isTurnActive } from '../../domain/machines';
 import { canCreateConversation, hasConversationPrerequisites } from '../../domain/readiness';
 import type { SessionSummary } from '../../domain/types';
@@ -44,8 +45,10 @@ export function SessionsRoute() {
     setActionError(null);
     try {
       await product.resumeSession(selected.id);
-    } catch {
-      setActionError('The session could not be opened. Its existing state is unchanged.');
+    } catch (error) {
+      setActionError(
+        productErrorMessage(error, 'The session could not be opened. Its existing state is unchanged.'),
+      );
     } finally {
       setOperation(null);
     }
@@ -57,8 +60,8 @@ export function SessionsRoute() {
       if (!(await product.createSession())) {
         setActionError('Choose and trust a project, then connect a provider before creating a conversation.');
       }
-    } catch {
-      setActionError('A new conversation could not be created.');
+    } catch (error) {
+      setActionError(productErrorMessage(error, 'A new conversation could not be created.'));
     }
   };
 
@@ -68,8 +71,10 @@ export function SessionsRoute() {
     setActionError(null);
     try {
       await product.branchSession(selected.id);
-    } catch {
-      setActionError('The branch could not be opened. The source session is unchanged.');
+    } catch (error) {
+      setActionError(
+        productErrorMessage(error, 'The branch could not be opened. The source session is unchanged.'),
+      );
     } finally {
       setOperation(null);
     }
@@ -81,8 +86,8 @@ export function SessionsRoute() {
     setActionError(null);
     try {
       await product.exportSession(selected.id);
-    } catch {
-      setActionError('The session export was not completed.');
+    } catch (error) {
+      setActionError(productErrorMessage(error, 'The session export was not completed.'));
     } finally {
       setOperation(null);
     }
@@ -95,8 +100,8 @@ export function SessionsRoute() {
     setActionError(null);
     try {
       await product.renameSession(selected.id, titleDraft);
-    } catch {
-      setActionError('The session name was not changed.');
+    } catch (error) {
+      setActionError(productErrorMessage(error, 'The session name was not changed.'));
     } finally {
       setOperation(null);
     }
@@ -108,8 +113,10 @@ export function SessionsRoute() {
     setActionError(null);
     try {
       await product.compactSession(selected.id);
-    } catch {
-      setActionError('The session was not compacted. Its prior history is retained.');
+    } catch (error) {
+      setActionError(
+        productErrorMessage(error, 'The session was not compacted. Its prior history is retained.'),
+      );
     } finally {
       setOperation(null);
     }
@@ -128,8 +135,8 @@ export function SessionsRoute() {
     try {
       await product.trashSession(selected.id);
       setSelectedId('');
-    } catch {
-      setActionError('The named session was not moved to Trash.');
+    } catch (error) {
+      setActionError(productErrorMessage(error, 'The named session was not moved to Trash.'));
     } finally {
       setOperation(null);
     }

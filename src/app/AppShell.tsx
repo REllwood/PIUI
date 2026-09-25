@@ -4,6 +4,7 @@ import { type AppCommandId } from './commands';
 import { CommandMenu } from './CommandMenu';
 import { ComposerDraftProvider } from '../features/composer/ComposerDrafts';
 import { CommandRouter } from './CommandRouter';
+import { productErrorMessage } from '../domain/errors';
 import { isTurnActive } from '../domain/machines';
 import { canCreateConversation } from '../domain/readiness';
 import { MainToolbar } from './MainToolbar';
@@ -109,8 +110,10 @@ export function AppShell() {
       if (!commandEnabled(command)) return;
       setCommandError(null);
       const run = (operation: Promise<unknown>) => {
-        void operation.catch(() =>
-          setCommandError('That action could not be completed. Please try again.'),
+        void operation.catch((error: unknown) =>
+          setCommandError(
+            productErrorMessage(error, 'That action could not be completed. Please try again.'),
+          ),
         );
       };
       if (command === 'open-settings') product.openSettings();

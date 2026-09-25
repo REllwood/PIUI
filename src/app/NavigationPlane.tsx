@@ -3,6 +3,7 @@ import type { RouteId } from '../domain/types';
 import { Icon, type IconName } from '../components/icons/Icon';
 import { LoadingLabel } from '../components/primitives/LoadingLabel';
 import { StatusPill } from '../components/primitives/StatusPill';
+import { productErrorMessage } from '../domain/errors';
 import { isTurnActive } from '../domain/machines';
 import { canCreateConversation } from '../domain/readiness';
 import { isActivityInProgress } from '../domain/workSummary';
@@ -68,8 +69,8 @@ export function NavigationPlane({
         setRoute('conversation');
         onClose();
       }
-    } catch {
-      setNotice('The conversation could not be created. Please try again.');
+    } catch (error) {
+      setNotice(productErrorMessage(error, 'The conversation could not be created. Please try again.'));
     } finally {
       setCreating(false);
     }
@@ -82,8 +83,8 @@ export function NavigationPlane({
       await resumeSession(sessionId);
       setRoute('conversation');
       onClose();
-    } catch {
-      setNotice('This conversation could not be opened. Please try again.');
+    } catch (error) {
+      setNotice(productErrorMessage(error, 'This conversation could not be opened. Please try again.'));
     } finally {
       setOpeningSessionId(null);
     }

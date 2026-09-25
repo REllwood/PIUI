@@ -2,6 +2,7 @@ import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useProduct } from '../../app/ProductContext';
 import { Icon } from '../../components/icons/Icon';
 import { LoadingLabel } from '../../components/primitives/LoadingLabel';
+import { productErrorMessage } from '../../domain/errors';
 import { isTurnActive } from '../../domain/machines';
 import {
   DEFAULT_THINKING_LEVEL,
@@ -148,9 +149,11 @@ export function ModelPicker() {
         savingRef.current = false;
         close();
       }
-    } catch {
+    } catch (error) {
       if (mountedRef.current) {
-        setError('Your choice could not be fully saved. Review it and try again.');
+        setError(
+          productErrorMessage(error, 'Your choice could not be fully saved. Review it and try again.'),
+        );
       }
     } finally {
       savingRef.current = false;
