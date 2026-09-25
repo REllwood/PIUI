@@ -998,7 +998,7 @@ impl ApprovalRegistry {
             .inner
             .lock()
             .map_err(|_| "approval state unavailable".to_string())?;
-        let keys: Vec<String> = inner
+        let matching: Vec<(String, GroupPhase)> = inner
             .groups
             .iter()
             .filter(|(_, group)| {
@@ -1009,10 +1009,24 @@ impl ApprovalRegistry {
                     && group.cohort.assistant_entry_id == request.assistant_entry_id
                     && group.cohort.cohort_digest == request.cohort_digest
             })
-            .map(|(key, _)| key.clone())
+            .map(|(key, group)| (key.clone(), group.phase))
+            .collect();
+        // The sidecar cannot observe host cleanup: its abandon may race our
+        // own expiry or pruning, repeat an earlier abandon, or name a cohort
+        // whose members never registered. None of that is evidence of a
+        // broken generation, so it is acknowledged without touching any
+        // decision and without retaining anything. Only groups still open
+        // are cancelled, so a repeat cannot re-plan a settled response.
+        let keys: Vec<String> = matching
+            .into_iter()
+            .filter(|(_, phase)| !matches!(phase, GroupPhase::Cancelled | GroupPhase::Approved))
+            .map(|(key, _)| key)
             .collect();
         if keys.is_empty() {
-            return Err("approval abandon rejected".into());
+            return Ok(ApprovalAbandonAck {
+                correlation_id: request.correlation_id,
+                cohort_digest: request.cohort_digest,
+            });
         }
         let member_ids: Vec<String> = keys
             .iter()
@@ -3145,6 +3159,73 @@ mod tests {
                 .count(),
             2
         );
+    }
+
+    fn abandon_for(request: &ApprovalRequest, correlation: &str) -> ApprovalAbandonRequest {
+        let cohort = request.cohort.as_ref().unwrap();
+        ApprovalAbandonRequest {
+            generation: request.generation,
+            correlation_id: correlation.into(),
+            session_id: request.session_id.clone(),
+            workspace_id: request.workspace_id.clone(),
+            workspace_revision: request.workspace_revision,
+            assistant_entry_id: cohort.assistant_entry_id.clone(),
+            cohort_digest: cohort.cohort_digest.clone(),
+        }
+    }
+
+    #[test]
+    fn abandons_for_unknown_cleaned_up_or_settled_cohorts_are_acknowledged_idempotently() {
+        let (registry, clock) = registry();
+        let tools = ["read", "grep"];
+        let requests: Vec<ApprovalRequest> = (0..2)
+            .map(|ordinal| cohort_request((ordinal + 1) as u64, ordinal, &tools))
+            .collect();
+
+        // A cohort whose members never registered.
+        let ack = registry
+            .abandon(abandon_for(&requests[0], "sidecar-abandon-unknown"))
+            .expect("an unknown cohort is acknowledged, not fatal");
+        assert_eq!(
+            ack.cohort_digest,
+            requests[0].cohort.as_ref().unwrap().cohort_digest
+        );
+        let before = registry.snapshot().unwrap().change_sequence;
+
+        // The host expires and prunes the cohort before the sidecar's abandon.
+        for request in requests.iter().cloned() {
+            registry.register(request, binding()).unwrap();
+        }
+        clock.millis.store(1_000, Ordering::SeqCst);
+        let mut expired = 0;
+        while let Some(job) = registry.take_response_job(1).unwrap() {
+            assert_eq!(job.decision, "expired");
+            registry
+                .complete_response(&job.response_token, |_| Ok(()))
+                .unwrap();
+            expired += 1;
+        }
+        assert_eq!(expired, 2);
+        let settled = registry.snapshot().unwrap();
+        registry
+            .abandon(abandon_for(&requests[0], "sidecar-abandon-late"))
+            .expect("an abandon racing host expiry is acknowledged");
+        registry
+            .abandon(abandon_for(&requests[0], "sidecar-abandon-repeat"))
+            .expect("a repeated abandon is acknowledged");
+        let after = registry.snapshot().unwrap();
+        assert_eq!(after.change_sequence, settled.change_sequence);
+        assert!(after.records.iter().all(|view| {
+            view.state == ApprovalState::Expired
+                && view.terminal_reason == Some(ApprovalTerminalReason::TimedOut)
+        }));
+        assert!(registry.take_response_job(1).unwrap().is_none());
+        assert!(settled.change_sequence > before);
+
+        // Malformed private coordinates are still rejected.
+        let mut forged = abandon_for(&requests[0], "not-a-sidecar-id");
+        forged.correlation_id = "ui-forged".into();
+        assert!(registry.abandon(forged).is_err());
     }
 
     #[test]

@@ -1553,6 +1553,60 @@ mod tests {
     }
 
     #[test]
+    fn an_abandon_for_a_cohort_the_host_already_cleaned_up_is_acknowledged() {
+        let rig = Rig::new(CredentialProxy::in_memory_for_dispatcher_test());
+        rig.send(host(
+            1,
+            "sidecar-abandon-unknown-1",
+            serde_json::json!({
+                "method":"approval.abandon","schemaVersion":2,"generation":1,
+                "sessionId":format!("session-{:032x}", 1),
+                "workspaceId":format!("workspace-{:032x}", 2),
+                "workspaceRevision":1,
+                "assistantEntryId":"assistant-entry-gone",
+                "cohortDigest":"c".repeat(64),
+                "reason":"pi-abort"
+            }),
+        ))
+        .unwrap();
+        let written = rig.wait_for_lines(1);
+        assert_eq!(written[0].kind, ProtocolKind::HostResponse);
+        assert_eq!(
+            written[0].correlation_id.as_deref(),
+            Some("sidecar-abandon-unknown-1")
+        );
+        assert_eq!(written[0].payload["method"], "approval.abandon-ack");
+        assert_eq!(written[0].payload["cohortDigest"], "c".repeat(64));
+        assert_eq!(written[0].payload["cancelled"], true);
+        assert!(
+            rig.control.is_active(),
+            "a racing abandon must not be fatal"
+        );
+
+        // A malformed abandon is still a protocol violation.
+        rig.send(host(
+            2,
+            "sidecar-abandon-malformed-1",
+            serde_json::json!({
+                "method":"approval.abandon","schemaVersion":2,"generation":1,
+                "sessionId":format!("session-{:032x}", 1),
+                "workspaceId":format!("workspace-{:032x}", 2),
+                "workspaceRevision":1,
+                "assistantEntryId":"assistant-entry-gone",
+                "cohortDigest":"c".repeat(64),
+                "reason":"not-a-reason"
+            }),
+        ))
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while rig.control.is_active() {
+            assert!(Instant::now() < deadline, "malformed abandon was accepted");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        rig.shutdown();
+    }
+
+    #[test]
     fn a_late_product_response_is_discarded_without_ending_the_generation() {
         let rig = Rig::new(CredentialProxy::in_memory_for_dispatcher_test());
         let (sender, receiver) = sync_channel(1);
