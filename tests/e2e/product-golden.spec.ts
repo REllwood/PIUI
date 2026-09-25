@@ -92,6 +92,32 @@ test('keyboard discovery, themes and accessibility remain usable', async ({ page
   await expectNoHorizontalOverflow(page);
 });
 
+test('Markdown colours follow the app theme rather than the macOS appearance', async ({ page }) => {
+  // Measures the shared Markdown code surface inside the themed product root.
+  const codeSurface = () =>
+    page.evaluate(() => {
+      const probe = document.createElement('pre');
+      probe.className = 'markdown__code-block';
+      document.querySelector('.piui')?.append(probe);
+      const colour = getComputedStyle(probe).backgroundColor;
+      probe.remove();
+      return colour;
+    });
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await openFixture(page);
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('button', { name: /Appearance/ }).click();
+
+  await page.getByRole('radio', { name: 'Light' }).click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+  expect(await codeSurface()).toBe('rgb(241, 244, 239)');
+
+  await page.emulateMedia({ colorScheme: 'light' });
+  await page.getByRole('radio', { name: 'Dark' }).click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  expect(await codeSurface()).toBe('rgb(9, 11, 9)');
+});
+
 test('minimum window and 200 percent zoom reflow without page overflow', async ({ page }) => {
   await openFixture(page, { width: 680, height: 560 });
   await page.evaluate(() => {
