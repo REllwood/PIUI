@@ -484,6 +484,22 @@ where
 /// Best effort: tells the interface that a turn nobody is awaiting ended,
 /// and waits for that event to be emitted before the generation is cut off.
 fn project_failure_notice(opened: &OpenedStream, error: &str) {
+    let state = &opened.state;
+    let generation = opened.generation;
+    project_failure_notice_with(state, generation, &opened.request_id, error, |safe| {
+        state.enqueue_event_with_receipt(generation, safe)
+    });
+}
+
+fn project_failure_notice_with<F>(
+    state: &BridgeState,
+    generation: u64,
+    request_id: &str,
+    error: &str,
+    enqueue: F,
+) where
+    F: FnOnce(&Envelope) -> Result<crate::commands::event_output::EventReceipt, String>,
+{
     let code = match error {
         STREAM_DEADLINE_EXCEEDED => "host-stream-deadline-exceeded",
         STREAM_LIMIT_EXCEEDED => "host-stream-limit-exceeded",
@@ -493,7 +509,7 @@ fn project_failure_notice(opened: &OpenedStream, error: &str) {
         version: 1,
         kind: ProtocolKind::Event,
         id: SYNTHESISED_STREAM_TERMINAL_ID.to_owned(),
-        correlation_id: Some(opened.request_id.clone()),
+        correlation_id: Some(request_id.to_owned()),
         decision_id: None,
         sequence: 0,
         payload: serde_json::Map::from_iter([
@@ -503,11 +519,7 @@ fn project_failure_notice(opened: &OpenedStream, error: &str) {
         ]),
         error: None,
     };
-    let state = &opened.state;
-    let receipt = state.project_and_deliver(opened.generation, &terminal, |safe| {
-        state.enqueue_event_with_receipt(opened.generation, safe)
-    });
-    if let Ok(receipt) = receipt {
+    if let Ok(receipt) = state.project_and_deliver(generation, &terminal, enqueue) {
         let _ = receipt.recv_timeout(FAILURE_NOTICE_RECEIPT_TIMEOUT);
     }
 }
@@ -833,6 +845,58 @@ mod tests {
             "sequence":1,"payload":{"eventType":"stream.delta","text":"hello"}
         }));
         (state, delta)
+    }
+
+    #[test]
+    fn a_turn_that_fails_after_starting_is_ended_for_the_interface() {
+        let (state, _) = busy_rig();
+        for (index, (error, code)) in [
+            (STREAM_DEADLINE_EXCEEDED, "host-stream-deadline-exceeded"),
+            (STREAM_LIMIT_EXCEEDED, "host-stream-limit-exceeded"),
+            (
+                "sidecar stdout closed unexpectedly",
+                "host-stream-interrupted",
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let request_id = format!("web-turn-failing-{index}");
+            state
+                .register_public_origin(&request_id, 1, PublicOperationClass::Stream)
+                .unwrap();
+            let mut projected = None;
+            super::project_failure_notice_with(&state, 1, &request_id, error, |safe| {
+                projected = Some(safe.clone());
+                let (sender, receipt) = std::sync::mpsc::sync_channel(1);
+                sender.send(Ok(())).unwrap();
+                Ok(receipt)
+            });
+            let projected = projected.expect("a failure terminal is projected");
+            assert_eq!(
+                projected.correlation_id.as_deref(),
+                Some(request_id.as_str())
+            );
+            assert_eq!(projected.payload["eventType"], "stream.failed");
+            assert_eq!(projected.payload["terminal"], "failed");
+            assert_eq!(projected.payload["code"], code);
+            assert!(projected.id.starts_with("ui-envelope-"));
+        }
+    }
+
+    #[test]
+    fn a_turn_request_that_cannot_start_is_rejected_before_anything_is_sent() {
+        let state = BridgeState::new(inert_paths());
+        let oversized = envelope(serde_json::json!({
+            "version":1,"kind":"request","id":"web-turn-oversized","sequence":1,
+            "payload":{"method":"product.turn.start","schemaVersion":1,
+                "sessionId":format!("session-{}", "a".repeat(32)),"generation":1,
+                "text":"x".repeat(262_145),"retryPrevious":false,"attachments":[]}
+        }));
+        assert_eq!(
+            super::open_stream(&state, oversized).err().as_deref(),
+            Some("stream request invalid")
+        );
     }
 
     #[test]
