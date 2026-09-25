@@ -1,6 +1,7 @@
 import { DiffView } from '../../components/diff/DiffView';
 import { Icon } from '../../components/icons/Icon';
 import { LoadingLabel } from '../../components/primitives/LoadingLabel';
+import { countLabel } from '../../domain/copy';
 import type { FileChange } from '../../domain/types';
 
 export function DiffReview({
@@ -22,7 +23,7 @@ export function DiffReview({
         <div>
           <p className="ui-label">Change review</p>
           <h2>
-            {change.additions} additions, {change.deletions} deletions
+            {countLabel(change.additions, 'addition')}, {countLabel(change.deletions, 'deletion')}
           </h2>
         </div>
         {onClose ? (

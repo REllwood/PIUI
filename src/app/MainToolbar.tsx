@@ -1,6 +1,7 @@
 import { Icon } from '../components/icons/Icon';
 import { StatusPill } from '../components/primitives/StatusPill';
 import { LoadingLabel } from '../components/primitives/LoadingLabel';
+import { countLabel } from '../domain/copy';
 import { isTurnActive } from '../domain/machines';
 import { useProduct } from './ProductContext';
 
@@ -63,7 +64,7 @@ export function MainToolbar({
           <button
             type="button"
             className="approval-toolbar-button"
-            aria-label={`Open ${pending} pending approval${pending === 1 ? '' : 's'}`}
+            aria-label={`Open ${countLabel(pending, 'pending approval')}`}
             onClick={onOpenApprovals}
           >
             <Icon name="shield" />

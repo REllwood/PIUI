@@ -10,6 +10,7 @@ import { productFixture } from '../domain/fixtures';
 import { ActivityDetail } from './activity/ActivityDetail';
 import { ActivityRoute } from './activity/ActivityRoute';
 import { ApprovalSurface } from './approvals/ApprovalSurface';
+import { DiffReview } from './changes/DiffReview';
 import { CheckMacStep } from './onboarding/CheckMacStep';
 import { ProductTour } from './onboarding/ProductTour';
 import { ReadyStep } from './onboarding/ReadyStep';
@@ -76,6 +77,32 @@ describe('async and recovery component states', () => {
     );
     expect(screen.getByRole('note').textContent).toContain('Binary file preview unavailable');
     expect(screen.getByRole('button', { name: 'Copy' }).hasAttribute('disabled')).toBe(true);
+  });
+
+  it('counts changed lines in natural singular and plural copy', () => {
+    const change = {
+      id: 'change-1',
+      path: 'src/app/commands.ts',
+      state: 'modified',
+      additions: 1,
+      deletions: 1,
+      before: ["  | 'close-window';"],
+      after: ["  | 'toggle-theme';"],
+      undo: 'safe',
+    } as const;
+    const review = (additions: number, deletions: number) => (
+      <DiffReview
+        change={{ ...change, additions, deletions }}
+        busy={false}
+        onUndo={async () => undefined}
+        onReveal={async () => undefined}
+      />
+    );
+    const { rerender } = render(review(1, 1));
+    const heading = () => screen.getByRole('heading', { level: 2 }).textContent;
+    expect(heading()).toBe('1 addition, 1 deletion');
+    rerender(review(5, 0));
+    expect(heading()).toBe('5 additions, 0 deletions');
   });
 
   it('shows progress and disables repeated cancellation while activity cancellation waits', () => {
@@ -227,7 +254,43 @@ describe('async and recovery component states', () => {
       '**not bold** <img src=x onerror=alert(1)> rm -rf ./build⟨U+202E⟩',
     );
     expect(command.querySelector('*')).toBeNull();
-    expect(screen.getByText(/Shortened: the full command is longer than shown here/)).toBeTruthy();
+    expect(
+      screen.getByText('Shortened. Deny if you need to see the full command first.'),
+    ).toBeTruthy();
+  });
+
+  it('keeps what would run beside the decision, ahead of the buttons', () => {
+    const approval = productFixture.approvals[0];
+    if (!approval) throw new Error('fixture approval missing');
+    const { rerender } = render(
+      <ApprovalSurface
+        request={approval}
+        offline={false}
+        busy={false}
+        onDecision={async () => undefined}
+      />,
+    );
+    const decision = screen.getByRole('group', { name: approval.action });
+    const order = Array.from(decision.querySelectorAll('[role="region"], button'), (element) =>
+      element.getAttribute('aria-labelledby') ? 'subject' : element.textContent,
+    );
+    expect(order).toEqual(['subject', 'Deny', 'Approve once']);
+    expect(decision.querySelector('pre')?.textContent).toBe(approval.subject?.text);
+
+    // Without a subject the bar names the action instead, once for assistive technology.
+    rerender(
+      <ApprovalSurface
+        request={{ ...approval, subject: null }}
+        offline={false}
+        busy={false}
+        onDecision={async () => undefined}
+      />,
+    );
+    const fallback = screen.getByRole('group', { name: approval.action });
+    expect(fallback.querySelector('[role="region"]')).toBeNull();
+    const title = fallback.querySelector('.approval-decision__title');
+    expect(title?.textContent).toBe(approval.action);
+    expect(title?.getAttribute('aria-hidden')).toBe('true');
   });
 
   it('shows unknown versions instead of remembered release numbers', () => {

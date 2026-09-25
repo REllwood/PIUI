@@ -116,6 +116,77 @@ test('approval and change reviews can be reopened on a wide window', async ({ pa
   await expect(page.getByRole('complementary', { name: 'Context review' })).toContainText('Undo');
 });
 
+test('the work trace keeps the event waiting on the person in view', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/?fixture=product');
+  const panel = page.getByRole('group', { name: 'Current work summary' });
+  const summary = panel.locator('summary');
+  const waiting = panel.locator('.work-trace__item[data-state="waiting"]');
+  await expect(waiting).toHaveAttribute('aria-current', 'step');
+  // Three events overflow the short panel; the trace follows the one that needs a decision,
+  // and the sticky summary never covers it.
+  await expect
+    .poll(async () => {
+      const [box, item, heading] = await Promise.all([
+        panel.boundingBox(),
+        waiting.boundingBox(),
+        summary.boundingBox(),
+      ]);
+      if (!box || !item || !heading) return false;
+      return (
+        item.y >= heading.y + heading.height - 1 && item.y + item.height <= box.y + box.height + 1
+      );
+    })
+    .toBe(true);
+  await expect(summary).toContainText('Waiting for your approval');
+});
+
+for (const viewport of [
+  { width: 1280, height: 800 },
+  { width: 680, height: 560 },
+]) {
+  test(`approval decisions stay in reach at ${viewport.width}×${viewport.height}`, async ({
+    page,
+  }) => {
+    await page.setViewportSize(viewport);
+    await page.goto('/?fixture=product');
+    const review = page.getByRole('complementary', { name: 'Context review' });
+    if (!(await review.isVisible())) {
+      await page.getByRole('button', { name: /Open 1 pending approval/ }).click();
+    }
+    const decision = review.getByRole('group', { name: 'Run the local verification suite' });
+    const command = decision.getByRole('region', { name: 'Command' });
+    const approve = decision.getByRole('button', { name: 'Approve once' });
+    const deny = decision.getByRole('button', { name: 'Deny' });
+    await expect(command).toHaveText('pnpm typecheck && pnpm test:unit && pnpm build');
+    // What would run and both decisions are on screen together and uncovered, without
+    // scrolling the request details, so nothing can be approved unseen.
+    for (const target of [command, deny, approve]) {
+      await expect(target).toBeInViewport({ ratio: 1 });
+      expect(
+        await target.evaluate((element) => {
+          const box = element.getBoundingClientRect();
+          return element.contains(
+            document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2),
+          );
+        }),
+      ).toBe(true);
+    }
+    // The details still scroll beneath the pinned bar, which stays put.
+    const reversible = review.getByText('Reversible', { exact: true });
+    await reversible.scrollIntoViewIfNeeded();
+    await expect(reversible).toBeInViewport();
+    await expect(command).toBeInViewport({ ratio: 1 });
+    await expect(approve).toBeInViewport({ ratio: 1 });
+    // Reading and tab order: what runs, then Deny, then Approve once.
+    await command.focus();
+    await page.keyboard.press('Tab');
+    await expect(deny).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(approve).toBeFocused();
+  });
+}
+
 test('compact navigation hides its controls and keeps keyboard focus in the drawer', async ({
   page,
 }) => {

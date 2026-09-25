@@ -424,13 +424,16 @@
   margin: 5px 0 0;
   color: var(--text-muted);
 }
+.project-preview {
+  container: project-preview / inline-size;
+}
 .project-preview__header {
   display: grid;
   grid-template-columns: 44px minmax(0, 1fr) auto;
   align-items: center;
   gap: 12px;
 }
-.project-preview__header > span {
+.project-preview__header > span:first-child {
   display: grid;
   place-items: center;
   width: 44px;
@@ -446,16 +449,22 @@
 .project-preview p {
   color: var(--text-muted);
 }
+/* Each choice is a full-width row: its name and action share a line and the explanation
+   runs underneath, so neither the copy nor the button is squeezed into a narrow column. */
 .trust-choices {
   display: grid;
-  grid-template-columns: 1fr 1fr;
   gap: 8px;
   margin-top: 20px;
 }
 .trust-choices article {
   display: grid;
-  align-content: start;
-  padding: 16px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-areas:
+    'icon title action'
+    'text text text';
+  align-items: center;
+  gap: 6px 10px;
+  padding: 14px 16px;
   border: 1px solid var(--divider);
   border-radius: var(--radius-card);
   background: var(--surface);
@@ -463,17 +472,36 @@
 .trust-choices article[data-recommended='true'] {
   border-color: var(--accent);
 }
-.trust-choices svg {
+.trust-choices article > svg {
+  grid-area: icon;
   color: var(--accent);
 }
 .trust-choices h3 {
-  margin: 8px 0 4px;
+  grid-area: title;
+  margin: 0;
 }
 .trust-choices p {
-  min-height: 60px;
+  grid-area: text;
+}
+.trust-choices article > :last-child {
+  grid-area: action;
+  justify-self: end;
 }
 .trust-choices .button {
-  margin-top: 12px;
+  white-space: nowrap;
+}
+/* Too narrow for a name and an action on one line: the action moves below the copy. */
+@container project-preview (max-width: 360px) {
+  .trust-choices article {
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-areas:
+      'icon title'
+      'text text'
+      'action action';
+  }
+  .trust-choices article > :last-child {
+    justify-self: start;
+  }
 }
 /* Scoped to the preview so it outranks `.project-preview p` and keeps its spacing and tone. */
 .project-preview .trust-disclaimer {
@@ -483,6 +511,7 @@
   color: var(--warning);
 }
 .ready-preview {
+  container: tour / inline-size;
   text-align: center;
 }
 .ready-orb {
@@ -531,6 +560,22 @@
   color: var(--work-on);
   background: var(--work);
   font: 11px var(--font-mono);
+}
+/* Three columns only when each label fits on a line or two; otherwise the points become a
+   short list, and the orb shrinks to give that list its height back. */
+@container tour (max-width: 570px) {
+  .ready-orb {
+    width: 56px;
+    height: 56px;
+    margin: 4px auto 14px;
+  }
+  .tour-points {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+  }
+  .tour-points span {
+    padding: 6px 10px;
+  }
 }
 .onboarding-actions {
   display: flex;
@@ -624,7 +669,6 @@
   .preview-work {
     display: none !important;
   }
-  .trust-choices,
   .tour-points {
     grid-template-columns: 1fr;
   }
