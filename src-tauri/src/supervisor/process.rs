@@ -268,6 +268,23 @@ pub struct SidecarStatus {
 
 pub(super) const APPROVAL_WRITE_MAX_DURATION: Duration = Duration::from_millis(250);
 const WRITE_POLL_SLICE: Duration = Duration::from_millis(20);
+// A frame larger than the pipe buffer needs Node to drain it several times.
+// Each further 64 KiB earns more time so a briefly busy event loop does not
+// end the generation, but no single write may hold the writer indefinitely.
+const FRAME_WRITE_BASE_BUDGET: Duration = Duration::from_millis(250);
+const FRAME_WRITE_BUDGET_PER_CHUNK: Duration = Duration::from_millis(125);
+const FRAME_WRITE_BUDGET_CHUNK_BYTES: usize = 65_536;
+const FRAME_WRITE_MAX_BUDGET: Duration = Duration::from_secs(2);
+
+/// Time allowed for one complete non-approval frame. Approval frames keep
+/// their own dispatcher-minted absolute deadline.
+fn frame_write_budget(frame_bytes: usize) -> Duration {
+    let extra_chunks = frame_bytes.saturating_sub(1) / FRAME_WRITE_BUDGET_CHUNK_BYTES;
+    FRAME_WRITE_BUDGET_PER_CHUNK
+        .saturating_mul(u32::try_from(extra_chunks).unwrap_or(u32::MAX))
+        .saturating_add(FRAME_WRITE_BASE_BUDGET)
+        .min(FRAME_WRITE_MAX_BUDGET)
+}
 const RESERVED_INTERNAL_ID_PREFIX: &str = "rust-";
 const RESERVED_UI_ID_PREFIX: &str = "ui-";
 
@@ -835,7 +852,7 @@ impl GenerationWriter {
 
     fn write_bytes(&mut self, bytes: Zeroizing<Vec<u8>>) -> Result<(), String> {
         let deadline = Instant::now()
-            .checked_add(APPROVAL_WRITE_MAX_DURATION)
+            .checked_add(frame_write_budget(bytes.len()))
             .ok_or_else(|| "sidecar write timed out".to_string())?;
         self.write_slice_until(&bytes, deadline)
     }
@@ -2515,6 +2532,86 @@ process.stdin.resume();
         assert!(!marker.exists());
         supervisor.stop().unwrap();
         assert!(!marker.exists());
+    }
+
+    /// Refuses every byte until the reader "wakes up", as Node does while its
+    /// event loop is busy, then accepts writes normally.
+    struct BusyReaderSink {
+        ready_at: Instant,
+    }
+
+    impl NonblockingSink for BusyReaderSink {
+        fn try_write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if Instant::now() < self.ready_at {
+                return Err(io::ErrorKind::WouldBlock.into());
+            }
+            let accepted = bytes.len().min(65_536);
+            Ok(accepted)
+        }
+
+        fn wait_writable(&mut self, timeout: Duration) -> io::Result<bool> {
+            std::thread::sleep(
+                self.ready_at
+                    .saturating_duration_since(Instant::now())
+                    .min(timeout),
+            );
+            Ok(Instant::now() >= self.ready_at)
+        }
+    }
+
+    #[test]
+    fn frame_write_budget_scales_with_size_up_to_a_hard_ceiling() {
+        assert_eq!(frame_write_budget(0), FRAME_WRITE_BASE_BUDGET);
+        assert_eq!(frame_write_budget(512), FRAME_WRITE_BASE_BUDGET);
+        assert_eq!(frame_write_budget(65_536), FRAME_WRITE_BASE_BUDGET);
+        assert_eq!(
+            frame_write_budget(65_537),
+            FRAME_WRITE_BASE_BUDGET + FRAME_WRITE_BUDGET_PER_CHUNK
+        );
+        assert_eq!(
+            frame_write_budget(300_000),
+            FRAME_WRITE_BASE_BUDGET + FRAME_WRITE_BUDGET_PER_CHUNK * 4
+        );
+        assert_eq!(
+            frame_write_budget(crate::protocol::MAX_LINE_BYTES),
+            FRAME_WRITE_MAX_BUDGET
+        );
+        assert_eq!(frame_write_budget(usize::MAX), FRAME_WRITE_MAX_BUDGET);
+    }
+
+    #[test]
+    fn a_large_frame_survives_a_briefly_busy_reader() {
+        let failure = Arc::new(Mutex::new(None));
+        let control = Arc::new(GenerationControl::new(i32::MAX, failure));
+        let mut writer = GenerationWriter::with_sink_for_test(
+            1,
+            Box::new(BusyReaderSink {
+                ready_at: Instant::now() + Duration::from_millis(400),
+            }),
+            Arc::clone(&control),
+        );
+        let mut payload = Map::new();
+        payload.insert("text".into(), Value::String("x".repeat(300_000)));
+        writer
+            .write_internal_request(1, "status", payload)
+            .expect("a 300 KB frame must outlast a 400 ms stall");
+        assert!(control.is_active());
+
+        // A small frame keeps the original tight budget.
+        let small_failure = Arc::new(Mutex::new(None));
+        let small_control = Arc::new(GenerationControl::new(i32::MAX, small_failure));
+        let mut small_writer = GenerationWriter::with_sink_for_test(
+            1,
+            Box::new(BusyReaderSink {
+                ready_at: Instant::now() + Duration::from_millis(400),
+            }),
+            Arc::clone(&small_control),
+        );
+        assert_eq!(
+            small_writer.write_internal_request(1, "status", Map::new()),
+            Err("sidecar write timed out".into())
+        );
+        assert!(!small_control.is_active());
     }
 
     #[test]
