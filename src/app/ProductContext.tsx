@@ -802,7 +802,10 @@ export function ProductProvider({
     if (!beginOperation('project')) throw new Error('operation-busy');
     try {
       await startLocalHelper();
-      const authorised = await authoriseWorkspace(workspace.id, workspace.revision);
+      // The host may have moved the revision since it was stored (for example after a
+      // revoke), so authorise against the project as it is now.
+      const inspected = await inspectWorkspace(workspace.id);
+      const authorised = await authoriseWorkspace(inspected.workspaceId, inspected.revision);
       const loaded = await loadTrustedWorkspace(authorised.workspaceId, authorised.revision);
       const trusted: StoredWorkspace = Object.freeze({
         id: loaded.workspaceId,

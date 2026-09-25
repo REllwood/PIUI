@@ -26,6 +26,7 @@ vi.mock('../platform/native', async (importOriginal) => ({
   createProductSession: vi.fn(),
   saveProductSetting: vi.fn(),
   renameProductSession: vi.fn(),
+  inspectWorkspace: vi.fn(),
   authoriseWorkspace: vi.fn(),
   loadTrustedWorkspace: vi.fn(),
 }));
@@ -388,6 +389,13 @@ describe('production conversation continuity', () => {
       trustState: 'trusted',
       resourceState: 'loaded',
     };
+    // The host moved the revision while the project was untrusted.
+    vi.mocked(native.inspectWorkspace).mockResolvedValue({
+      ...trustedSummary,
+      revision: 3,
+      trustState: 'untrusted',
+      resourceState: 'not-loaded',
+    });
     vi.mocked(native.authoriseWorkspace).mockResolvedValue(trustedSummary);
     vi.mocked(native.loadTrustedWorkspace).mockResolvedValue(trustedSummary);
     vi.mocked(native.listProductSessions).mockClear();
@@ -395,7 +403,7 @@ describe('production conversation continuity', () => {
     await act(async () => {
       await currentProduct().trustProject();
     });
-    expect(native.authoriseWorkspace).toHaveBeenCalledWith('workspace-a', 1);
+    expect(native.authoriseWorkspace).toHaveBeenCalledWith('workspace-a', 3);
     expect(native.listProductSessions).toHaveBeenCalledWith('workspace-a', 2);
     expect(currentProduct().snapshot.workspace?.trust).toBe('trusted');
     expect(currentProduct().snapshot.sessions).toContainEqual(
