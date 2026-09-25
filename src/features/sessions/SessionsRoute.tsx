@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useProduct } from '../../app/ProductContext';
 import { Icon } from '../../components/icons/Icon';
+import { useConfirmation } from '../../components/dialog/ModalDialog';
 import { LoadingLabel } from '../../components/primitives/LoadingLabel';
 import { StatusPill } from '../../components/primitives/StatusPill';
 import { productErrorMessage } from '../../domain/errors';
@@ -20,6 +21,7 @@ export function SessionsRoute() {
   >(null);
   const [titleDraft, setTitleDraft] = useState('');
   const [actionError, setActionError] = useState<string | null>(null);
+  const [confirm, confirmation] = useConfirmation();
   const turnBusy = isTurnActive(snapshot.turnStatus);
   const prerequisitesMet = hasConversationPrerequisites(snapshot);
   const canCreate = canCreateConversation(snapshot, product.activeOperation);
@@ -124,12 +126,14 @@ export function SessionsRoute() {
 
   const trash = async () => {
     if (!selected || operation || selected.id === snapshot.activeSessionId) return;
-    if (
-      !window.confirm(
-        `Move “${selected.title}” to the macOS Trash? PIUI will re-check the exact inactive session file before moving it.`,
-      )
-    )
-      return;
+    const confirmed = await confirm({
+      title: `Move “${selected.title}” to the Trash?`,
+      message:
+        'PIUI re-checks the exact inactive session file before moving it to the macOS Trash.',
+      confirmLabel: 'Move to Trash',
+      tone: 'danger',
+    });
+    if (!confirmed) return;
     setOperation('trash');
     setActionError(null);
     try {
@@ -402,6 +406,7 @@ export function SessionsRoute() {
           )}
         </section>
       </div>
+      {confirmation}
     </main>
   );
 }

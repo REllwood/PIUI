@@ -136,8 +136,16 @@ test('advanced package lifecycle is explicit, acknowledged and visibly pending',
   await page.getByRole('button', { name: /Resources/ }).click();
 
   await page.getByRole('textbox', { name: 'Package source' }).fill('@piui/fixture-package');
-  page.once('dialog', (dialog) => dialog.accept());
   await page.getByRole('button', { name: 'Review and install' }).click();
+  // Confirmation is an in-app dialog: WKWebView may not present window.confirm at all.
+  const confirmation = page.getByRole('alertdialog');
+  await expect(confirmation).toHaveAccessibleName('Install “@piui/fixture-package” from npm?');
+  await expect(confirmation.getByRole('button', { name: 'Cancel' })).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(confirmation).toHaveCount(0);
+  await expect(page.getByText('Installing package…')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Review and install' }).click();
+  await confirmation.getByRole('button', { name: 'Install' }).click();
   await expect(page.getByText('Installing package…')).toBeVisible();
   await expect(page.getByText('@piui/fixture-package installed but left disabled.')).toBeVisible();
 
@@ -148,13 +156,13 @@ test('advanced package lifecycle is explicit, acknowledged and visibly pending',
     'color',
     await tokenColour(page, '--warning'),
   );
-  page.once('dialog', (dialog) => dialog.accept());
   await card.getByRole('button', { name: 'Update' }).click();
+  await confirmation.getByRole('button', { name: 'Update' }).click();
   await expect(page.getByText('Updating…')).toBeVisible();
   await expect(page.getByText('@piui/fixture-package updated.')).toBeVisible();
 
-  page.once('dialog', (dialog) => dialog.accept());
   await card.getByRole('button', { name: 'Remove' }).click();
+  await confirmation.getByRole('button', { name: 'Remove' }).click();
   await expect(page.getByText('Removing…')).toBeVisible();
   await expect(page.getByText('@piui/fixture-package removed.')).toBeVisible();
   await expect(card).toHaveCount(0);

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useProduct } from '../../app/ProductContext';
 import { Icon, type IconName } from '../../components/icons/Icon';
+import { useConfirmation } from '../../components/dialog/ModalDialog';
 import { LoadingLabel } from '../../components/primitives/LoadingLabel';
 import { StatusPill } from '../../components/primitives/StatusPill';
 import { productErrorMessage, redactForDisplay } from '../../domain/errors';
@@ -295,6 +296,7 @@ function SettingsSection({
   const { snapshot } = product;
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const [confirm, confirmation] = useConfirmation();
   useEffect(() => {
     setPendingAction(null);
     setActionMessage(null);
@@ -392,14 +394,16 @@ function SettingsSection({
                     type="button"
                     className="button"
                     disabled={product.activeOperation !== null}
-                    onClick={() => {
-                      if (
-                        !window.confirm(
-                          `Disconnect ${provider.name} and remove its saved credential?`,
-                        )
-                      )
-                        return;
-                      void runAction(
+                    onClick={async () => {
+                      const confirmed = await confirm({
+                        title: `Disconnect ${provider.name}?`,
+                        message:
+                          'Its saved credential will be removed from this Mac. You can connect again later.',
+                        confirmLabel: 'Disconnect',
+                        tone: 'danger',
+                      });
+                      if (!confirmed) return;
+                      await runAction(
                         `logout-${provider.id}`,
                         () => product.logoutProvider(provider.id),
                         `${provider.name} disconnected.`,
@@ -477,6 +481,7 @@ function SettingsSection({
           <p role="status">{product.providerAuthNotice.message}</p>
         ) : null}
         {actionMessage ? <p role="status">{actionMessage}</p> : null}
+        {confirmation}
       </SectionGroup>
     );
   if (id === 'projects')
@@ -517,14 +522,16 @@ function SettingsSection({
               type="button"
               className="button button--danger"
               disabled={product.activeOperation !== null}
-              onClick={() => {
-                if (
-                  !window.confirm(
-                    'Revoke trust for this project? Active executable resources will be cut off.',
-                  )
-                )
-                  return;
-                void runAction(
+              onClick={async () => {
+                const confirmed = await confirm({
+                  title: 'Revoke trust for this project?',
+                  message:
+                    'Active executable resources will be cut off. You can trust the project again later.',
+                  confirmLabel: 'Revoke trust',
+                  tone: 'danger',
+                });
+                if (!confirmed) return;
+                await runAction(
                   'revoke-project',
                   () => product.revokeProject(),
                   'Project trust revoked and active project state cleared.',
@@ -569,6 +576,7 @@ function SettingsSection({
           </div>
         </div>
         {actionMessage ? <p role="status">{actionMessage}</p> : null}
+        {confirmation}
       </SectionGroup>
     );
   if (id === 'permissions')
@@ -864,6 +872,7 @@ function ResourcesSection() {
   const [message, setMessage] = useState<string | null>(null);
   const [packageSource, setPackageSource] = useState('');
   const [packageScope, setPackageScope] = useState<'global' | 'project'>('project');
+  const [confirm, confirmation] = useConfirmation();
   const resources = snapshot.resources.filter(
     (resource) => kind === 'all' || resource.kind === kind,
   );
@@ -873,9 +882,12 @@ function ResourcesSection() {
     if (
       resource.executable &&
       enabling &&
-      !window.confirm(
-        `Enable “${resource.name}”? This executable code runs with your permissions and may act outside PIUI-mediated approvals.`,
-      )
+      !(await confirm({
+        title: `Enable “${resource.name}”?`,
+        message:
+          'This executable code runs with your permissions and may act outside PIUI-mediated approvals.',
+        confirmLabel: 'Enable',
+      }))
     )
       return;
     setPending(resource.id);
@@ -904,9 +916,12 @@ function ResourcesSection() {
       return;
     }
     if (
-      !window.confirm(
-        `Install “${source}” from npm? Packages are executable code and may act outside PIUI-mediated approvals. Installation may contact npm.`,
-      )
+      !(await confirm({
+        title: `Install “${source}” from npm?`,
+        message:
+          'Packages are executable code and may act outside PIUI-mediated approvals. Installation may contact npm.',
+        confirmLabel: 'Install',
+      }))
     )
       return;
     setPending('package-install');
@@ -937,11 +952,23 @@ function ResourcesSection() {
       setMessage(`Package ${operation} is unavailable while this Mac is offline.`);
       return;
     }
-    const warning =
+    const confirmed = await confirm(
       operation === 'remove'
-        ? `Remove “${resource.name}” from Pi and this catalogue? Its package files will be removed by Pi’s package manager.`
-        : `Update “${resource.name}” using Pi’s package manager? Updated executable code remains subject to your current enabled state.`;
-    if (!window.confirm(warning)) return;
+        ? {
+            title: `Remove “${resource.name}”?`,
+            message:
+              'It will be removed from Pi and this catalogue, and Pi’s package manager will remove its package files.',
+            confirmLabel: 'Remove',
+            tone: 'danger',
+          }
+        : {
+            title: `Update “${resource.name}”?`,
+            message:
+              'Pi’s package manager will update it. Updated executable code keeps its current enabled state.',
+            confirmLabel: 'Update',
+          },
+    );
+    if (!confirmed) return;
     setPending(`${resource.id}-${operation}`);
     setMessage(null);
     try {
@@ -1121,6 +1148,7 @@ function ResourcesSection() {
         ) : null}
       </div>
       {message ? <p role="status">{message}</p> : null}
+      {confirmation}
     </SectionGroup>
   );
 }
