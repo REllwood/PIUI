@@ -1,4 +1,13 @@
-import { appendFile, mkdir, mkdtemp, readFile, readdir, realpath, rm } from 'node:fs/promises';
+import {
+  appendFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  realpath,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -498,6 +507,65 @@ describe('product runtime end to end with real Pi turns', () => {
     expect(toolOutput.join('')).toBe(
       `${userHome}\n${join(getAgentDir(), 'bin')}:/usr/bin:/bin:/opt/piui-user/bin`,
     );
+  });
+
+  it('loads and unloads a project extension as soon as it is enabled or disabled', async () => {
+    const { workspacePath, agentDir } = await workspace(root);
+    const marker = join(root, 'extension-marker.log');
+    await mkdir(join(workspacePath, '.pi', 'extensions'), { recursive: true });
+    await writeFile(
+      join(workspacePath, '.pi', 'extensions', 'marker.mjs'),
+      [
+        "import { appendFileSync } from 'node:fs';",
+        'export default function (pi) {',
+        `  pi.on('before_agent_start', () => appendFileSync(${JSON.stringify(marker)}, 'turn\\n'));`,
+        '}',
+        '',
+      ].join('\n'),
+    );
+    const { faux, product } = fauxProduct();
+    runtime = product;
+    const session = await createSession(product, workspacePath, agentDir);
+    const listed = (await product.handle(
+      productRequest({
+        method: 'product.resources.list',
+        schemaVersion: 1,
+        sessionId: session.id,
+        expectedGeneration: 1,
+      }),
+    )) as { resources: readonly { id: string; kind: string; enabled: boolean }[] };
+    const extension = listed.resources.find((resource) => resource.kind === 'extension');
+    expect(extension).toMatchObject({ enabled: false });
+    const setEnabled = (enabled: boolean) =>
+      product.handle(
+        productRequest({
+          method: 'product.resource.set-enabled',
+          schemaVersion: 1,
+          sessionId: session.id,
+          expectedGeneration: 1,
+          resourceId: extension?.id,
+          enabled,
+          acknowledgedExecutableRisk: true,
+        }),
+      );
+    const turn = async (text: string) => {
+      faux.setResponses([publicFauxAssistantMessage(`Reply to ${text}`)]);
+      const events = await collect(
+        product.stream(turnRequest(session.id, 1, text), new AbortController().signal),
+      );
+      expect(events.at(-1)?.type).toBe('complete');
+    };
+    const markerTurns = async () =>
+      (await readFile(marker, 'utf8').catch(() => '')).split('\n').filter(Boolean).length;
+
+    await turn('before enabling');
+    expect(await markerTurns()).toBe(0);
+    await expect(setEnabled(true)).resolves.toMatchObject({ resource: { enabled: true } });
+    await turn('while enabled');
+    expect(await markerTurns()).toBe(1);
+    await expect(setEnabled(false)).resolves.toMatchObject({ resource: { enabled: false } });
+    await turn('after disabling');
+    expect(await markerTurns()).toBe(1);
   });
 
   it("still reports an external writer that appends during PIUI's own turn", async () => {

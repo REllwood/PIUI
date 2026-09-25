@@ -70,6 +70,7 @@ export class Pi082Adapter implements PiAdapter {
       changes: ChangeRegistry;
       settings: TypedSettingsAdapter;
       resources: ResourceRegistry;
+      refreshExtensionPaths: () => void;
     }>
   >();
   readonly #sessionSources = new Map<
@@ -468,6 +469,7 @@ export class Pi082Adapter implements PiAdapter {
         this.#retireRuntime(runtime);
         this.#runtimeSessions.delete(sessionId);
       } else {
+        runtime.refreshExtensionPaths();
         await runtime.session.reload();
         await this.#acknowledgeRuntime(runtime);
       }
@@ -837,6 +839,23 @@ export class Pi082Adapter implements PiAdapter {
       packageManager,
       resources.enabledPackageSources,
     );
+    const packageExtensionPaths = packagePaths.extensions
+      .filter((resource) => resource.enabled)
+      .map((resource) => resource.path);
+    // Pi's resource loader keeps this exact array and re-reads it on every
+    // reload, so an extension toggle rewrites it in place before reloading;
+    // handing Pi a copy would leave a disabled extension loaded (and a newly
+    // enabled one missing) until the runtime was rebuilt.
+    const extensionPaths: string[] = [];
+    const refreshExtensionPaths = () => {
+      extensionPaths.splice(
+        0,
+        extensionPaths.length,
+        ...resources.enabledExtensionPaths,
+        ...packageExtensionPaths,
+      );
+    };
+    refreshExtensionPaths();
     const services = await publicCreateAgentSessionServices({
       cwd: request.workspacePath,
       agentDir: request.agentDir,
@@ -849,10 +868,7 @@ export class Pi082Adapter implements PiAdapter {
         noPromptTemplates: false,
         noThemes: false,
         noContextFiles: true,
-        additionalExtensionPaths: [
-          ...resources.enabledExtensionPaths,
-          ...packagePaths.extensions.filter((resource) => resource.enabled).map((resource) => resource.path),
-        ],
+        additionalExtensionPaths: extensionPaths,
         additionalSkillPaths: packagePaths.skills
           .filter((resource) => resource.enabled)
           .map((resource) => resource.path),
@@ -900,6 +916,7 @@ export class Pi082Adapter implements PiAdapter {
       changes,
       settings,
       resources,
+      refreshExtensionPaths,
     });
     try {
       await this.#acknowledgeRuntime(record);
