@@ -20,7 +20,9 @@ import {
   createLsToolDefinition,
   createReadToolDefinition,
   createWriteToolDefinition,
+  getAgentDir,
   type AgentSessionEvent,
+  type BashSpawnHook,
   type AgentSessionServices,
   type CreateAgentSessionRuntimeFactory,
   type CreateModelRuntimeOptions,
@@ -62,13 +64,22 @@ export function publicDefaultSessionDir(cwd: string, agentDir: string): string {
 export const publicCreateAgentSessionFromServices = createAgentSessionFromServices;
 export const publicCreateAgentSessionRuntime = createAgentSessionRuntime;
 export const publicCreateAgentSessionServices = createAgentSessionServices;
-export const publicCreateToolDefinitions = (cwd: string): readonly ToolDefinition[] => {
+export type PublicBashSpawnHook = BashSpawnHook;
+// Pi's getShellEnv prepends this directory to PATH for its bash tool.
+export const publicPiBinDir = (): string => join(getAgentDir(), 'bin');
+export const publicCreateToolDefinitions = (
+  cwd: string,
+  options: Readonly<{ bashSpawnHook?: BashSpawnHook }> = {},
+): readonly ToolDefinition[] => {
   // Pi's individual tool definitions intentionally carry narrower generic
   // render argument types. PIUI preserves each object unchanged and exposes
   // only the common runtime ToolDefinition contract to the approval decorator.
   const definitions: readonly unknown[] = Object.freeze([
     createReadToolDefinition(cwd),
-    createBashToolDefinition(cwd),
+    createBashToolDefinition(
+      cwd,
+      options.bashSpawnHook ? { spawnHook: options.bashSpawnHook } : undefined,
+    ),
     createEditToolDefinition(cwd),
     createWriteToolDefinition(cwd),
     createGrepToolDefinition(cwd),

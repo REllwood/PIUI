@@ -3,7 +3,12 @@ import { readFile } from 'node:fs/promises';
 import type { ProtocolEnvelope } from '@piui/protocol';
 import type { HostRequestClient } from '../bridge/host-requests.js';
 import { PiCredentialStore } from '../credentials/store-proxy.js';
-import type { AdapterTurnEvent, AdapterTurnRequest, PiAdapter } from './adapter.js';
+import type {
+  AdapterTurnEvent,
+  AdapterTurnRequest,
+  PiAdapter,
+  PiAdapterOptions,
+} from './adapter.js';
 import { Pi082Adapter } from './pi-082-adapter.js';
 
 const INTERNAL_ID = /^rust-product-[A-Za-z0-9._:-]{1,111}$/;
@@ -455,14 +460,24 @@ function assertProductRequest(payload: Record<string, unknown>): void {
   throw new Error('product-request-rejected');
 }
 
+export type PiAdapterFactory = (options: PiAdapterOptions) => Promise<PiAdapter>;
+
 export class ProductRuntime {
   readonly #host: HostRequestClient;
   readonly #generation: number;
+  readonly #createAdapter: PiAdapterFactory;
   #adapter: Promise<PiAdapter> | undefined;
 
-  constructor(host: HostRequestClient, generation: number) {
+  // The factory is an in-process test seam; the sidecar entry point always uses
+  // the pinned Pi 0.82 adapter.
+  constructor(
+    host: HostRequestClient,
+    generation: number,
+    createAdapter: PiAdapterFactory = (options) => Pi082Adapter.create(options),
+  ) {
     this.#host = host;
     this.#generation = generation;
+    this.#createAdapter = createAdapter;
   }
 
   async handle(envelope: ProtocolEnvelope): Promise<Readonly<Record<string, unknown>>> {
@@ -793,20 +808,30 @@ export class ProductRuntime {
   }
 
   async close(): Promise<void> {
-    if (this.#adapter) await (await this.#adapter).close();
+    const adapter = await this.#adapter?.catch(() => undefined);
+    await adapter?.close();
   }
 
   #getAdapter(): Promise<PiAdapter> {
-    this.#adapter ??= Pi082Adapter.create({
-      credentials: new PiCredentialStore(this.#host),
-      allowModelNetwork: true,
-      generation: this.#generation,
-      approvalHost: Object.freeze({
-        requestApproval: (payload) => this.#host.requestApproval(payload),
-        notifyApprovalReady: (payload) => this.#host.notifyApprovalReady(payload),
-        abandonApproval: (payload) => this.#host.abandonApproval(payload),
-      }),
+    if (this.#adapter) return this.#adapter;
+    const created = (async () =>
+      this.#createAdapter({
+        credentials: new PiCredentialStore(this.#host),
+        allowModelNetwork: true,
+        generation: this.#generation,
+        approvalHost: Object.freeze({
+          requestApproval: (payload) => this.#host.requestApproval(payload),
+          notifyApprovalReady: (payload) => this.#host.notifyApprovalReady(payload),
+          abandonApproval: (payload) => this.#host.abandonApproval(payload),
+        }),
+      }))();
+    this.#adapter = created;
+    // A transient construction failure (for example an unanswered credential
+    // listing) must not disable the product until restart: forget the rejected
+    // attempt so the next request constructs the adapter again.
+    created.catch(() => {
+      if (this.#adapter === created) this.#adapter = undefined;
     });
-    return this.#adapter;
+    return created;
   }
 }

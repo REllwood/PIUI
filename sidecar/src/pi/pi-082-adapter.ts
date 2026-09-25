@@ -1,5 +1,4 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { stat } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
 import { createOAuthInteraction } from '../credentials/oauth.js';
 import type { ApprovalHost } from './approval-hook.js';
@@ -29,6 +28,7 @@ import {
   publicCreateAgentSessionServices,
   publicCreateToolDefinitions,
   publicDefaultSessionDir,
+  publicPiBinDir,
   publicSdkMetadata,
   type PublicAgentSession,
   type PublicModelRuntimeInstance,
@@ -36,9 +36,17 @@ import {
 } from './public-sdk.js';
 import { describeProviders } from './providers.js';
 import { SessionOwnership } from './sessions.js';
-import { SessionWatch, type FileIdentity } from './session-watch.js';
-import { TypedSettingsAdapter, type SettingScope } from './settings.js';
+import { userShellSpawnHook } from './shell-environment.js';
+import {
+  SessionWatch,
+  observeSessionFile,
+  verifyOwnAppends,
+  type FileIdentity,
+  type ObservedIdentity,
+} from './session-watch.js';
+import { TypedSettingsAdapter, isThinkingLevel, type SettingScope } from './settings.js';
 import { ResourceRegistry } from './resources.js';
+import { TextDeltaCoalescer } from './text-coalescer.js';
 import { TurnRegistry } from './turns.js';
 
 export class Pi082Adapter implements PiAdapter {
@@ -61,6 +69,7 @@ export class Pi082Adapter implements PiAdapter {
       changes: ChangeRegistry;
       settings: TypedSettingsAdapter;
       resources: ResourceRegistry;
+      refreshExtensionPaths: () => void;
     }>
   >();
   readonly #sessionSources = new Map<
@@ -92,6 +101,7 @@ export class Pi082Adapter implements PiAdapter {
       allowModelNetwork: options.allowModelNetwork === true,
       modelsPath: hostModelsPath(),
     });
+    await options.prepareModelRuntime?.(runtime);
     return new Pi082Adapter(runtime, options);
   }
 
@@ -257,7 +267,10 @@ export class Pi082Adapter implements PiAdapter {
     const source = this.#runtimeSessions.get(sessionId);
     if (!source) throw new Error('session-runtime-unavailable');
     const sourceFile = source.session.sessionFile;
-    if (!sourceFile) throw new Error('session-fork-unavailable');
+    // Pi has nothing on disk to fork until the source's first assistant reply.
+    if (!sourceFile || (await observeSessionFile(sourceFile)) === null) {
+      throw new Error('session-fork-unavailable');
+    }
     const sessionManager = PublicSessionManager.forkFrom(
       sourceFile,
       source.workspacePath,
@@ -311,7 +324,7 @@ export class Pi082Adapter implements PiAdapter {
     title: string,
   ): Promise<AdapterSession> {
     const runtime = await this.#ensureRuntime(sessionId, expectedGeneration);
-    if (!runtime.session.isIdle) throw new Error('session-busy');
+    if (busy(runtime)) throw new Error('session-busy');
     const nextTitle = boundedTitle(title);
     await this.#verifyRuntime(runtime);
     runtime.session.setSessionName(nextTitle);
@@ -334,7 +347,7 @@ export class Pi082Adapter implements PiAdapter {
 
   async compactSession(sessionId: string, expectedGeneration: number): Promise<void> {
     const runtime = await this.#ensureRuntime(sessionId, expectedGeneration);
-    if (!runtime.session.isIdle) throw new Error('session-busy');
+    if (busy(runtime)) throw new Error('session-busy');
     await this.#verifyRuntime(runtime);
     await runtime.session.compact();
     await this.#acknowledgeRuntime(runtime);
@@ -353,7 +366,8 @@ export class Pi082Adapter implements PiAdapter {
       runtime.session.dispose();
       this.#runtimeSessions.delete(sessionId);
     }
-    const identity = await fileIdentity(source.path);
+    const identity = await observeSessionFile(source.path);
+    if (!identity) throw new Error('session-trash-rejected');
     return Object.freeze({
       workspaceId: source.workspaceId,
       workspaceRevision: source.workspaceRevision,
@@ -399,7 +413,7 @@ export class Pi082Adapter implements PiAdapter {
     expectedRevision: number,
   ) {
     const runtime = await this.#ensureRuntime(sessionId, expectedGeneration);
-    if (!runtime.session.isIdle) throw new Error('session-busy');
+    if (busy(runtime)) throw new Error('session-busy');
     runtime.settings.assertRevision(key, expectedRevision);
     const previous = runtime.settings.read(key);
     await applySetting(runtime.session, runtime.settings, key, value);
@@ -438,7 +452,7 @@ export class Pi082Adapter implements PiAdapter {
     acknowledgedExecutableRisk: boolean,
   ) {
     const runtime = await this.#ensureRuntime(sessionId, expectedGeneration);
-    if (!runtime.session.isIdle) throw new Error('session-busy');
+    if (busy(runtime)) throw new Error('session-busy');
     const change = runtime.resources.prepareEnabledChange(
       resourceId,
       enabled,
@@ -454,6 +468,7 @@ export class Pi082Adapter implements PiAdapter {
         this.#retireRuntime(runtime);
         this.#runtimeSessions.delete(sessionId);
       } else {
+        runtime.refreshExtensionPaths();
         await runtime.session.reload();
         await this.#acknowledgeRuntime(runtime);
       }
@@ -484,7 +499,7 @@ export class Pi082Adapter implements PiAdapter {
     acknowledgedExecutableRisk: boolean,
   ) {
     const runtime = await this.#ensureRuntime(sessionId, expectedGeneration);
-    if (!runtime.session.isIdle) throw new Error('session-busy');
+    if (busy(runtime)) throw new Error('session-busy');
     await this.#verifyRuntime(runtime);
     const resource = await runtime.resources.installPackage(
       source,
@@ -506,7 +521,7 @@ export class Pi082Adapter implements PiAdapter {
     acknowledgedExecutableRisk: boolean,
   ) {
     const runtime = await this.#ensureRuntime(sessionId, expectedGeneration);
-    if (!runtime.session.isIdle) throw new Error('session-busy');
+    if (busy(runtime)) throw new Error('session-busy');
     await this.#verifyRuntime(runtime);
     const resource = await runtime.resources.mutatePackage(
       resourceId,
@@ -588,84 +603,101 @@ export class Pi082Adapter implements PiAdapter {
       throw new Error('session-write-rejected');
     const runtime = this.#runtimeSessions.get(request.sessionId);
     if (!runtime) throw new Error('session-runtime-unavailable');
+    if (busy(runtime)) throw new Error('session-busy');
     await this.#verifyRuntime(runtime);
     const active = this.#turns.begin(request, signal);
     this.#queueNumbers.set(request.sessionId, 0);
-    yield { requestId: request.requestId, sequence: active.nextSequence(), type: 'started' };
-    if (active.controller.signal.aborted) {
-      this.#queueNumbers.delete(request.sessionId);
-      this.#turns.finish(request.requestId, 'stopped');
-      yield { requestId: request.requestId, sequence: active.nextSequence(), type: 'stopped' };
-      return;
-    }
-    if (request.retryPrevious) {
-      const previous = runtime.session.getUserMessagesForForking().at(-1);
-      if (!previous || previous.text !== request.text) throw new Error('turn-retry-stale');
-      const navigation = await runtime.session.navigateTree(previous.entryId);
-      if (navigation.cancelled || navigation.editorText !== request.text) {
-        throw new Error('turn-retry-stale');
-      }
-    }
-    const pending: AdapterTurnEvent[] = [];
-    let wake: (() => void) | undefined;
-    let terminal = false;
-    const push = (event: Omit<AdapterTurnEvent, 'requestId' | 'sequence'>) => {
-      pending.push({ ...event, requestId: request.requestId, sequence: active.nextSequence() });
-      const release = wake;
-      wake = undefined;
-      release?.();
-    };
-    const unsubscribe = runtime.session.subscribe((event) => {
-      if (event.type === 'message_update' && event.assistantMessageEvent.type === 'text_delta') {
-        push({ type: 'text', text: event.assistantMessageEvent.delta });
-      } else if (event.type === 'tool_execution_start') {
-        push({
-          type: 'tool',
-          text: event.toolName,
-          code: 'started',
-          toolCallId: event.toolCallId,
-        });
-      } else if (event.type === 'tool_execution_end') {
-        push({
-          type: 'tool',
-          text: event.toolName,
-          code: event.isError ? 'failed' : 'complete',
-          toolCallId: event.toolCallId,
-        });
-      }
-    });
     const abort = () => {
       void runtime.session.abort();
     };
-    active.controller.signal.addEventListener('abort', abort, { once: true });
-    void runtime.session
-      .prompt(request.text, {
-        source: 'interactive',
-        images: request.images.map((image) => ({ ...image })),
-      })
-      .then(
-        async () => {
-          await this.#acknowledgeRuntime(runtime);
-          terminal = true;
-          push({ type: active.controller.signal.aborted ? 'stopped' : 'complete' });
-        },
-        async (error: unknown) => {
-          runtime.session.clearQueue();
-          await this.#acknowledgeRuntime(runtime);
-          terminal = true;
-          const code =
-            error instanceof Error && error.message === 'This action was not approved.'
-              ? 'tool-not-approved'
-              : 'provider-turn-failed';
-          push({ type: active.controller.signal.aborted ? 'stopped' : 'failed', code });
-        },
-      )
-      .catch(() => {
-        runtime.session.clearQueue();
-        terminal = true;
-        push({ type: 'failed', code: 'session-external-change' });
-      });
+    let unsubscribe: (() => void) | undefined;
+    let ownTurn: OwnTurn | undefined;
+    let promptStarted = false;
+    let text: TextDeltaCoalescer | undefined;
+    // Everything after begin() sits inside this try so that every exit,
+    // including a stale retry, retires the turn registry entry.
     try {
+      yield { requestId: request.requestId, sequence: active.nextSequence(), type: 'started' };
+      if (active.controller.signal.aborted) {
+        yield { requestId: request.requestId, sequence: active.nextSequence(), type: 'stopped' };
+        return;
+      }
+      // From here until the turn settles, Pi's appends to this session file
+      // are PIUI's own writes rather than an external change.
+      const turn = this.#beginOwnTurn(runtime);
+      ownTurn = turn;
+      if (request.retryPrevious) {
+        const previous = runtime.session.getUserMessagesForForking().at(-1);
+        if (!previous || previous.text !== request.text) throw new Error('turn-retry-stale');
+        const navigation = await runtime.session.navigateTree(previous.entryId);
+        if (navigation.cancelled || navigation.editorText !== request.text) {
+          throw new Error('turn-retry-stale');
+        }
+      }
+      const pending: AdapterTurnEvent[] = [];
+      let wake: (() => void) | undefined;
+      let terminal = false;
+      const push = (event: Omit<AdapterTurnEvent, 'requestId' | 'sequence'>) => {
+        pending.push({ ...event, requestId: request.requestId, sequence: active.nextSequence() });
+        const release = wake;
+        wake = undefined;
+        release?.();
+      };
+      const coalescer = new TextDeltaCoalescer((value) => push({ type: 'text', text: value }));
+      text = coalescer;
+      unsubscribe = runtime.session.subscribe((event) => {
+        if (event.type === 'message_update' && event.assistantMessageEvent.type === 'text_delta') {
+          coalescer.push(event.assistantMessageEvent.delta);
+        } else if (event.type === 'tool_execution_start') {
+          coalescer.flush();
+          push({
+            type: 'tool',
+            text: event.toolName,
+            code: 'started',
+            toolCallId: event.toolCallId,
+          });
+        } else if (event.type === 'tool_execution_end') {
+          coalescer.flush();
+          push({
+            type: 'tool',
+            text: event.toolName,
+            code: event.isError ? 'failed' : 'complete',
+            toolCallId: event.toolCallId,
+          });
+        }
+      });
+      active.controller.signal.addEventListener('abort', abort, { once: true });
+      promptStarted = true;
+      void runtime.session
+        .prompt(request.text, {
+          source: 'interactive',
+          images: request.images.map((image) => ({ ...image })),
+        })
+        .then(
+          async () => {
+            await this.#finishOwnTurn(runtime, turn);
+            coalescer.flush();
+            terminal = true;
+            push({ type: active.controller.signal.aborted ? 'stopped' : 'complete' });
+          },
+          async (error: unknown) => {
+            runtime.session.clearQueue();
+            await this.#finishOwnTurn(runtime, turn);
+            coalescer.flush();
+            terminal = true;
+            const code =
+              error instanceof Error && error.message === 'This action was not approved.'
+                ? 'tool-not-approved'
+                : 'provider-turn-failed';
+            push({ type: active.controller.signal.aborted ? 'stopped' : 'failed', code });
+          },
+        )
+        .catch(() => {
+          runtime.session.clearQueue();
+          coalescer.flush();
+          terminal = true;
+          push({ type: 'failed', code: 'session-external-change' });
+        });
       while (!terminal || pending.length > 0) {
         if (pending.length === 0) {
           await new Promise<void>((resolve) => {
@@ -677,9 +709,18 @@ export class Pi082Adapter implements PiAdapter {
         if (event) yield event;
       }
     } finally {
+      // Once Pi's prompt runs, its own settlement closes the window instead.
+      if (ownTurn && !promptStarted) {
+        try {
+          await this.#finishOwnTurn(runtime, ownTurn);
+        } catch {
+          // The watch stays unacknowledged, so the next write reports the change.
+        }
+      }
       this.#queueNumbers.delete(request.sessionId);
       active.controller.signal.removeEventListener('abort', abort);
-      unsubscribe();
+      unsubscribe?.();
+      text?.dispose();
       this.#turns.finish(
         request.requestId,
         active.controller.signal.aborted ? 'stopped' : 'complete',
@@ -759,9 +800,11 @@ export class Pi082Adapter implements PiAdapter {
         afterExecute: (token, result, error) => changes.afterExecute(token, result, error),
       },
     );
-    const definitions = publicCreateToolDefinitions(request.workspacePath).map(
-      gate.decorateToolDefinition,
-    );
+    const bashSpawnHook = userShellSpawnHook(process.env, publicPiBinDir());
+    const definitions = publicCreateToolDefinitions(
+      request.workspacePath,
+      bashSpawnHook ? { bashSpawnHook } : {},
+    ).map(gate.decorateToolDefinition);
     const settingsManager = PublicSettingsManager.create(request.workspacePath, request.agentDir, {
       projectTrusted: true,
     });
@@ -790,6 +833,22 @@ export class Pi082Adapter implements PiAdapter {
       request.agentDir,
       packageManager,
     );
+    // Pi's resource loader keeps the exact extension path array it is given and
+    // re-reads it on every reload, so an extension toggle rewrites this array in
+    // place before reloading; handing Pi a copy would leave a disabled extension
+    // loaded (and a newly enabled one missing) until the runtime was rebuilt.
+    const extensionPaths: string[] = [];
+    const refreshExtensionPaths = (): string[] => {
+      extensionPaths.splice(
+        0,
+        extensionPaths.length,
+        ...resources.enabledExtensionPaths,
+        ...packagePaths.extensions
+          .filter((resource) => resource.enabled)
+          .map((resource) => resource.path),
+      );
+      return extensionPaths;
+    };
     await resources.discoverExecutableMetadata();
     const packagePaths = await resources.resolveEnabledPackagePaths();
     const services = await publicCreateAgentSessionServices({
@@ -804,10 +863,7 @@ export class Pi082Adapter implements PiAdapter {
         noPromptTemplates: false,
         noThemes: false,
         noContextFiles: true,
-        additionalExtensionPaths: [
-          ...resources.enabledExtensionPaths,
-          ...packagePaths.extensions.filter((resource) => resource.enabled).map((resource) => resource.path),
-        ],
+        additionalExtensionPaths: refreshExtensionPaths(),
         additionalSkillPaths: packagePaths.skills
           .filter((resource) => resource.enabled)
           .map((resource) => resource.path),
@@ -855,6 +911,7 @@ export class Pi082Adapter implements PiAdapter {
       changes,
       settings,
       resources,
+      refreshExtensionPaths,
     });
     try {
       await this.#acknowledgeRuntime(record);
@@ -874,7 +931,10 @@ export class Pi082Adapter implements PiAdapter {
   }): Promise<void> {
     const path = runtime.session.sessionFile;
     if (!path) throw new Error('session-file-unavailable');
-    const status = runtime.watch.verify(await fileIdentity(path), runtime.watchGeneration.value);
+    const status = runtime.watch.verify(
+      await observeSessionFile(path),
+      runtime.watchGeneration.value,
+    );
     if (status !== 'current') throw new Error('session-external-change');
   }
 
@@ -885,7 +945,50 @@ export class Pi082Adapter implements PiAdapter {
   }): Promise<void> {
     const path = runtime.session.sessionFile;
     if (!path) throw new Error('session-file-unavailable');
-    runtime.watchGeneration.value = runtime.watch.acknowledge(await fileIdentity(path));
+    runtime.watchGeneration.value = runtime.watch.acknowledge(await observeSessionFile(path));
+  }
+
+  #beginOwnTurn(runtime: { session: PublicAgentSession; watch: SessionWatch }): OwnTurn {
+    const identity = runtime.watch.beginOwnWrite();
+    return Object.freeze({
+      identity,
+      entryCount: runtime.session.sessionManager.getEntries().length,
+    });
+  }
+
+  /**
+   * Closes PIUI's own-write window. Everything Pi appended since the turn began
+   * must be exactly the entries Pi now holds beyond the baseline (or, for Pi's
+   * first write of a new file, the header and every entry) before the new file
+   * identity is acknowledged; anything else leaves the watch reporting a change.
+   */
+  async #finishOwnTurn(
+    runtime: {
+      session: PublicAgentSession;
+      watch: SessionWatch;
+      watchGeneration: { value: number };
+    },
+    turn: OwnTurn,
+  ): Promise<void> {
+    try {
+      const path = runtime.session.sessionFile;
+      if (!path) throw new Error('session-file-unavailable');
+      const manager = runtime.session.sessionManager;
+      const entries = manager.getEntries();
+      const header = manager.getHeader();
+      const written =
+        turn.identity === null
+          ? [...(header ? [header] : []), ...entries]
+          : entries.slice(turn.entryCount);
+      const identity = await verifyOwnAppends(
+        path,
+        turn.identity,
+        written.map((entry) => ({ type: entry.type, id: entry.id })),
+      );
+      runtime.watchGeneration.value = runtime.watch.acknowledge(identity);
+    } finally {
+      runtime.watch.endOwnWrite();
+    }
   }
 
   async #selectModel(providerId?: string, modelId?: string) {
@@ -902,7 +1005,7 @@ export class Pi082Adapter implements PiAdapter {
   }
 
   #assertNoBusyRuntime(): void {
-    if ([...this.#runtimeSessions.values()].some((runtime) => !runtime.session.isIdle)) {
+    if ([...this.#runtimeSessions.values()].some(busy)) {
       throw new Error('session-turn-active');
     }
   }
@@ -915,6 +1018,14 @@ export class Pi082Adapter implements PiAdapter {
       this.#retirementFailures += 1;
     }
   }
+}
+
+type OwnTurn = Readonly<{ identity: ObservedIdentity; entryCount: number }>;
+
+// A runtime stays busy until its turn's own-write window has been verified and
+// closed, which is slightly after Pi itself reports idle.
+function busy(runtime: { session: PublicAgentSession; watch: SessionWatch }): boolean {
+  return !runtime.session.isIdle || runtime.watch.ownWriteActive;
 }
 
 // The host clears the sidecar environment and seals HOME inside the signed
@@ -1000,17 +1111,6 @@ function boundedMessage(value: string): string {
   return value.slice(0, 262_144);
 }
 
-async function fileIdentity(path: string): Promise<FileIdentity> {
-  const value = await stat(path, { bigint: true });
-  if (!value.isFile()) throw new Error('session-file-unavailable');
-  return Object.freeze({
-    device: value.dev,
-    inode: value.ino,
-    size: value.size,
-    modifiedNs: value.mtimeNs,
-  });
-}
-
 function seedSettings(settings: TypedSettingsAdapter, session: PublicAgentSession): void {
   settings.seed('model.provider', session.model?.provider ?? null, 'project', 'Current Pi session');
   settings.seed('model.id', session.model?.id ?? null, 'project', 'Current Pi session');
@@ -1047,10 +1147,10 @@ async function applySetting(
       return;
     }
     case 'reasoning.level':
-      if (!['off', 'minimal', 'low', 'medium', 'high', 'xhigh'].includes(String(value))) {
-        throw new Error('setting-value-invalid');
-      }
-      session.setThinkingLevel(value as 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh');
+      if (!isThinkingLevel(value)) throw new Error('setting-value-invalid');
+      // Pi clamps the level to what the current model supports; the saved
+      // choice stays as chosen and is clamped again after any model change.
+      session.setThinkingLevel(value);
       return;
     case 'tools.active': {
       if (
