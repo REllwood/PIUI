@@ -9,6 +9,7 @@ import { DiffView } from '../components/diff/DiffView';
 import { productFixture } from '../domain/fixtures';
 import { ActivityDetail } from './activity/ActivityDetail';
 import { ActivityRoute } from './activity/ActivityRoute';
+import { ApprovalSurface } from './approvals/ApprovalSurface';
 import { CheckMacStep } from './onboarding/CheckMacStep';
 import { ProductTour } from './onboarding/ProductTour';
 import { ReadyStep } from './onboarding/ReadyStep';
@@ -200,6 +201,33 @@ describe('async and recovery component states', () => {
     expect(screen.getByRole('alert').textContent).toContain(
       'That link could not be opened in your browser.',
     );
+  });
+
+  it('shows exactly what an approval would run as inert plain text', () => {
+    const approval = productFixture.approvals[0];
+    if (!approval) throw new Error('fixture approval missing');
+    render(
+      <ApprovalSurface
+        request={{
+          ...approval,
+          subject: {
+            label: 'Command',
+            text: '**not bold** <img src=x onerror=alert(1)> rm -rf ./build‮',
+            truncated: true,
+          },
+        }}
+        offline={false}
+        busy={false}
+        onDecision={async () => undefined}
+      />,
+    );
+    const command = screen.getByRole('region', { name: 'Command' });
+    expect(command.tagName).toBe('PRE');
+    expect(command.textContent).toBe(
+      '**not bold** <img src=x onerror=alert(1)> rm -rf ./build⟨U+202E⟩',
+    );
+    expect(command.querySelector('*')).toBeNull();
+    expect(screen.getByText(/Shortened: the full command is longer than shown here/)).toBeTruthy();
   });
 
   it('shows unknown versions instead of remembered release numbers', () => {

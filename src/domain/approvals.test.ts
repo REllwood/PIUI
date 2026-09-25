@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { reconcileApprovals } from './approvals';
+import { reconcileApprovals, visibleSubjectText } from './approvals';
 import type { ApprovalRequest } from './types';
 
 function approval(overrides: Partial<ApprovalRequest> = {}): ApprovalRequest {
@@ -53,5 +53,28 @@ describe('approval polling', () => {
     const added = reconcileApprovals(current, [approval(), approval({ id: 'approval-2' })]);
     expect(added).toHaveLength(2);
     expect(added[0]).toBe(current[0]);
+  });
+
+  it('notices a changed subject', () => {
+    const current = [approval({ subject: { label: 'Command', text: 'pnpm test', truncated: false } })];
+    const next = reconcileApprovals(current, [
+      approval({ subject: { label: 'Command', text: 'pnpm test --all', truncated: false } }),
+    ]);
+    expect(next).not.toBe(current);
+    expect(next[0]?.subject?.text).toBe('pnpm test --all');
+  });
+});
+
+describe('approval subject text', () => {
+  it('shows characters that could disguise a command as visible code points', () => {
+    expect(visibleSubjectText('rm -rf ./build‮/ txt.sh')).toBe(
+      'rm -rf ./build⟨U+202E⟩/ txt.sh',
+    );
+    expect(visibleSubjectText('echo​hi\u0007')).toBe('echo⟨U+200B⟩hi⟨U+0007⟩');
+  });
+
+  it('leaves ordinary multi-line commands untouched', () => {
+    const command = 'pnpm test \\\n\t--filter piui && echo "done ✓"';
+    expect(visibleSubjectText(command)).toBe(command);
   });
 });

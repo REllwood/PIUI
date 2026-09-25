@@ -33,3 +33,18 @@ export function reconcileApprovals(
   });
   return changed ? next : current;
 }
+
+// Characters that change how text looks without looking like anything themselves:
+// bidirectional overrides and isolates, zero-width marks, and control characters other
+// than line breaks and tabs. They could disguise what a command really does, so the
+// approval shows each one as a visible code point instead.
+const DISGUISING_CHARACTERS =
+  /[\u0000-\u0008\u000B-\u001F\u007F-\u009F؜​-‏‪-‮⁠-⁤⁦-⁩﻿]/gu;
+
+export function visibleSubjectText(text: string): string {
+  return text.replace(
+    DISGUISING_CHARACTERS,
+    (character) =>
+      `⟨U+${(character.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, '0')}⟩`,
+  );
+}

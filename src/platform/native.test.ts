@@ -23,7 +23,52 @@ vi.mock('@tauri-apps/api/core', () => ({
 }));
 
 import { invoke } from '@tauri-apps/api/core';
-import { MAX_PENDING_TURN_EVENTS, TURN_TERMINAL_TIMEOUT_MS, startProductTurn } from './native';
+import {
+  MAX_PENDING_TURN_EVENTS,
+  TURN_TERMINAL_TIMEOUT_MS,
+  listPendingApprovals,
+  startProductTurn,
+} from './native';
+
+function hostApproval(extra: Record<string, unknown> = {}) {
+  return {
+    approvalId: 'approval-1',
+    decisionId: 'decision-1',
+    revision: 1,
+    state: 'awaiting',
+    verb: 'Run command',
+    target: 'Project',
+    risk: 'routine',
+    scopes: [],
+    expiresInMs: 60_000,
+    ...extra,
+  };
+}
+
+describe('approval subject', () => {
+  it('reads a missing or null subject as no subject', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce([hostApproval(), hostApproval({ subject: null })]);
+    const approvals = await listPendingApprovals();
+    expect(approvals.map((approval) => approval.subject)).toEqual([null, null]);
+  });
+
+  it('keeps a well-formed subject as plain data', async () => {
+    const subject = { label: 'Command', text: 'pnpm test', truncated: false };
+    vi.mocked(invoke).mockResolvedValueOnce([hostApproval({ subject })]);
+    expect((await listPendingApprovals())[0]?.subject).toEqual(subject);
+  });
+
+  it.each([
+    ['an unknown label', { label: 'Script', text: 'x', truncated: false }],
+    ['text that is not a string', { label: 'Command', text: 42, truncated: false }],
+    ['text past the bound', { label: 'Command', text: 'x'.repeat(2_001), truncated: true }],
+    ['a missing truncation flag', { label: 'File', text: 'README.md' }],
+    ['a non-object subject', 'pnpm test'],
+  ])('rejects %s like any other malformed approval', async (_case, subject) => {
+    vi.mocked(invoke).mockResolvedValueOnce([hostApproval({ subject })]);
+    await expect(listPendingApprovals()).rejects.toThrow('approval-response-invalid');
+  });
+});
 
 function emit(requestId: string, payload: Record<string, unknown>) {
   bridge.handler?.({ payload: { correlationId: requestId, payload } });

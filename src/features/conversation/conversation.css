@@ -474,6 +474,39 @@
   gap: 8px;
   margin-top: 24px;
 }
+.approval-subject {
+  margin-top: 18px;
+}
+.approval-subject__label {
+  margin: 0 0 6px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 16px;
+  text-transform: uppercase;
+}
+.approval-subject__text {
+  max-height: 12rem;
+  margin: 0;
+  padding: 12px;
+  overflow: auto;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-control);
+  color: var(--text);
+  background: var(--surface);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 20px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  unicode-bidi: isolate;
+  user-select: text;
+}
+.approval-subject__note {
+  margin: 6px 0 0;
+  color: var(--warning);
+  font-size: 13px;
+}
 
 .diff {
   min-width: 0;

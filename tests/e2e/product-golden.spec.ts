@@ -32,6 +32,10 @@ test('conversation, approval and acknowledged message journey', async ({ page })
   await expect(
     page.getByRole('heading', { name: 'Run the local verification suite' }),
   ).toBeVisible();
+  // The approval names exactly what will run, as selectable plain text.
+  const command = page.getByRole('region', { name: 'Command' });
+  await expect(command).toHaveText('pnpm typecheck && pnpm test:unit && pnpm build');
+  await expect(command).toHaveCSS('user-select', 'text');
 
   await page.getByRole('button', { name: 'Approve once' }).click();
   await expect(page.getByRole('button', { name: 'Recording decision…' }).first()).toBeVisible();

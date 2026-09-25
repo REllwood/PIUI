@@ -292,6 +292,7 @@ function approvalView(approval: NativeApproval, now: number) {
     permittedDecisions: ['approve-once', 'deny'] as const,
     rememberedScopeEligible: false,
     scopeIds: approval.scopeIds,
+    subject: approval.subject,
   });
 }
 

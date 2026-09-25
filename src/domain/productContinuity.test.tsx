@@ -309,6 +309,7 @@ describe('production conversation continuity', () => {
         risk: 'routine',
         scopeIds: [],
         expiresInMs: 60_000,
+        subject: { label: 'Command', text: 'pnpm test', truncated: false },
       },
     ]);
     await boot();

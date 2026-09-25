@@ -154,6 +154,23 @@ export type NativeDiagnosticsSnapshot = Readonly<{
   helperFailure: string | null;
 }>;
 
+export const APPROVAL_SUBJECT_LABELS = [
+  'Command',
+  'File',
+  'Folder',
+  'Pattern',
+  'Address',
+  'Search',
+] as const;
+export const MAX_APPROVAL_SUBJECT_UTF16 = 2_000;
+
+// Exactly what the approval would run or change, as plain text for display only.
+export type NativeApprovalSubject = Readonly<{
+  label: (typeof APPROVAL_SUBJECT_LABELS)[number];
+  text: string;
+  truncated: boolean;
+}>;
+
 export type NativeApproval = Readonly<{
   approvalId: string;
   decisionId: string;
@@ -171,6 +188,7 @@ export type NativeApproval = Readonly<{
   risk: 'routine' | 'sensitive' | 'destructive' | 'external' | 'deny-only';
   scopeIds: readonly string[];
   expiresInMs: number;
+  subject: NativeApprovalSubject | null;
 }>;
 
 type StreamEnvelope = Readonly<{
@@ -1305,6 +1323,7 @@ function validateApproval(value: unknown): NativeApproval {
     }
     return scope.scopeId;
   });
+  const subject = validateApprovalSubject(value.subject);
   return Object.freeze({
     approvalId: value.approvalId,
     decisionId: value.decisionId,
@@ -1315,6 +1334,26 @@ function validateApproval(value: unknown): NativeApproval {
     risk: value.risk as NativeApproval['risk'],
     scopeIds: Object.freeze(scopeIds),
     expiresInMs: value.expiresInMs as number,
+    subject,
+  });
+}
+
+function validateApprovalSubject(value: unknown): NativeApprovalSubject | null {
+  // Hosts that predate the subject field omit it; that reads the same as no subject.
+  if (value === undefined || value === null) return null;
+  if (
+    !isRecord(value) ||
+    !(APPROVAL_SUBJECT_LABELS as readonly unknown[]).includes(value.label) ||
+    typeof value.text !== 'string' ||
+    value.text.length > MAX_APPROVAL_SUBJECT_UTF16 ||
+    typeof value.truncated !== 'boolean'
+  ) {
+    throw new Error('approval-response-invalid');
+  }
+  return Object.freeze({
+    label: value.label as NativeApprovalSubject['label'],
+    text: value.text,
+    truncated: value.truncated,
   });
 }
 
