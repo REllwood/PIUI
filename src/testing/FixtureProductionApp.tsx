@@ -33,10 +33,11 @@ const initialSettings: readonly NativeProductSetting[] = Object.freeze([
 ]);
 
 const initialEnvironment: readonly NativeEnvironmentFact[] = Object.freeze([
-  { key: 'PIUI', value: '0.1.0', origin: 'Application bundle' },
-  { key: 'Pi SDK', value: '0.82.0', origin: 'Bundled sidecar' },
-  { key: 'Node', value: '22.23.1', origin: 'Bundled runtime' },
-  { key: 'Architecture', value: 'arm64', origin: 'Native host' },
+  // Keys match the native environment report so About and Environment read them.
+  { key: 'piuiVersion', value: '0.1.0', origin: 'Application bundle' },
+  { key: 'piVersion', value: '0.82.0', origin: 'Bundled sidecar' },
+  { key: 'nodeVersion', value: '22.23.1', origin: 'Bundled runtime' },
+  { key: 'architecture', value: 'arm64', origin: 'Native host' },
 ]);
 
 function delay(instant = false): Promise<void> {
