@@ -2,6 +2,7 @@ import { appendFile, mkdir, mkdtemp, readFile, readdir, realpath, rm } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { getAgentDir } from '@earendil-works/pi-coding-agent';
 import type { ProtocolEnvelope } from '@piui/protocol';
 import {
   HostRequestClient,
@@ -234,6 +235,8 @@ describe('product runtime end to end with real Pi turns', () => {
   afterEach(async () => {
     await runtime?.close();
     runtime = undefined;
+    delete process.env.PIUI_USER_HOME;
+    delete process.env.PIUI_USER_PATH;
     if (originalHome === undefined) delete process.env.HOME;
     else process.env.HOME = originalHome;
     if (originalAgentDir === undefined) delete process.env.PIUI_PI_AGENT_DIR;
@@ -430,6 +433,39 @@ describe('product runtime end to end with real Pi turns', () => {
     );
     // A leaked entry would still report the finished turn as stoppable.
     expect(await product.stop(retry.id)).toBe('too-late');
+  });
+
+  it("runs approved bash commands with the user's HOME and PATH from the host", async () => {
+    const { workspacePath, agentDir } = await workspace(root);
+    const userHome = join(root, 'user-home');
+    await mkdir(userHome);
+    process.env.PIUI_USER_HOME = userHome;
+    process.env.PIUI_USER_PATH = '/usr/bin:/bin:/opt/piui-user/bin';
+    const { faux, host, product } = fauxProduct();
+    runtime = product;
+    const session = await createSession(product, workspacePath, agentDir);
+    const toolOutput: string[] = [];
+    faux.setResponses([
+      publicFauxAssistantMessage(
+        publicFauxToolCall('bash', { command: 'printf "%s\\n%s" "$HOME" "$PATH"' }),
+        { stopReason: 'toolUse' },
+      ),
+      (context) => {
+        const result = context.messages.at(-1);
+        if (result?.role === 'toolResult') {
+          for (const part of result.content) if (part.type === 'text') toolOutput.push(part.text);
+        }
+        return publicFauxAssistantMessage('Checked the environment.');
+      },
+    ]);
+    const events = await collect(
+      product.stream(turnRequest(session.id, 1, 'Show the environment'), new AbortController().signal),
+    );
+    expect(events.at(-1)?.type).toBe('complete');
+    expect(host.approvals.map((approval) => approval.toolName)).toEqual(['bash']);
+    expect(toolOutput.join('')).toBe(
+      `${userHome}\n${join(getAgentDir(), 'bin')}:/usr/bin:/bin:/opt/piui-user/bin`,
+    );
   });
 
   it("still reports an external writer that appends during PIUI's own turn", async () => {

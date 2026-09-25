@@ -28,6 +28,7 @@ import {
   publicCreateAgentSessionServices,
   publicCreateToolDefinitions,
   publicDefaultSessionDir,
+  publicPiBinDir,
   publicSdkMetadata,
   type PublicAgentSession,
   type PublicModelRuntimeInstance,
@@ -36,6 +37,7 @@ import {
 import { resolveEnabledPackagePaths } from './package-sources.js';
 import { describeProviders } from './providers.js';
 import { SessionOwnership } from './sessions.js';
+import { userShellSpawnHook } from './shell-environment.js';
 import {
   SessionWatch,
   observeSessionFile,
@@ -787,9 +789,11 @@ export class Pi082Adapter implements PiAdapter {
         afterExecute: (token, result, error) => changes.afterExecute(token, result, error),
       },
     );
-    const definitions = publicCreateToolDefinitions(request.workspacePath).map(
-      gate.decorateToolDefinition,
-    );
+    const bashSpawnHook = userShellSpawnHook(process.env, publicPiBinDir());
+    const definitions = publicCreateToolDefinitions(
+      request.workspacePath,
+      bashSpawnHook ? { bashSpawnHook } : {},
+    ).map(gate.decorateToolDefinition);
     const settingsManager = PublicSettingsManager.create(request.workspacePath, request.agentDir, {
       projectTrusted: true,
     });
